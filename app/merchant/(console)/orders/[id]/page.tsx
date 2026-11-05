@@ -59,7 +59,7 @@ export default async function OrderLedger({ params }: { params: Promise<{ id: st
         <p className="mt-4 rounded border border-rule bg-raised p-3 text-sm">This payment was captured <strong>outside Kept&rsquo;s protected checkout</strong>, so no pre-capture check could stop it. Kept monitors it after payment and proposes a fix when a promise breaks.</p>
       )}
       {gate && (held || (o.supersededPaypalOrderIds.length > 0 && !o.paypalCaptureId)) && (
-        <section className={`mt-4 rounded-lg border p-4 text-sm ${gate.verdict === "BLOCKED_MISMATCH" ? "border-broken bg-broken-wash" : "border-risk bg-risk-wash"}`} aria-label="Capture held by Kept">
+        <section className={`enter mt-4 rounded-xl border p-4 text-sm ${gate.verdict === "BLOCKED_MISMATCH" ? "border-broken bg-broken-wash" : "border-risk bg-risk-wash"}`} aria-label="Capture held by Kept">
           <p className={`eyebrow ${gate.verdict === "BLOCKED_MISMATCH" ? "text-broken" : "text-risk"}`}>{o.status === "CAPTURE_BLOCKED" ? "Kept blocked this capture" : o.status === "NEEDS_CONFIRMATION" ? "Capture on hold — needs your confirmation" : o.status === "PRECHECK_FAILED" ? "Pre-capture check failed — nothing captured" : "Corrected order sent — waiting for the buyer"}</p>
           <p className="mt-1">{explain(gate)}</p>
           {gate.quote && <p className="mt-1 text-xs">Promise: <span className="quote">&ldquo;{gate.quote}&rdquo;</span> · PayPal order <span className="mono">{gate.paypalOrderId}</span> (verified by GET {gate.checkedAt.toISOString().slice(11, 19)} UTC)</p>}
@@ -70,7 +70,7 @@ export default async function OrderLedger({ params }: { params: Promise<{ id: st
       {b.disputes.map((d) => {
         const resp = b.remedies.find((r) => r.kind === "DISPUTE_OFFER" && r.state !== "SUPERSEDED");
         return (
-          <section key={d.paypalDisputeId} className="mt-4 rounded-lg border border-broken bg-broken-wash p-4 text-sm" aria-label="PayPal dispute">
+          <section key={d.paypalDisputeId} className="enter mt-4 rounded-xl border border-broken bg-broken-wash p-4 text-sm" aria-label="PayPal dispute">
             <p className="eyebrow text-broken">PayPal dispute · {d.stage} · {d.status}</p>
             <p className="mt-1">The buyer opened dispute <span className="mono">{d.paypalDisputeId}</span> ({(d.reason ?? "").toLowerCase().replace(/_/g, " ")}). {resp
               ? resp.state === "PROPOSED" ? "Kept has prepared a response from the promise ledger below. Nothing is sent to PayPal until you approve it." : `Your response was ${resp.state === "COMPLETED" ? "accepted by PayPal" : resp.state.toLowerCase()}.`

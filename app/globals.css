@@ -20,6 +20,14 @@
   --accent: #2B2F8F;
   --accent-ink: #FFFFFF;
   --focus: #2B2F8F;
+  /* Motion: strong custom curves (never ease-in for UI). */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+  /* Depth: soft, semi-transparent shadows instead of heavy borders. */
+  --hairline: color-mix(in srgb, var(--rule) 75%, transparent);
+  --shadow-sm: 0 1px 2px rgb(21 23 26 / 0.04), 0 2px 8px -4px rgb(21 23 26 / 0.06);
+  --shadow-md: 0 1px 2px rgb(21 23 26 / 0.05), 0 12px 32px -12px rgb(21 23 26 / 0.16);
   color-scheme: light;
 }
 
@@ -41,6 +49,8 @@
     --accent: #9EA3FF;
     --accent-ink: #121314;
     --focus: #9EA3FF;
+    --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.3), 0 0 0 1px rgb(255 255 255 / 0.02);
+    --shadow-md: 0 1px 2px rgb(0 0 0 / 0.4), 0 16px 40px -12px rgb(0 0 0 / 0.6);
     color-scheme: dark;
   }
 }
@@ -66,8 +76,15 @@
   --font-mono: var(--font-plex-mono), ui-monospace, monospace;
 }
 
-html { background: var(--paper); color: var(--ink); }
-body { background: var(--paper); color: var(--ink); font-family: var(--font-sans); font-size: 16px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
+html { background: var(--paper); color: var(--ink); -webkit-tap-highlight-color: transparent; text-size-adjust: 100%; }
+body { background: var(--paper); color: var(--ink); font-family: var(--font-sans); font-size: 16px; line-height: 1.5; -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+h1, h2, h3 { text-wrap: balance; }
+p, li, dd { text-wrap: pretty; }
+/* Large serif display type reads better slightly tighter. */
+h1.quote, h2.quote, .display { letter-spacing: -0.02em; }
+button, a, summary, label, input[type="checkbox"], input[type="radio"] { touch-action: manipulation; }
+/* Phones: inputs under 16px make iOS zoom the page on focus. */
+@media (pointer: coarse) { input, select, textarea { font-size: 16px !important; } }
 
 @layer components {
 .money { font-family: var(--font-mono); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
@@ -78,22 +95,64 @@ body { background: var(--paper); color: var(--ink); font-family: var(--font-sans
 
 :focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; border-radius: 2px; }
 
-.btn { display: inline-flex; align-items: center; justify-content: center; gap: .4rem; min-height: 44px; padding: .55rem 1rem; border-radius: 6px; font-weight: 600; border: 1px solid var(--ink); background: transparent; color: var(--ink); cursor: pointer; }
-.btn:hover { background: color-mix(in srgb, var(--ink) 6%, transparent); }
-.btn-primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
-.btn-primary:hover { background: color-mix(in srgb, var(--accent) 88%, black); }
-.btn-danger { border-color: var(--broken); color: var(--broken); }
-.btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: .4rem; min-height: 44px; padding: .55rem 1rem; border-radius: 8px; font-weight: 600;
+  border: 1px solid color-mix(in srgb, var(--ink) 22%, transparent); background: var(--paper-raised); color: var(--ink); cursor: pointer; user-select: none; -webkit-user-select: none;
+  box-shadow: var(--shadow-sm);
+  transition: transform 160ms var(--ease-out), background-color 150ms ease, border-color 150ms ease, box-shadow 150ms ease, opacity 150ms ease; }
+/* Press feedback: the interface heard you. */
+.btn:active:not(:disabled) { transform: scale(0.97); }
+@media (hover: hover) and (pointer: fine) {
+  .btn:hover:not(:disabled) { border-color: color-mix(in srgb, var(--ink) 40%, transparent); background: color-mix(in srgb, var(--ink) 4%, var(--paper-raised)); }
+  .btn-primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 88%, black); border-color: color-mix(in srgb, var(--accent) 88%, black); }
+}
+.btn-primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); box-shadow: 0 1px 2px rgb(21 23 26 / 0.1), inset 0 1px 0 rgb(255 255 255 / 0.12); }
+.btn-danger { border-color: color-mix(in srgb, var(--broken) 60%, transparent); color: var(--broken); }
+.btn:disabled { opacity: .5; cursor: not-allowed; box-shadow: none; }
 
-.field { width: 100%; min-height: 44px; padding: .5rem .7rem; border: 1px solid var(--rule); border-radius: 6px; background: var(--paper-raised); color: var(--ink); }
-.field:focus { border-color: var(--accent); }
+.field { width: 100%; min-height: 44px; padding: .5rem .7rem; border: 1px solid var(--rule); border-radius: 8px; background: var(--paper-raised); color: var(--ink);
+  transition: border-color 150ms ease, box-shadow 150ms ease; }
+.field:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); outline: none; }
 
-.paper { background: var(--paper-raised); border: 1px solid var(--rule); border-radius: 8px; }
+.paper { background: var(--paper-raised); border: 1px solid var(--hairline); border-radius: 12px; box-shadow: var(--shadow-sm); }
+.paper-lift { box-shadow: var(--shadow-md); }
+.measure { max-width: 65ch; }
 .eyebrow { font-size: .72rem; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-soft); font-weight: 600; }
 
 }
 
-@media (prefers-reduced-motion: no-preference) {
-  .stamp { animation: stamp .35s ease-out; }
-  @keyframes stamp { from { transform: scale(1.25) rotate(-6deg); opacity: 0; } to { transform: none; opacity: 1; } }
+/* ---------------------------------------------------------------------------
+   Motion. Only transform + opacity. Exits are faster than entrances.
+   Reduced motion keeps the fades (they aid comprehension) and drops movement.
+   --------------------------------------------------------------------------- */
+@keyframes kept-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes kept-rise { from { opacity: 0; transform: translateY(6px) scale(0.985); } to { opacity: 1; transform: none; } }
+@keyframes kept-pop { from { opacity: 0; transform: scale(0.97); } to { opacity: 1; transform: none; } }
+@keyframes kept-modal { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: none; } }
+@keyframes kept-bubble { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+@keyframes stamp { 0% { transform: scale(1.18) rotate(-5deg); opacity: 0; } 60% { opacity: 1; } 100% { transform: none; opacity: 1; } }
+
+/* A state that appears (verdict panels, banners, results): rise in once. */
+.enter { animation: kept-rise 260ms var(--ease-out) both; }
+/* Chat messages arrive. */
+.bubble-in { animation: kept-bubble 200ms var(--ease-out) both; }
+/* Seals stamp onto the ledger when a state is decided. */
+.stamp { animation: stamp 380ms var(--ease-out) both; }
+/* Menus grow from their trigger (top-right summary). */
+details[open] > .popover { animation: kept-pop 150ms var(--ease-out) both; transform-origin: top right; }
+.popover-left { transform-origin: top left !important; }
+/* Modals stay centred. */
+.modal-backdrop { animation: kept-fade 200ms ease both; }
+.modal-panel { animation: kept-modal 220ms var(--ease-out) both; }
+
+/* Home hero: a one-time explanatory sequence (rare surface: the delight budget). */
+@keyframes kept-out { from { opacity: 1; filter: blur(0); } to { opacity: 0; filter: blur(2px); } }
+.seq { animation: kept-rise 420ms var(--ease-out) both; }
+.seq-stamp { animation: stamp 420ms var(--ease-out) both; }
+.seq-out { animation: kept-out 220ms ease both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .seq, .seq-stamp { animation: kept-fade 200ms ease both; animation-delay: 0ms !important; }
+  .seq-out { animation: none; opacity: 0; }
+  .enter, .bubble-in, .stamp, details[open] > .popover, .modal-panel { animation: kept-fade 160ms ease both; }
+  .btn:active:not(:disabled) { transform: none; }
 }

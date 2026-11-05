@@ -44,6 +44,14 @@ export default async function ReceiptPage({ params }: { params: Promise<{ token:
         <h1 className="quote mt-2 text-3xl">{o.buyerFirstName ? `${o.buyerFirstName}, here's` : "Here's"} what you were promised — and what happened.</h1>
         <p className="mt-2 text-sm text-ink-soft">Order <span className="mono">{o.id}</span> · {o.createdAt.toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" })} UTC{r.simulatedClock ? " · simulated demo clock in use" : ""}</p>
 
+        <ul className="mt-4 flex flex-wrap gap-2" aria-label="Promise summary">
+          {(["BROKEN", "AT_RISK", "KEPT", "PENDING", "UNVERIFIABLE"] as const).map((st) => {
+            const n = r.promises.filter((p) => p.state === st).length;
+            const good = r.promises.filter((p) => p.state === st && (p.evaluation as Record<string, unknown> | null)?.madeGood === true).length;
+            return n ? <li key={st} className="flex items-center gap-1.5 text-xs"><StateSeal state={st} size="sm" madeGood={st === "BROKEN" && good === n} /><span className="mono">{n}</span></li> : null;
+          })}
+        </ul>
+
         <section className="paper mt-6 p-4" aria-labelledby="money-h">
           <h2 id="money-h" className="eyebrow">Where your money is</h2>
           <p className="mt-2">{moneyWhere(r)}</p>

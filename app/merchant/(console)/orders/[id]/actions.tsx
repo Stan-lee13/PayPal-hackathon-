@@ -155,7 +155,7 @@ export function OrderActions({ orderId, hasCapture, receiptPath, simulated = fal
       {simulated && hasCapture && !hasDispute && (
         <details className="relative">
           <summary className="btn min-h-9 cursor-pointer list-none px-3 py-1">Play the buyer: open a dispute</summary>
-          <div className="paper absolute right-0 z-20 mt-1 w-72 space-y-2 p-3 text-xs">
+          <div className="popover paper paper-lift absolute right-0 z-20 mt-1 w-72 space-y-2 p-3 text-xs">
             <p className="text-ink-soft">Simulated PayPal only. In the sandbox, the buyer opens disputes in PayPal&rsquo;s Resolution Center.</p>
             <button className="btn min-h-9 w-full px-2 py-1" disabled={busy} onClick={() => void act("Dispute opened: item not received", "/api/sim/dispute", { orderId, reason: "MERCHANDISE_OR_SERVICE_NOT_RECEIVED" })}>&ldquo;I never received it&rdquo;</button>
             <button className="btn min-h-9 w-full px-2 py-1" disabled={busy} onClick={() => void act("Dispute opened: incorrect amount", "/api/sim/dispute", { orderId, reason: "INCORRECT_AMOUNT" })}>&ldquo;I was charged the wrong amount&rdquo;</button>

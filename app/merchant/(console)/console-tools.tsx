@@ -28,7 +28,7 @@ export function ConsoleTools({ demo, simulated, offsetHours }: { demo: boolean; 
       {demo && (
         <details ref={menu} className="relative">
           <summary className="btn min-h-9 cursor-pointer list-none px-3 py-1">Demo tools</summary>
-          <div className="paper absolute right-0 z-20 mt-1 w-72 space-y-2 p-3">
+          <div className="popover paper paper-lift absolute right-0 z-20 mt-1 w-72 space-y-2 p-3">
             <p className="eyebrow">Simulated clock {offsetHours ? `(+${offsetHours}h)` : ""}</p>
             <div className="flex flex-wrap gap-1">
               {[12, 24, 40].map((h) => <button key={h} className="btn min-h-9 px-2 py-1" disabled={busy} onClick={() => run(`Clock +${h}h`, () => post("/api/merchant/clock", { hours: h }))}>+{h}h</button>)}

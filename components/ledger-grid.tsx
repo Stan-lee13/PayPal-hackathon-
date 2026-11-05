@@ -134,7 +134,7 @@ export function LedgerGrid(props: Kind & { searchLabel?: string; pageSize?: numb
           placeholder={props.searchLabel ?? "Search every column…"} aria-label={props.searchLabel ?? "Search every column"} />
         <details className="relative text-sm">
           <summary className="btn min-h-9 cursor-pointer list-none px-3 py-1">Columns</summary>
-          <div className="paper absolute z-20 mt-1 w-56 space-y-1 p-3">
+          <div className="popover popover-left paper paper-lift absolute z-20 mt-1 w-56 space-y-1 p-3">
             {(columnDefs as ColDef[]).filter((c) => c.field).map((c) => {
               const col = grid.current?.api?.getColumn(c.field!);
               const visible = col ? col.isVisible() : !c.hide;

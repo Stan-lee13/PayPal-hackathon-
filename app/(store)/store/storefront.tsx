@@ -185,12 +185,12 @@ export function Storefront(props: {
       )}
 
       {receiptUrl ? (
-        <section className="paper mt-8 p-6" aria-live="polite">
+        <section className="enter paper paper-lift mt-8 p-6" aria-live="polite">
           <p className="eyebrow">Payment captured by PayPal</p>
           <h2 className="quote mt-2 text-2xl">Thank you — your order is in.</h2>
           {verified && verified.verdict === "READY_TO_CAPTURE" && verified.promisedMinor !== null && (
-            <div className="mt-3 rounded border border-kept bg-kept-wash p-3 text-sm">
-              <p className="eyebrow text-kept">Promise verified before capture · Kept</p>
+            <div className="enter mt-3 rounded-lg border border-kept bg-kept-wash p-3 text-sm">
+              <p className="eyebrow text-kept"><span aria-hidden="true" className="stamp inline-block">✓</span> Promise verified before capture · Kept</p>
               <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-4">
                 <dt className="text-ink-soft">Agreed total</dt><dd className="money text-right">{usd(verified.promisedMinor)}</dd>
                 <dt className="text-ink-soft">PayPal order</dt><dd className="money text-right">{verified.orderMinor !== null ? usd(verified.orderMinor) : "—"}</dd>
@@ -260,7 +260,7 @@ export function Storefront(props: {
                 </dl>
               )}
               {!gate && checkout?.guard?.action === "WARN" && checkout.guard.quotedMinor !== null && (
-                <div role="status" className="mt-3 rounded border border-risk bg-risk-wash p-3 text-sm">
+                <div role="status" className="enter mt-3 rounded-lg border border-risk bg-risk-wash p-3 text-sm">
                   <p className="eyebrow text-risk">Kept · price check before you pay</p>
                   <p className="mt-1">The assistant told you <span className="quote">&ldquo;{checkout.guard.quote}&rdquo;</span> but checkout is <span className="money font-semibold">{usd(checkout.guard.checkoutMinor)}</span>, which is <span className="money font-semibold">{usd(checkout.guard.gapMinor)}</span> more.</p>
                   <p className="mt-1 text-ink-soft">{checkout.guard.mode === "BLOCK"
@@ -313,13 +313,13 @@ export function Storefront(props: {
               {messages.map((m, i) => (
                 <div key={i} className={m.role !== "assistant" ? "ml-8 text-right" : "mr-8"}>
                   <p className="text-[0.7rem] uppercase tracking-wider text-ink-soft">{m.role === "customer" ? "You" : m.role === "agent" ? `Your AI agent${m.generatedBy === "scripted" ? " (scripted)" : ""}` : `Adaeze Studio ${m.generatedBy === "scripted" ? "assistant (scripted)" : "assistant"}`}</p>
-                  <p className={`mt-0.5 inline-block rounded-lg px-3 py-2 text-left ${m.role !== "assistant" ? "bg-accent text-accent-ink" : "quote border border-rule bg-paper text-[1.05rem]"}`}>{m.text}</p>
+                  <p className={`bubble-in mt-0.5 inline-block rounded-2xl px-3.5 py-2 text-left ${m.role !== "assistant" ? "rounded-br-md bg-accent text-accent-ink" : "quote rounded-bl-md border border-rule bg-paper text-[1.05rem]"}`}>{m.text}</p>
                 </div>
               ))}
               {busy && <p className="text-sm text-ink-soft">Assistant is typing…</p>}
             </div>
             {mode === "agent" && verdict && (
-              <div className={`rule-t p-4 text-sm ${verdict.decision === "PROCEED" ? "bg-kept-wash" : "bg-broken-wash"}`} aria-live="polite">
+              <div className={`enter rule-t p-4 text-sm ${verdict.decision === "PROCEED" ? "bg-kept-wash" : "bg-broken-wash"}`} aria-live="polite">
                 <p className={`eyebrow ${verdict.decision === "PROCEED" ? "text-kept" : "text-broken"}`}>Mandate check (deterministic) · {verdict.decision === "PROCEED" ? "cleared" : "declined"}</p>
                 <ul className="mt-1 space-y-0.5">{verdict.checks.map((c, i) => <li key={i}><span aria-hidden="true">{c.ok ? "✓" : "✕"}</span><span className="sr-only">{c.ok ? "passed" : "failed"}</span> {c.detail}</li>)}</ul>
                 <p className="mt-2">{verdict.summary}</p>
@@ -339,8 +339,8 @@ export function Storefront(props: {
       {error && <p role="alert" className="mt-4 rounded border border-broken bg-broken-wash p-3 text-sm text-broken">{error}</p>}
 
       {simApproval && (
-        <div role="dialog" aria-modal="true" aria-labelledby="sim-h" className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 p-4">
-          <div className="paper w-full max-w-sm p-5">
+        <div role="dialog" aria-modal="true" aria-labelledby="sim-h" className="modal-backdrop fixed inset-0 z-40 flex items-center justify-center bg-black/40 p-4 backdrop-blur-[2px]">
+          <div className="modal-panel paper paper-lift w-full max-w-sm p-5">
             <p className="eyebrow text-risk">Simulated PayPal — not real PayPal</p>
             <h2 id="sim-h" className="mt-2 font-semibold">Approve payment</h2>
             <p className="mt-2 text-sm text-ink-soft">This stands in for the buyer approving in PayPal&rsquo;s window. PayPal order <span className="mono">{simApproval.paypalOrderId}</span> for <span className="money">{correctedReady && orderState ? usd(orderState.totalMinor) : checkout ? usd(checkout.totalMinor) : "—"}</span>.</p>
@@ -361,21 +361,21 @@ export function Storefront(props: {
 function GatePanel({ gate, correctedReady, correctedTotal, merchant, onRetry, busy }: { gate: Gate; correctedReady: boolean; correctedTotal: number | null; merchant: string; onRetry: (() => Promise<void>) | null; busy: boolean }) {
   const m = (v: number | null, c: string | null) => (v === null || !c ? "—" : new Intl.NumberFormat("en-US", { style: "currency", currency: c }).format(v / 100));
   if (correctedReady) return (
-    <div role="status" className="mt-3 rounded border border-kept bg-kept-wash p-3 text-sm">
-      <p className="eyebrow text-kept">Corrected order ready</p>
+    <div role="status" className="enter mt-3 rounded-lg border border-kept bg-kept-wash p-3 text-sm">
+      <p className="eyebrow text-kept"><span aria-hidden="true">✓ </span>Corrected order ready</p>
       <p className="mt-1">{merchant} corrected the order to the total you were promised: <span className="money font-semibold">{m(correctedTotal, gate.orderCurrency)}</span>. Approve it with PayPal below. The earlier order was never charged.</p>
     </div>
   );
   const blockedish = gate.verdict === "BLOCKED_MISMATCH";
   return (
-    <div role="alert" className={`mt-3 rounded border p-3 text-sm ${blockedish ? "border-broken bg-broken-wash" : "border-risk bg-risk-wash"}`}>
+    <div role="alert" className={`enter mt-3 rounded-lg border p-3 text-sm ${blockedish ? "border-broken bg-broken-wash" : "border-risk bg-risk-wash"}`}>
       <p className={`eyebrow ${blockedish ? "text-broken" : "text-risk"}`}>{blockedish ? "Payment mismatch detected · Kept" : gate.verdict === "NEEDS_CONFIRMATION" ? "Waiting for the shop to confirm · Kept" : "Could not verify with PayPal · Kept"}</p>
       {gate.verdict !== "PRECHECK_FAILED" && (
         <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5">
           <dt className="text-ink-soft">You were promised</dt><dd className="money text-right">{m(gate.promisedMinor, gate.promisedCurrency)}</dd>
           <dt className="text-ink-soft">PayPal order amount</dt><dd className="money text-right">{m(gate.orderMinor, gate.orderCurrency)}</dd>
           {gate.diffMinor !== null && <><dt className="text-ink-soft">Difference</dt><dd className="money text-right font-semibold">{m(Math.abs(gate.diffMinor), gate.orderCurrency)}</dd></>}
-          <dt className="text-ink-soft">Status</dt><dd className="text-right font-semibold">{blockedish ? "Capture blocked" : gate.verdict === "NEEDS_CONFIRMATION" ? "Capture on hold" : "Not captured"}</dd>
+          <dt className="text-ink-soft">Status</dt><dd className="text-right"><span className={`stamp inline-block rounded-full border px-2 py-0.5 text-[0.7rem] font-semibold uppercase tracking-wider ${blockedish ? "border-broken text-broken" : "border-risk text-risk"}`}>{blockedish ? "Capture blocked" : gate.verdict === "NEEDS_CONFIRMATION" ? "Capture on hold" : "Not captured"}</span></dd>
         </dl>
       )}
       <p className="mt-2">{gate.explanation} <strong>Nothing has been charged.</strong></p>

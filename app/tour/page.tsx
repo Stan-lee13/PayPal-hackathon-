@@ -87,16 +87,18 @@ export default function Tour() {
           </dl>
         </section>
 
-        <ol className="mt-10 space-y-10">
+        <ol className="mt-10 space-y-5">
           {scenarios.map((s) => (
-            <li key={s.n} className="rule-t pt-5">
+            <li key={s.n} className="paper p-6">
               <div className="flex flex-wrap items-baseline justify-between gap-2">
-                <h2 className="text-xl font-semibold"><span className="mono mr-2 text-sm text-ink-soft">{s.n}</span>{s.title}</h2>
-                <span className="mono text-xs text-ink-soft">{s.minutes}</span>
+                <h2 className="quote text-2xl"><span className="mono mr-3 align-middle text-sm text-accent">{s.n}</span>{s.title}</h2>
+                <span className="mono rounded-full border border-[var(--hairline)] px-2 py-0.5 text-xs text-ink-soft">{s.minutes}</span>
               </div>
-              <p className="mt-2 text-sm text-ink-soft">{s.why}</p>
-              <ol className="mt-3 list-decimal space-y-1.5 pl-5 text-sm">{s.steps.map((st, i) => <li key={i}>{st.text}</li>)}</ol>
-              <p className="mt-3 text-xs"><span className="eyebrow">What to look for · </span>{s.see}</p>
+              <p className="measure mt-2 text-sm text-ink-soft">{s.why}</p>
+              <ol className="mt-4 space-y-2.5 text-sm">{s.steps.map((st, i) => (
+                <li key={i} className="flex gap-3"><span className="mono mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full border border-[var(--hairline)] text-[0.65rem] text-ink-soft">{i + 1}</span><span>{st.text}</span></li>
+              ))}</ol>
+              <p className="mt-4 rounded-lg bg-paper px-3 py-2 text-xs"><span className="eyebrow">What to look for · </span>{s.see}</p>
             </li>
           ))}
         </ol>
