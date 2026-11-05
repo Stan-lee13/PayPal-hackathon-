@@ -13,7 +13,8 @@ import { CommitmentActions, OrderActions, RemedySheet } from "./actions";
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Order ledger" };
 
-const TYPE: Record<string, string> = { PRICE_AS_QUOTED: "Price as quoted", SHIP_BY: "Ship by", REFUND_BY: "Refund by", OTHER: "Other" };
+const TYPE: Record<string, string> = { PRICE_AS_QUOTED: "Price as quoted", SHIP_BY: "Ship by", REFUND_BY: "Refund by", OTHER: "Other", MANDATE_MAX_TOTAL: "Shopper mandate · spending limit", MANDATE_SHIP_WITHIN: "Shopper mandate · shipping limit" };
+const BLAME: Record<string, string> = { MERCHANT: "Accountable: merchant (the agent was quoted within the limit)", AGENT: "Accountable: the shopper's agent (it accepted an over-limit quote)", UNKNOWN: "Accountability unclear", NONE: "" };
 
 export default async function OrderLedger({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -61,13 +62,13 @@ export default async function OrderLedger({ params }: { params: Promise<{ id: st
                   <div className="bg-raised p-4">
                     <p className="eyebrow">Said · {TYPE[c.type]}</p>
                     <blockquote className="quote mt-1 text-xl">&ldquo;{c.quote}&rdquo;</blockquote>
-                    <p className="mt-1 text-xs text-ink-soft">{src?.kind === "CHAT_TRANSCRIPT" ? "AI sales chat" : src?.title} · chars {c.spanStart}–{c.spanEnd} · extractor {c.extractor} · confidence {c.confidence.toFixed(2)}</p>
+                    <p className="mt-1 text-xs text-ink-soft">{src?.kind === "CHAT_TRANSCRIPT" ? "AI sales chat" : src?.kind === "USER_MANDATE" ? "the shopper's own words to their agent" : src?.title} · chars {c.spanStart}–{c.spanEnd} · extractor {c.extractor} · confidence {c.confidence.toFixed(2)}</p>
                     <details className="mt-2 text-xs">
                       <summary className="cursor-pointer text-ink-soft">Validation ({c.validation.filter((v) => v.ok).length}/{c.validation.length} checks passed)</summary>
                       <ul className="mt-1 space-y-0.5">{c.validation.map((v, i) => <li key={i}><span aria-hidden="true">{v.ok ? "✓" : "✕"}</span><span className="sr-only">{v.ok ? "passed" : "failed"}</span> <span className="mono">{v.check}</span> — {v.detail}</li>)}</ul>
                     </details>
                   </div>
-                  <div className="flex items-center justify-center border-y border-rule bg-paper p-3 sm:border-x sm:border-y-0"><StateSeal state={c.state} stamp /></div>
+                  <div className="flex items-center justify-center border-y border-rule bg-paper p-3 sm:border-x sm:border-y-0"><StateSeal state={c.state} stamp madeGood={c.evaluation?.madeGood === true} /></div>
                   <div className="bg-raised p-4 text-sm">
                     <p className="eyebrow">Happened · PayPal records</p>
                     {c.type === "PRICE_AS_QUOTED" && (
@@ -81,8 +82,18 @@ export default async function OrderLedger({ params }: { params: Promise<{ id: st
                     {c.type === "SHIP_BY" && <p className="mt-1">{ev.trackingNumber ? <>Tracker <span className="mono">{String(ev.trackingNumber)}</span> at <span className="mono">{String(ev.trackerRecordedAt).slice(0, 16).replace("T", " ")}</span></> : "No shipment tracker on the PayPal order."}{c.dueAt && <span className="mono block text-xs text-ink-soft">deadline {c.dueAt.toISOString().slice(0, 16).replace("T", " ")} UTC</span>}</p>}
                     {c.type === "REFUND_BY" && <p className="mt-1">{ev.refundId ? <>Refund <span className="mono">{String(ev.refundId)}</span></> : ev.triggeredAt ? "No completed refund yet." : "Clock not started."}</p>}
                     {c.type === "OTHER" && <p className="mt-1 text-ink-soft">No PayPal record can confirm or deny this.</p>}
+                    {c.type === "MANDATE_MAX_TOTAL" && (
+                      <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-3">
+                        <dt className="text-ink-soft">Shopper&rsquo;s limit</dt><dd className="text-right"><Money minor={Number(c.params.maxMinor)} currency={cur} /></dd>
+                        <dt className="text-ink-soft">Merchant quoted</dt><dd className="text-right"><Money minor={ev.merchantQuotedMinor as number | null} currency={cur} /></dd>
+                        <dt className="text-ink-soft">PayPal captured</dt><dd className="text-right"><Money minor={ev.capturedMinor as number | undefined} currency={cur} /></dd>
+                        <dt className="text-ink-soft">Net after refunds</dt><dd className="text-right"><Money minor={ev.netMinor as number | undefined} currency={cur} /></dd>
+                      </dl>
+                    )}
+                    {(c.state === "BROKEN" || c.state === "AT_RISK") && typeof ev.attribution === "string" && BLAME[ev.attribution] && <p className="mt-1 font-semibold">{BLAME[ev.attribution]}</p>}
                     <p className="mt-2 text-ink-soft">{c.stateReason}</p>
-                    <CommitmentActions commitmentId={c.id} type={c.type} state={c.state} triggered={Boolean(c.params.triggeredAt)} canReopen={!remedy || remedy.state === "REJECTED"} />
+                    {c.type.startsWith("MANDATE_") && (c.state === "BROKEN" || c.state === "AT_RISK") && <p className="mt-1 text-xs text-ink-soft">A shopper&rsquo;s mandate gets no remedy of its own: it is made good through the merchant promise it depends on (price or shipping), and Kept re-checks it after every PayPal update.</p>}
+                    <CommitmentActions commitmentId={c.id} type={c.type} state={c.state} triggered={Boolean(c.params.triggeredAt)} canReopen={!c.type.startsWith("MANDATE_") && (!remedy || remedy.state === "REJECTED")} />
                   </div>
                 </div>
                 {remedy && (

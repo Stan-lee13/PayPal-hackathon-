@@ -2,9 +2,9 @@ import { z } from "zod";
 
 /** What an extractor (LLM or rules) proposes. Untrusted until validated. */
 export const CandidateSchema = z.object({
-  type: z.enum(["PRICE_AS_QUOTED", "SHIP_BY", "REFUND_BY", "OTHER"]),
+  type: z.enum(["PRICE_AS_QUOTED", "SHIP_BY", "REFUND_BY", "OTHER", "MANDATE_MAX_TOTAL", "MANDATE_SHIP_WITHIN"]),
   params: z.object({
-    amount: z.string().optional().describe("Decimal amount exactly as written, e.g. '84.00' (PRICE_AS_QUOTED)"),
+    amount: z.string().optional().describe("Decimal amount exactly as written, e.g. '84.00' (PRICE_AS_QUOTED, MANDATE_MAX_TOTAL)"),
     currency: z.string().optional().describe("ISO currency the quote refers to, e.g. 'USD'"),
     scope: z.enum(["ORDER_TOTAL", "ITEM_PRICE", "UNKNOWN"]).optional(),
     within_hours: z.number().optional(),
@@ -34,6 +34,8 @@ export type NormalizedParams =
   | { kind: "SHIP_BY"; withinHours: number }
   | { kind: "SHIP_BY"; byDate: string }
   | { kind: "REFUND_BY"; withinDays: number; trigger: "RETURN_RECEIVED" | "CANCELLATION" | "REQUEST" }
+  | { kind: "MANDATE_MAX_TOTAL"; maxMinor: number; currency: string; inclusive: boolean }
+  | { kind: "MANDATE_SHIP_WITHIN"; withinHours: number }
   | { kind: "NONE" };
 
 export type ValidatedPromise = {

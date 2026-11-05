@@ -64,7 +64,7 @@ export async function reconcile(opts: { olderThanMinutes?: number } = {}) {
     } catch (e) { report.errors.push(`refund ${r.paypalRefundId}: ${String(e).slice(0, 120)}`); }
   }
   // 4. remedies stuck EXECUTING with unknown outcome → retry with the SAME request id (idempotent at PayPal)
-  const stuck = await db.select().from(remedies).where(and(eq(remedies.state, "EXECUTING"), lt(remedies.updatedAt, cutoff)));
+  const stuck = (await db.select().from(remedies).where(and(eq(remedies.state, "EXECUTING"), lt(remedies.updatedAt, cutoff)))).filter((r) => r.kind === "PARTIAL_REFUND" || r.kind === "FULL_REFUND");
   for (const r of stuck) {
     try {
       await audit(db, { merchantId: r.merchantId, orderId: r.orderId, actor: "system", action: "remedy.retry_same_request_id", ref: r.id, outcome: "PENDING", detail: { requestId: r.paypalRequestId } });

@@ -72,14 +72,21 @@ export const sources = pgTable("sources", {
   id: text("id").primaryKey(),
   merchantId: text("merchant_id").notNull().references(() => merchants.id),
   orderId: text("order_id"),
-  kind: text("kind", { enum: ["CHAT_TRANSCRIPT", "REFUND_POLICY", "SHIPPING_POLICY", "PRODUCT_PAGE"] }).notNull(),
+  kind: text("kind", { enum: ["CHAT_TRANSCRIPT", "REFUND_POLICY", "SHIPPING_POLICY", "PRODUCT_PAGE", "USER_MANDATE"] }).notNull(),
   title: text("title").notNull(),
   text: text("text").notNull(),
   sha256: text("sha256").notNull(),
   createdAt: ts("created_at").notNull().defaultNow(),
 }, (t) => [index("sources_order").on(t.orderId), index("sources_merchant").on(t.merchantId)]);
 
-export type ChatMessage = { role: "customer" | "assistant"; text: string; at: string; generatedBy?: "ai" | "scripted" };
+export type AgentVerdict = {
+  decision: "PROCEED" | "DECLINE";
+  checks: Array<{ check: string; ok: boolean; detail: string }>;
+  summary: string;
+  by: "ai" | "scripted";
+};
+
+export type ChatMessage = { role: "customer" | "assistant" | "agent"; text: string; at: string; generatedBy?: "ai" | "scripted" };
 
 export const chatSessions = pgTable("chat_sessions", {
   id: text("id").primaryKey(),
@@ -88,6 +95,12 @@ export const chatSessions = pgTable("chat_sessions", {
   /** The basket under discussion, set by the storefront (product ids + qty). */
   cart: jsonb("cart").$type<Array<{ productId: string; qty: number }>>().notNull().default(sql`'[]'::jsonb`),
   shippingOption: text("shipping_option", { enum: ["STANDARD", "EXPRESS"] }).notNull().default("STANDARD"),
+  /** "customer" = the shopper chats; "agent" = the shopper's own AI agent negotiates on their behalf. */
+  mode: text("mode", { enum: ["customer", "agent"] }).notNull().default("customer"),
+  /** The shopper's verbatim instruction to their agent (agent mode only). */
+  mandate: text("mandate"),
+  /** Deterministic pre-payment guard result for agent mode. */
+  agentVerdict: jsonb("agent_verdict").$type<AgentVerdict>(),
   orderId: text("order_id"),
   createdAt: ts("created_at").notNull().defaultNow(),
   updatedAt: ts("updated_at").notNull().defaultNow(),
@@ -134,7 +147,8 @@ export const orders = pgTable("orders", {
   updatedAt: ts("updated_at").notNull().defaultNow(),
 }, (t) => [index("orders_merchant").on(t.merchantId, t.createdAt)]);
 
-export const COMMITMENT_TYPES = ["PRICE_AS_QUOTED", "SHIP_BY", "REFUND_BY", "OTHER"] as const;
+/** Merchant promises (PRICE_AS_QUOTED, SHIP_BY, REFUND_BY, OTHER) and the shopper's mandate to their own agent (MANDATE_*). */
+export const COMMITMENT_TYPES = ["PRICE_AS_QUOTED", "SHIP_BY", "REFUND_BY", "OTHER", "MANDATE_MAX_TOTAL", "MANDATE_SHIP_WITHIN"] as const;
 export type CommitmentType = (typeof COMMITMENT_TYPES)[number];
 export const COMMITMENT_STATES = ["PENDING", "KEPT", "AT_RISK", "BROKEN", "UNVERIFIABLE", "NEEDS_CONFIRMATION", "WAIVED"] as const;
 export type CommitmentState = (typeof COMMITMENT_STATES)[number];
@@ -186,6 +200,11 @@ export type RemedyKind = (typeof REMEDY_KINDS)[number];
 export const REMEDY_STATES = ["PROPOSED", "APPROVED", "EXECUTING", "PENDING", "COMPLETED", "FAILED", "REJECTED", "SUPERSEDED"] as const;
 export type RemedyState = (typeof REMEDY_STATES)[number];
 
+export type DisputeAction =
+  | { type: "PROVIDE_EVIDENCE"; disputeId: string; trackingNumber: string; carrier: string; note: string }
+  | { type: "MAKE_OFFER"; disputeId: string; amountMinor: number; currency: string; note: string }
+  | { type: "SEND_MESSAGE"; disputeId: string; message: string };
+
 export const remedies = pgTable("remedies", {
   id: text("id").primaryKey(),
   commitmentId: text("commitment_id").notNull().references(() => commitments.id),
@@ -199,6 +218,8 @@ export const remedies = pgTable("remedies", {
   citations: jsonb("citations").$type<string[]>().notNull(),
   proposedBy: text("proposed_by", { enum: ["ai", "rules"] }).notNull(),
   policyChecks: jsonb("policy_checks").$type<Array<{ check: string; ok: boolean; detail: string }>>().notNull(),
+  /** For DISPUTE_OFFER: the exact PayPal Disputes API action to take on approval. */
+  disputeAction: jsonb("dispute_action").$type<DisputeAction>(),
   state: text("state", { enum: REMEDY_STATES }).notNull(),
   /** Idempotency key sent as PayPal-Request-Id. Generated once, reused on retry. */
   paypalRequestId: text("paypal_request_id").notNull().unique(),

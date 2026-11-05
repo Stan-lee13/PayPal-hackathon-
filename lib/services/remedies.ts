@@ -15,7 +15,7 @@ import { getDb } from "../db";
 import { commitments, disputes, merchants, orders, refunds, remedies, sources, trackers, type Commitment, type Remedy } from "../db/schema";
 import { newId, newRequestId } from "../ids";
 import { getPayPal, PayPalApiError, paypalMode } from "../paypal/client";
-import { buildRefundRequest, getCapture, getRefund, refundCapture, type RefundFacts } from "../paypal/api";
+import { buildDisputeRequest, buildRefundRequest, getCapture, getRefund, refundCapture, type RefundFacts } from "../paypal/api";
 import { validateProposal, type PolicyContext, type ProposalInput } from "../policy/engine";
 import { aiConfigured } from "../ai/client";
 import { proposeWithAgent, type AgentProposal } from "../ai/remedy-agent";
@@ -157,6 +157,7 @@ function agentTools(c: Commitment) {
 
 /** The exact PayPal call an approval would make — shown to the merchant before approving. */
 export async function remedyRequestPreview(r: Remedy) {
+  if (r.kind === "DISPUTE_OFFER") return r.disputeAction ? buildDisputeRequest(r.disputeAction) : null;
   if (r.kind !== "PARTIAL_REFUND" && r.kind !== "FULL_REFUND") return null;
   const db = getDb();
   const order = (await db.query.orders.findFirst({ where: eq(orders.id, r.orderId) }))!;
@@ -182,6 +183,7 @@ export async function approveRemedy(remedyId: string, opts: { customerMessage?: 
   const r = await db.query.remedies.findFirst({ where: eq(remedies.id, remedyId) });
   if (!r) throw new UserFacingError("Remedy not found.", 404);
   if (r.state !== "PROPOSED") throw new UserFacingError(`This remedy is already ${r.state.toLowerCase()}.`, 409);
+  if (r.kind === "DISPUTE_OFFER") return approveDisputeRemedy(r, opts.customerMessage);
   const c = (await db.query.commitments.findFirst({ where: eq(commitments.id, r.commitmentId) }))!;
   const merchant = (await db.query.merchants.findFirst({ where: eq(merchants.id, r.merchantId) }))!;
   const ctx = await policyContext(c, r.id);
@@ -203,6 +205,29 @@ export async function approveRemedy(remedyId: string, opts: { customerMessage?: 
     detail: { kind: r.kind, amount: r.amountMinor !== null && r.currency ? formatMoney(r.amountMinor, r.currency) : null, messageEdited: message !== r.customerMessage } });
   if (!isRefund) return claimed;
   return executeRefund(claimed, opts.mockResponse);
+}
+
+async function approveDisputeRemedy(r: Remedy, editedMessage?: string): Promise<Remedy> {
+  const db = getDb();
+  const { disputeContext, validateDisputeAction, executeDisputeRemedy } = await import("./disputes");
+  if (!r.disputeAction) throw new UserFacingError("Dispute response is missing its action.", 422);
+  const action = { ...r.disputeAction };
+  if (editedMessage) {
+    if (action.type === "SEND_MESSAGE") action.message = editedMessage.slice(0, 2000);
+    else action.note = editedMessage.slice(0, 2000);
+  }
+  const ctx = await disputeContext(r.orderId, action.disputeId);
+  const otherLive = ctx.rems.some((x) => x.id !== r.id && x.kind === "DISPUTE_OFFER" && x.disputeAction?.disputeId === action.disputeId && ["APPROVED", "EXECUTING", "PENDING"].includes(x.state));
+  const verdict = validateDisputeAction(action, ctx, otherLive);
+  if (!verdict.ok) {
+    await db.update(remedies).set({ policyChecks: verdict.checks, updatedAt: new Date() }).where(eq(remedies.id, r.id));
+    throw new UserFacingError(`Policy check failed: ${verdict.checks.filter((x) => !x.ok).map((x) => x.detail).join("; ")}`, 422);
+  }
+  const [claimed] = await db.update(remedies).set({ state: "EXECUTING", disputeAction: action, customerMessage: editedMessage?.slice(0, 600) ?? r.customerMessage, decidedBy: "merchant", decidedAt: new Date(), executedAt: new Date(), policyChecks: verdict.checks, updatedAt: new Date() })
+    .where(and(eq(remedies.id, r.id), eq(remedies.state, "PROPOSED"))).returning();
+  if (!claimed) throw new UserFacingError("This dispute response was already approved.", 409);
+  await audit(db, { merchantId: r.merchantId, orderId: r.orderId, actor: "merchant", action: "dispute.response_approved", ref: r.id, outcome: "OK", detail: { action: action.type, disputeId: action.disputeId } });
+  return executeDisputeRemedy(claimed);
 }
 
 /** Calls PayPal. Safe to call again for an EXECUTING remedy: the same PayPal-Request-Id is reused. */

@@ -6,6 +6,7 @@
 import { z } from "zod";
 import { toDecimalString, toMinor } from "../money";
 import type { PayPalClient } from "./client";
+import type { DisputeAction } from "../db/schema";
 
 const Money = z.object({ currency_code: z.string().length(3), value: z.string() });
 
@@ -381,4 +382,31 @@ export async function createWebhook(pp: PayPalClient, url: string) {
 
 export async function listWebhooks(pp: PayPalClient) {
   return pp.request<{ webhooks?: Array<{ id: string; url: string }> }>("GET", "/v1/notifications/webhooks");
+}
+
+// ---------------------------------------------------------------------------
+// Disputes — seller actions (Disputes API v1)
+// ---------------------------------------------------------------------------
+
+
+/** The exact request each dispute action sends — shown to the merchant before approval. */
+export function buildDisputeRequest(a: DisputeAction) {
+  const base = `/v1/customer/disputes/${a.disputeId}`;
+  if (a.type === "MAKE_OFFER") {
+    return { method: "POST" as const, path: `${base}/make-offer`, contentType: "application/json", body: { note: a.note.slice(0, 2000), offer_type: "REFUND", offer_amount: { currency_code: a.currency, value: toDecimalString(a.amountMinor, a.currency) } } };
+  }
+  if (a.type === "PROVIDE_EVIDENCE") {
+    return { method: "POST" as const, path: `${base}/provide-evidence`, contentType: "multipart/form-data", body: { input: { evidences: [{ evidence_type: "PROOF_OF_FULFILLMENT", evidence_info: { tracking_info: [{ carrier_name: a.carrier, tracking_number: a.trackingNumber }] }, notes: a.note.slice(0, 2000) }] } } };
+  }
+  return { method: "POST" as const, path: `${base}/send-message`, contentType: "application/json", body: { message: a.message.slice(0, 2000) } };
+}
+
+export async function executeDisputeAction(pp: PayPalClient, a: DisputeAction, requestId: string) {
+  const req = buildDisputeRequest(a);
+  if (req.contentType === "multipart/form-data") {
+    const form = new FormData();
+    form.append("input", new Blob([JSON.stringify((req.body as { input: unknown }).input)], { type: "application/json" }), "input.json");
+    return pp.request("POST", req.path, { form, requestId });
+  }
+  return pp.request("POST", req.path, { body: req.body, requestId });
 }

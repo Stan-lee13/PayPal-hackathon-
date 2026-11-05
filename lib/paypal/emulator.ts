@@ -135,7 +135,11 @@ export const emulatorFetch: FetchLike = async (input, init) => {
   const headers = new Headers(init.headers);
   const s = state();
   if (path === "/v1/oauth2/token") return json(200, { access_token: "SIMULATED-TOKEN", expires_in: 32400, token_type: "Bearer" });
-  const body = init.body ? JSON.parse(String(init.body)) : {};
+  let body: Record<string, unknown> & { [k: string]: any } = {};
+  if (init.body instanceof FormData) {
+    const part = init.body.get("input");
+    body = part ? JSON.parse(typeof part === "string" ? part : await (part as Blob).text()) : {};
+  } else if (init.body) body = JSON.parse(String(init.body));
   const requestId = headers.get("PayPal-Request-Id");
   const mock = headers.get("PayPal-Mock-Response");
 
@@ -221,6 +225,24 @@ export const emulatorFetch: FetchLike = async (input, init) => {
   }
 
   // ---- Disputes
+  m = path.match(/^\/v1\/customer\/disputes\/([^/]+)\/(make-offer|provide-evidence|send-message)$/);
+  if (m && method === "POST") {
+    const ds = (state() as unknown as { disputes?: Map<string, Record<string, unknown>> }).disputes;
+    const d = ds?.get(m[1]!);
+    if (!d) return err(404, "RESOURCE_NOT_FOUND", "INVALID_RESOURCE_ID", "Dispute not found");
+    if (m[2] === "make-offer") {
+      if (d.dispute_life_cycle_stage !== "INQUIRY") return remember(422, { name: "UNPROCESSABLE_ENTITY", debug_id: "SIMULATED", details: [{ issue: "INVALID_STAGE", description: "Offers are only allowed in the INQUIRY stage" }] });
+      d.status = "WAITING_FOR_BUYER_RESPONSE";
+      d.offer = body.offer_amount;
+    } else if (m[2] === "provide-evidence") {
+      d.status = "UNDER_REVIEW";
+      d.evidences = body.evidences;
+    } else {
+      (d.messages as unknown[] | undefined)?.push(body.message) ?? (d.messages = [body.message]);
+    }
+    emit("CUSTOMER.DISPUTE.UPDATED", "dispute", d, "A dispute was updated");
+    return remember(200, { links: [{ rel: "self", href: `/v1/customer/disputes/${d.dispute_id}` }] });
+  }
   m = path.match(/^\/v1\/customer\/disputes\/([^/]+)$/);
   if (m && method === "GET") {
     const d = (state() as unknown as { disputes?: Map<string, unknown> }).disputes?.get(m[1]!);

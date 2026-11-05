@@ -31,6 +31,8 @@ export type EvalInput = {
   trackers: TrackerEvidence[];
   now: Date;
   policy: { shipAtRiskHours: number; refundAtRiskDays: number };
+  /** For mandates: what the merchant explicitly promised (from its own enforceable commitments). */
+  related?: { merchantQuotedMinor: number | null; merchantShipHours: number | null };
 };
 
 export type EvalResult = {
@@ -54,6 +56,8 @@ export function evaluate(input: EvalInput): EvalResult {
     case "PRICE_AS_QUOTED": return evalPrice(input);
     case "SHIP_BY": return evalShip(input);
     case "REFUND_BY": return evalRefund(input);
+    case "MANDATE_MAX_TOTAL": return evalMandateTotal(input);
+    case "MANDATE_SHIP_WITHIN": return evalShip({ ...input, params: { withinHours: input.params.withinHours } }, "mandate");
     default: return { state: "UNVERIFIABLE", reason: "No evaluation rule for this promise type.", dueAt: null, evaluation: {} };
   }
 }
@@ -95,6 +99,37 @@ function evalPrice(input: EvalInput): EvalResult {
   };
 }
 
+function evalMandateTotal(input: EvalInput): EvalResult {
+  const max = Number(input.params.maxMinor);
+  const currency = String(input.params.currency);
+  const inclusive = input.params.inclusive !== false;
+  if (!Number.isSafeInteger(max)) throw new Error("MANDATE_MAX_TOTAL without integer maxMinor");
+  const cap = input.capture;
+  if (!cap || !cap.verified || cap.status === "PENDING" || cap.status === "DECLINED" || cap.status === "FAILED") {
+    return { state: "PENDING", reason: "Waiting for a verified, final PayPal capture.", dueAt: null, evaluation: { maxMinor: max } };
+  }
+  if (cap.currency !== currency) return { state: "NEEDS_CONFIRMATION", reason: `Limit is in ${currency} but PayPal captured ${cap.currency}.`, dueAt: null, evaluation: { maxMinor: max } };
+  const within = (v: number) => (inclusive ? v <= max : v < max);
+  const refunded = completedRefundTotal(input.refunds, currency);
+  const net = cap.amountMinor - refunded;
+  const quoted = input.related?.merchantQuotedMinor ?? null;
+  // Who is accountable if the limit was exceeded: the agent (accepted an over-limit quote) or the merchant (quote was within, charge was not).
+  const attribution = within(cap.amountMinor) ? "NONE" : quoted === null ? "UNKNOWN" : within(quoted) ? "MERCHANT" : "AGENT";
+  const evaluation = { maxMinor: max, inclusive, capturedMinor: cap.amountMinor, refundedMinor: refunded, netMinor: net, merchantQuotedMinor: quoted, attribution };
+  const lim = `${inclusive ? "at most" : "under"} ${formatMoney(max, currency)}`;
+  if (within(cap.amountMinor)) return { state: "KEPT", reason: `Your agent's purchase (${formatMoney(cap.amountMinor, currency)}) respected your limit of ${lim}.`, dueAt: null, evaluation };
+  const blame = attribution === "MERCHANT" ? `Your agent was quoted ${formatMoney(quoted!, currency)} — within your limit — so the merchant's charge broke it, not your agent.`
+    : attribution === "AGENT" ? `Your agent accepted a quote of ${formatMoney(quoted!, currency)}, which was already over your limit.` : "";
+  return {
+    state: "BROKEN",
+    reason: within(net)
+      ? `PayPal captured ${formatMoney(cap.amountMinor, currency)}, over your limit of ${lim}; after confirmed refunds you paid ${formatMoney(net, currency)} — back within your limit. ${blame}`.trim()
+      : `PayPal captured ${formatMoney(cap.amountMinor, currency)}, over your limit of ${lim}. ${blame}`.trim(),
+    dueAt: null,
+    evaluation: { ...evaluation, madeGood: within(net) },
+  };
+}
+
 function shipDeadline(input: EvalInput): Date | null {
   if (typeof input.params.byDate === "string") return new Date(input.params.byDate);
   const hours = Number(input.params.withinHours);
@@ -102,7 +137,7 @@ function shipDeadline(input: EvalInput): Date | null {
   return new Date(input.capture.capturedAt.getTime() + hours * HOUR);
 }
 
-function evalShip(input: EvalInput): EvalResult {
+function evalShip(input: EvalInput, who: "merchant" | "mandate" = "merchant"): EvalResult {
   const cap = input.capture;
   if (!cap || !cap.verified || (cap.status !== "COMPLETED" && cap.status !== "PARTIALLY_REFUNDED")) {
     if (cap && (cap.status === "REFUNDED")) return { state: "WAIVED", reason: "Order fully refunded; shipping no longer due.", dueAt: null, evaluation: {} };
@@ -119,6 +154,10 @@ function evalShip(input: EvalInput): EvalResult {
       return { state: "KEPT", reason: `Tracking ${first.trackingNumber} was added to the PayPal order before the deadline (shows the parcel was reported shipped, not that it was delivered).`, dueAt: due, evaluation };
     }
     return { state: "BROKEN", reason: `Tracking was added ${hoursBetween(due, first.recordedAt)} after the shipping deadline.`, dueAt: due, evaluation };
+  }
+  if (who === "mandate") {
+    const mh = input.related?.merchantShipHours ?? null;
+    evaluation.attribution = mh === null ? "UNKNOWN" : mh <= Number(input.params.withinHours) ? "MERCHANT" : "AGENT";
   }
   const left = due.getTime() - input.now.getTime();
   if (left < 0) return { state: "BROKEN", reason: `No shipment tracking on the PayPal order and the deadline passed ${hoursBetween(due, input.now)} ago.`, dueAt: due, evaluation };

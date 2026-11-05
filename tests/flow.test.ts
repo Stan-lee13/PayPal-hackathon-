@@ -106,6 +106,46 @@ d("Kept end-to-end (emulated PayPal)", () => {
     await expect(remedies.approveRemedy(proposal!.id)).rejects.toThrow(/already/);
   });
 
+  it("agent-to-agent: shopper's agent clears the $84 quote against a $90 mandate; PayPal's $93.33 breaks both; blame goes to the merchant; refund makes both good", async () => {
+    const db = getDb();
+    const sessionId = await chat.createSession();
+    const run = await chat.runBuyerAgent(sessionId, "Buy me the Ada wrap dress. Keep the total under $90 and it must ship within 2 days.");
+    expect(run.verdict.decision).toBe("PROCEED");
+    expect(run.messages.some((m) => m.role === "agent")).toBe(true);
+    expect(run.messages.some((m) => m.role === "assistant" && m.text.includes("Your total is $84.00."))).toBe(true);
+    const { keptOrderId, paypalOrderId } = await orders.createOrderFromSession(sessionId);
+    emu.approveEmulatorOrder(paypalOrderId);
+    await orders.captureKeptOrder(keptOrderId, paypalOrderId);
+    await sim.deliverSimulatedEvents();
+    const cm = await commitmentsOf(keptOrderId);
+    expect(cm.MANDATE_MAX_TOTAL?.state).toBe("BROKEN");
+    expect(cm.MANDATE_MAX_TOTAL?.evaluation).toMatchObject({ attribution: "MERCHANT", capturedMinor: 9333, maxMinor: 9000 });
+    expect(cm.MANDATE_SHIP_WITHIN?.state).toBe("PENDING");
+    expect(cm.PRICE_AS_QUOTED?.state).toBe("BROKEN");
+    // the buyer agent's own lines are never merchant promises
+    const agentQuotes = await db.select().from(schema.commitments).where(eq(schema.commitments.orderId, keptOrderId));
+    expect(agentQuotes.every((c) => !c.quote.includes("AI shopping agent"))).toBe(true);
+    const rems = await db.select().from(schema.remedies).where(eq(schema.remedies.orderId, keptOrderId));
+    expect(rems).toHaveLength(1); // one fix (on the merchant's price promise), not one per breach
+    await remedies.approveRemedy(rems[0]!.id);
+    const after = await commitmentsOf(keptOrderId);
+    expect(after.MANDATE_MAX_TOTAL?.evaluation).toMatchObject({ netMinor: 8400, madeGood: true });
+  });
+
+  it("agent-to-agent: the agent's guard declines a quote over the mandate, and no order can be created", async () => {
+    const sessionId = await chat.createSession();
+    const run = await chat.runBuyerAgent(sessionId, "Buy me the Ada wrap dress. Keep the total under $80.");
+    expect(run.verdict.decision).toBe("DECLINE");
+    expect(run.verdict.checks.find((c) => c.check === "quoted_total_within_limit")?.ok).toBe(false);
+    await expect(orders.createOrderFromSession(sessionId)).rejects.toThrow(/not cleared/);
+  });
+
+  it("agent-to-agent: a mandate without a hard limit never pays", async () => {
+    const sessionId = await chat.createSession();
+    const run = await chat.runBuyerAgent(sessionId, "Get me something nice from Adaeze Studio, around $90.");
+    expect(run.verdict.decision).toBe("DECLINE");
+  });
+
   it("matching price: standard shipping $88.50 quoted and captured → KEPT, no remedy", async () => {
     const { reply, keptOrderId } = await placeOrder("STANDARD");
     expect(reply.text).toContain("Your total is $88.50.");
@@ -189,6 +229,48 @@ d("Kept end-to-end (emulated PayPal)", () => {
     await sim.deliverSimulatedEvents();
     const ds = await getDb().select().from(schema.disputes).where(eq(schema.disputes.orderId, keptOrderId));
     expect(ds[0]).toMatchObject({ reason: "MERCHANDISE_OR_SERVICE_NOT_RECEIVED", stage: "INQUIRY" });
+  });
+
+  it("dispute shield: 'not received' + tracker recorded before deadline → proof of fulfilment submitted via Disputes API after approval", async () => {
+    const { keptOrderId } = await placeOrder("EXPRESS");
+    await actions.addOrderTracking(keptOrderId, "DHL7654321", "DHL");
+    const db = getDb();
+    const o = (await db.query.orders.findFirst({ where: eq(schema.orders.id, keptOrderId) }))!;
+    const disputeId = emu.openEmulatorDispute(o.paypalCaptureId!, "MERCHANDISE_OR_SERVICE_NOT_RECEIVED");
+    await sim.deliverSimulatedEvents();
+    const [resp] = await db.select().from(schema.remedies).where(eq(schema.remedies.kind, "DISPUTE_OFFER"));
+    expect(resp?.disputeAction).toMatchObject({ type: "PROVIDE_EVIDENCE", disputeId, trackingNumber: "DHL7654321" });
+    expect(resp?.policyChecks.every((c) => c.ok)).toBe(true);
+    const done = await remedies.approveRemedy(resp!.id);
+    expect(done.state).toBe("COMPLETED");
+    const d = (await db.query.disputes.findFirst({ where: eq(schema.disputes.paypalDisputeId, disputeId) }))!;
+    expect(d.status).toBe("UNDER_REVIEW");
+  });
+
+  it("dispute shield: overcharge dispute → offer exactly the $9.33 difference (supersedes the pending refund proposal)", async () => {
+    const { keptOrderId } = await placeOrder("EXPRESS");
+    const db = getDb();
+    const o = (await db.query.orders.findFirst({ where: eq(schema.orders.id, keptOrderId) }))!;
+    const disputeId = emu.openEmulatorDispute(o.paypalCaptureId!, "INCORRECT_AMOUNT");
+    await sim.deliverSimulatedEvents();
+    const rows = await db.select().from(schema.remedies).where(eq(schema.remedies.orderId, keptOrderId));
+    const offer = rows.find((r) => r.kind === "DISPUTE_OFFER")!;
+    expect(offer.disputeAction).toMatchObject({ type: "MAKE_OFFER", amountMinor: 933, currency: "USD" });
+    expect(rows.find((r) => r.kind === "PARTIAL_REFUND")?.state).toBe("SUPERSEDED");
+    await remedies.approveRemedy(offer.id);
+    const d = (await db.query.disputes.findFirst({ where: eq(schema.disputes.paypalDisputeId, disputeId) }))!;
+    expect(d.status).toBe("WAITING_FOR_BUYER_RESPONSE");
+    expect(await db.select().from(schema.refunds).where(eq(schema.refunds.orderId, keptOrderId))).toHaveLength(0); // money only moves if the buyer accepts
+  });
+
+  it("dispute shield: 'not received' with no tracker → honest refund offer, not a fake defence", async () => {
+    const { keptOrderId } = await placeOrder("STANDARD");
+    const db = getDb();
+    const o = (await db.query.orders.findFirst({ where: eq(schema.orders.id, keptOrderId) }))!;
+    emu.openEmulatorDispute(o.paypalCaptureId!, "MERCHANDISE_OR_SERVICE_NOT_RECEIVED");
+    await sim.deliverSimulatedEvents();
+    const [offer] = await db.select().from(schema.remedies).where(eq(schema.remedies.kind, "DISPUTE_OFFER"));
+    expect(offer?.disputeAction).toMatchObject({ type: "MAKE_OFFER", amountMinor: 8850 });
   });
 
   it("reconciliation recovers a capture whose webhook never arrived", async () => {

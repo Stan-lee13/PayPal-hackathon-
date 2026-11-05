@@ -7,7 +7,7 @@ import { AutoRefresh } from "@/components/auto-refresh";
 
 export const metadata = { title: "Promises" };
 
-const TYPE: Record<string, string> = { PRICE_AS_QUOTED: "Price as quoted", SHIP_BY: "Ship by", REFUND_BY: "Refund by", OTHER: "Other" };
+const TYPE: Record<string, string> = { PRICE_AS_QUOTED: "Price as quoted", SHIP_BY: "Ship by", REFUND_BY: "Refund by", OTHER: "Other", MANDATE_MAX_TOTAL: "Shopper mandate · limit", MANDATE_SHIP_WITHIN: "Shopper mandate · shipping" };
 
 export default async function InboxPage() {
   const merchantId = (await currentMerchant())!;
@@ -36,7 +36,7 @@ export default async function InboxPage() {
           {rows.map(({ commitment: c, order: o, remedy }) => (
             <li key={c.id}>
               <Link href={`/merchant/orders/${o.id}#${c.id}`} className="grid gap-2 py-4 hover:bg-raised sm:grid-cols-[9rem_1fr_9rem_8rem] sm:items-center sm:gap-4 sm:px-2">
-                <span><StateSeal state={c.state} size="sm" /></span>
+                <span><StateSeal state={c.state} size="sm" madeGood={c.evaluation?.madeGood === true} /></span>
                 <span className="min-w-0">
                   <span className="eyebrow">{TYPE[c.type]}</span>
                   <span className="quote block truncate text-lg">&ldquo;{c.quote}&rdquo;</span>

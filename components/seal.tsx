@@ -10,8 +10,11 @@ const SEALS: Record<CommitmentState, { label: string; icon: string; cls: string;
   WAIVED: { label: "Waived", icon: "–", cls: "text-ink-soft bg-paper border-rule", desc: "Waived by the merchant" },
 };
 
-export function StateSeal({ state, size = "md", stamp = false }: { state: CommitmentState; size?: "sm" | "md" | "lg"; stamp?: boolean }) {
-  const s = SEALS[state];
+const MADE_GOOD = { label: "Broken · made good", icon: "↺", cls: "text-kept bg-kept-wash border-kept", desc: "The promise was broken; PayPal has confirmed the shortfall was refunded" };
+
+/** `madeGood` only applies to BROKEN: the state stays honest (it was broken) while showing the confirmed repair. */
+export function StateSeal({ state, size = "md", stamp = false, madeGood = false }: { state: CommitmentState; size?: "sm" | "md" | "lg"; stamp?: boolean; madeGood?: boolean }) {
+  const s = state === "BROKEN" && madeGood ? MADE_GOOD : SEALS[state];
   const pad = size === "lg" ? "px-3 py-1.5 text-sm" : size === "sm" ? "px-2 py-0.5 text-[0.7rem]" : "px-2.5 py-1 text-xs";
   return (
     <span title={s.desc} className={`inline-flex items-center gap-1.5 rounded-full border font-semibold uppercase tracking-wider whitespace-nowrap ${pad} ${s.cls} ${stamp ? "stamp" : ""}`}>

@@ -104,6 +104,8 @@ export async function processEvent(internalId: string): Promise<void> {
         .onConflictDoUpdate({ target: disputes.paypalDisputeId, set: { status: d.status, stage: d.stage, verifiedAt: new Date(), orderId } });
       if (order) {
         await audit(db, { merchantId: order.merchantId, orderId: order.id, actor: "paypal", action: "paypal.dispute.verified", ref: d.disputeId, outcome: "INFO", detail: { event: t, reason: d.reason, status: d.status, stage: d.stage } });
+        const { proposeDisputeResponse } = await import("./disputes");
+        await proposeDisputeResponse(order.id, d.disputeId);
       }
     } else {
       status = "IGNORED";

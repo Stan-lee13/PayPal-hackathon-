@@ -21,6 +21,9 @@ export async function GET(req: Request) {
       cart: session.cart,
       shipping: session.shippingOption,
       orderId: session.orderId,
+      mode: session.mode,
+      mandate: session.mandate,
+      verdict: session.agentVerdict,
       checkout: checkout && { itemTotalMinor: checkout.itemTotalMinor, shippingMinor: checkout.shippingMinor - checkout.promoMinor, totalMinor: checkout.totalMinor },
     });
   } catch (e) { return errorResponse(e); }

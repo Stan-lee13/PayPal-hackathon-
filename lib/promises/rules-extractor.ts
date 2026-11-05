@@ -48,6 +48,16 @@ export function extractWithRules(sources: SourceDoc[], orderCurrency: string): C
     for (const s of sentences(src)) {
       const base = { quote: s.text, source_id: src.id, span_start: s.start, span_end: s.start + s.text.length };
       const lower = s.text.toLowerCase();
+      if (src.kind === "USER_MANDATE") {
+        // a mandate sentence may carry both a budget and a shipping limit
+        if (findMoney(s.text).length > 0 && /\b(under|below|less than|no more than|at most|max|maximum|up to|not exceed|budget|cap|limit)\b/.test(lower)) {
+          out.push({ ...base, type: "MANDATE_MAX_TOTAL", params: { amount: findMoney(s.text)[0]!.amount, currency: orderCurrency }, confidence: 0.9, verifiable: true, reason: "shopper's spending limit" });
+        }
+        if (/\bship/.test(lower) && parseShipWindow(s.text.replace(/\bmust\b|\bhas to\b|\bneeds? to\b/gi, ""))) {
+          out.push({ ...base, type: "MANDATE_SHIP_WITHIN", params: {}, confidence: 0.9, verifiable: true, reason: "shopper's shipping limit" });
+        }
+        continue;
+      }
       const monies = findMoney(s.text);
       if (monies.length > 0 && src.kind === "CHAT_TRANSCRIPT") {
         const isTotal = /\btotal|all[- ]in|comes to\b/.test(lower);

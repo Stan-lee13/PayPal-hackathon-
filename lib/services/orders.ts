@@ -43,6 +43,9 @@ export async function createOrderFromSession(sessionId: string): Promise<{ keptO
   }
   const merchant = await db.query.merchants.findFirst({ where: eq(merchants.id, session.merchantId) });
   if (!merchant) throw new Error("merchant missing");
+  if (session.mode === "agent" && session.agentVerdict?.decision !== "PROCEED") {
+    throw new UserFacingError("Your agent has not cleared this purchase against your mandate.", 409);
+  }
   const price = checkoutPricing(lines, session.shippingOption);
   const keptOrderId = newId("ko");
   const transcript = serializeTranscript(session.messages);
@@ -70,6 +73,17 @@ export async function createOrderFromSession(sessionId: string): Promise<{ keptO
         title: `Sales chat ${session.id}`,
         text: transcript,
         sha256: createHash("sha256").update(transcript).digest("hex"),
+      });
+    }
+    if (session.mode === "agent" && session.mandate) {
+      await tx.insert(sources).values({
+        id: newId("src"),
+        merchantId: merchant.id,
+        orderId: keptOrderId,
+        kind: "USER_MANDATE",
+        title: "Shopper's mandate to their agent",
+        text: session.mandate,
+        sha256: createHash("sha256").update(session.mandate).digest("hex"),
       });
     }
     // Lock the conversation to this order: later messages cannot alter the evidence.

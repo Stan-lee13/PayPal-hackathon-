@@ -48,7 +48,7 @@ export async function cartLines(sessionId: string) {
   return { session: s, lines };
 }
 
-export async function postCustomerMessage(sessionId: string, text: string): Promise<{ reply: ChatMessage; messages: ChatMessage[] }> {
+export async function postCustomerMessage(sessionId: string, text: string, role: "customer" | "agent" = "customer"): Promise<{ reply: ChatMessage; messages: ChatMessage[] }> {
   const db = getDb();
   const { session, lines } = await cartLines(sessionId);
   if (session.orderId) throw new Error("This conversation is attached to a placed order and is now read-only.");
@@ -80,9 +80,46 @@ export async function postCustomerMessage(sessionId: string, text: string): Prom
     replyText = replyScripted(ctx);
   }
   const now = new Date().toISOString();
-  const customerMsg: ChatMessage = { role: "customer", text: clean, at: now };
+  const customerMsg: ChatMessage = { role, text: clean, at: now };
   const reply: ChatMessage = { role: "assistant", text: replyText, at: new Date().toISOString(), generatedBy };
   const messages = [...session.messages, customerMsg, reply];
   await db.update(chatSessions).set({ messages, updatedAt: new Date() }).where(eq(chatSessions.id, sessionId));
   return { reply, messages };
+}
+
+/**
+ * Agent-to-agent mode: the shopper's agent negotiates with the merchant's assistant.
+ * The decision to proceed is made by the deterministic guard, never by a model.
+ */
+export async function runBuyerAgent(sessionId: string, mandate: string) {
+  const db = getDb();
+  const s = await getSession(sessionId);
+  if (!s) throw new Error("unknown session");
+  if (s.orderId) throw new Error("This conversation already has an order.");
+  const clean = mandate.replace(/[\r\n]+/g, " ").trim().slice(0, 400);
+  const { readMandate, merchantTerms, guard, runClaudeAgent, runScriptedAgent } = await import("../ai/buyer-agent");
+  const terms = readMandate(clean, DEMO_MERCHANT.currency);
+  await db.update(chatSessions).set({ mode: "agent", mandate: clean, messages: [], cart: [], agentVerdict: null, updatedAt: new Date() }).where(eq(chatSessions.id, sessionId));
+  const prods = await activeProducts(s.merchantId);
+  const io = {
+    products: prods,
+    setCart: async (productId: string, qty: number, shipping: "STANDARD" | "EXPRESS") => { await setCart(sessionId, [{ productId, qty }], shipping); },
+    askMerchant: async (message: string) => (await postCustomerMessage(sessionId, message, "agent")).reply.text,
+  };
+  let narrative: string;
+  let by: "ai" | "scripted" = "scripted";
+  if (aiConfigured()) {
+    try { narrative = await runClaudeAgent(clean, io); by = "ai"; }
+    catch (e) {
+      await audit(db, { merchantId: s.merchantId, actor: "system", action: "buyer_agent.ai_failed_fallback_scripted", ref: sessionId, outcome: "FAILED", detail: { error: String(e).slice(0, 200) } });
+      narrative = await runScriptedAgent(clean, terms, io);
+    }
+  } else {
+    narrative = await runScriptedAgent(clean, terms, io);
+  }
+  const after = (await getSession(sessionId))!;
+  const verdict = guard(terms, merchantTerms(after.messages, DEMO_MERCHANT.currency), DEMO_MERCHANT.currency, by, narrative);
+  const closing: ChatMessage = { role: "agent", text: verdict.decision === "PROCEED" ? "Thank you — that meets my user's limits. My user will approve the payment in PayPal." : "Thank you — that does not meet my user's limits, so I won't proceed.", at: new Date().toISOString(), generatedBy: by };
+  await db.update(chatSessions).set({ agentVerdict: verdict, messages: [...after.messages, closing], updatedAt: new Date() }).where(eq(chatSessions.id, sessionId));
+  return { verdict, terms, messages: [...after.messages, closing] };
 }

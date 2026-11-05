@@ -16,7 +16,7 @@ import { formatMoney } from "../money";
 import { audit } from "./audit";
 
 /** Which sources can carry per-order promises (catalogue/promo/shipping policy copy are context only). */
-const PROMISE_SOURCE_KINDS = ["CHAT_TRANSCRIPT", "REFUND_POLICY"] as const;
+const PROMISE_SOURCE_KINDS = ["CHAT_TRANSCRIPT", "REFUND_POLICY", "USER_MANDATE"] as const;
 
 function toParams(p: NormalizedParams): Record<string, unknown> {
   const { kind: _kind, ...rest } = p as NormalizedParams & Record<string, unknown>;
@@ -107,6 +107,13 @@ export async function evaluateOrder(orderId: string): Promise<Commitment[]> {
   ]);
   const now = effectiveNow(merchant.demoClockOffsetMs);
   const needsRemedy: Commitment[] = [];
+  // What the merchant explicitly promised — used to attribute mandate breaches to merchant vs agent.
+  const prices = cms.filter((c) => c.type === "PRICE_AS_QUOTED" && c.enforceable && c.state !== "WAIVED");
+  const ships = cms.filter((c) => c.type === "SHIP_BY" && c.enforceable && c.state !== "WAIVED" && c.params.withinHours);
+  const related = {
+    merchantQuotedMinor: prices.length === 1 ? Number(prices[0]!.params.amountMinor) : null,
+    merchantShipHours: ships.length === 1 ? Number(ships[0]!.params.withinHours) : null,
+  };
   for (const c of cms) {
     const r = evaluate({
       type: c.type, params: c.params, enforceable: c.enforceable, currentState: c.state,
@@ -115,6 +122,7 @@ export async function evaluateOrder(orderId: string): Promise<Commitment[]> {
       trackers: trks.map((t) => ({ trackingNumber: t.trackingNumber, recordedAt: t.recordedAt })),
       now,
       policy: merchant.policy,
+      related,
     });
     const changed = r.state !== c.state || r.reason !== c.stateReason || JSON.stringify(r.evaluation) !== JSON.stringify(c.evaluation ?? {});
     if (changed) {
@@ -125,7 +133,9 @@ export async function evaluateOrder(orderId: string): Promise<Commitment[]> {
       }
     }
     const outstanding = Number(r.evaluation.outstandingMinor ?? 0);
-    const needs = (r.state === "BROKEN" && (c.type !== "PRICE_AS_QUOTED" || outstanding > 0)) || r.state === "AT_RISK";
+    // Mandates never get their own remedy: the fix is on the merchant promise that caused the breach.
+    const isMandate = c.type === "MANDATE_MAX_TOTAL" || c.type === "MANDATE_SHIP_WITHIN";
+    const needs = !isMandate && ((r.state === "BROKEN" && (c.type !== "PRICE_AS_QUOTED" || outstanding > 0)) || r.state === "AT_RISK");
     if (needs) needsRemedy.push({ ...c, state: r.state, stateReason: r.reason, evaluation: r.evaluation, dueAt: r.dueAt });
   }
   return needsRemedy;

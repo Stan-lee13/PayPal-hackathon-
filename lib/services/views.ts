@@ -73,6 +73,7 @@ export async function getReceipt(token: string) {
     remedies: b.remedies.filter((r) => r.state !== "SUPERSEDED").map((r) => ({ id: r.id, kind: r.kind, state: r.state, amountMinor: r.amountMinor, currency: r.currency, customerMessage: r.state === "PROPOSED" ? null : r.customerMessage, refundId: r.paypalRefundId, decidedAt: r.decidedAt, completedAt: r.completedAt })),
     refunds: b.refunds.map((r) => ({ id: r.paypalRefundId, amountMinor: r.amountMinor, currency: r.currency, status: r.status, statusReason: r.statusReason, verifiedAt: r.verifiedAt })),
     trackers: b.trackers.map((t) => ({ carrier: t.carrier, trackingNumber: t.trackingNumber, recordedAt: t.recordedAt })),
+    disputes: b.disputes.map((d) => ({ id: d.paypalDisputeId, reason: d.reason, status: d.status, stage: d.stage })),
     timeline: customerActions.map((a) => ({ at: a.createdAt, action: a.action, outcome: a.outcome, detail: a.detail })),
     now,
     simulatedClock: b.merchant.demoClockOffsetMs !== 0,
@@ -82,5 +83,5 @@ export async function getReceipt(token: string) {
 const CUSTOMER_VISIBLE_ACTIONS = new Set([
   "order.created", "paypal.order.created", "paypal.capture.verified", "promises.extracted", "commitment.state_changed",
   "remedy.proposed", "remedy.approved", "remedy.rejected", "paypal.refund.requested", "paypal.refund.verified", "paypal.refund.failed",
-  "paypal.tracking.added", "paypal.dispute.verified",
+  "paypal.tracking.added", "paypal.dispute.verified", "dispute.response_approved", "paypal.dispute_action.accepted",
 ]);

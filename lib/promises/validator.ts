@@ -161,6 +161,15 @@ export function validateCandidate(c: Candidate, ctx: ValidateContext): Validated
     }
   }
 
+  // 3b. who may make which commitment: merchant promises only from merchant sources,
+  //     mandates only from the shopper's own instruction to their agent.
+  const isMandate = c.type === "MANDATE_MAX_TOTAL" || c.type === "MANDATE_SHIP_WITHIN";
+  const fromMandate = src!.kind === "USER_MANDATE";
+  if (!add("commitment_from_right_party", isMandate === fromMandate, isMandate ? (fromMandate ? "shopper's own mandate" : "a mandate must come from the shopper's instruction") : fromMandate ? "a merchant promise cannot come from the shopper's mandate" : "merchant source")) {
+    return reject(isMandate ? "A mandate can only come from the shopper's own instruction." : "The shopper's instruction is not a merchant promise.");
+  }
+  if (isMandate) return validateMandate(c, ctx, checks, add, start, end);
+
   const needsConfirmation = (summary: string, params: NormalizedParams = { kind: "NONE" }): ValidatedPromise =>
     ({ candidate: c, outcome: "NEEDS_CONFIRMATION", enforceable: false, params, spanStart: start, spanEnd: end, checks, summary });
 
@@ -260,7 +269,7 @@ export function validateAll(cands: Candidate[], ctx: ValidateContext): Validated
     seen.add(k);
     return true;
   });
-  for (const type of ["PRICE_AS_QUOTED", "SHIP_BY", "REFUND_BY"] as const) {
+  for (const type of ["PRICE_AS_QUOTED", "SHIP_BY", "REFUND_BY", "MANDATE_MAX_TOTAL", "MANDATE_SHIP_WITHIN"] as const) {
     const enf = unique.filter((v) => v.enforceable && v.candidate.type === type);
     const distinct = new Set(enf.map((v) => JSON.stringify(v.params)));
     if (distinct.size > 1) {
@@ -273,4 +282,42 @@ export function validateAll(cands: Candidate[], ctx: ValidateContext): Validated
     }
   }
   return unique;
+}
+
+const MANDATE_HEDGES = ["about", "around", "roughly", "approximately", "or so", "ish", "give or take", "ideally", "preferably", "if possible", "try to"];
+
+/** Shopper → agent mandate: "keep the total under $90", "it must ship within 2 days". */
+export function validateMandate(c: Candidate, ctx: ValidateContext, checks: ValidationCheck[], add: (check: string, ok: boolean, detail: string) => boolean, start: number, end: number): ValidatedPromise {
+  const q = ` ${c.quote.toLowerCase()} `;
+  const hedge = MANDATE_HEDGES.find((h) => q.includes(` ${h} `) || q.includes(` ${h},`));
+  add("unambiguous_mandate", !hedge, hedge ? `soft limit ("${hedge}")` : "hard limit");
+  let params: NormalizedParams = { kind: "NONE" };
+  let ok = !hedge;
+  let why = hedge ? `Soft preference ("${hedge}") — not a hard limit for the agent.` : "";
+  if (c.type === "MANDATE_MAX_TOTAL") {
+    const monies = findMoney(c.quote);
+    add("single_amount", monies.length === 1, `${monies.length} amount(s)`);
+    const strict = /\b(under|below|less than)\b/.test(q);
+    const inclusive = /\b(no more than|at most|max|maximum|up to|not exceed|not to exceed|budget|cap|limit|tops)\b/.test(q);
+    add("limit_semantics", strict || inclusive, strict ? "strict upper limit" : inclusive ? "inclusive upper limit" : "no limit wording");
+    if (monies.length !== 1) { ok = false; why ||= "The mandate must name exactly one amount."; }
+    if (!strict && !inclusive) { ok = false; why ||= "No clear spending limit wording."; }
+    const m = monies[0];
+    if (m) {
+      const cur = m.currency === "USD?" ? (ctx.orderCurrency === "USD" ? "USD" : null) : m.currency;
+      if (!add("currency_matches_order", cur === ctx.orderCurrency, `mandate ${m.currency ?? "unknown"} vs order ${ctx.orderCurrency}`)) { ok = false; why ||= "Mandate currency differs from the order."; }
+      try {
+        const minor = toMinor(m.amount, ctx.orderCurrency);
+        if (cur === ctx.orderCurrency) params = { kind: "MANDATE_MAX_TOTAL", maxMinor: minor, currency: ctx.orderCurrency, inclusive: !strict };
+      } catch { ok = false; why ||= "Amount unreadable."; }
+    }
+  } else {
+    const win = parseShipWindow(c.quote.replace(/\bmust\b|\bhas to\b|\bneeds? to\b/gi, ""));
+    if (win && "hours" in win) { add("window_derived_from_quote", true, `${win.hours}h`); params = { kind: "MANDATE_SHIP_WITHIN", withinHours: win.hours }; }
+    else { add("deadline_interpretable", false, win && "ambiguous" in win ? win.ambiguous : "no window"); ok = false; why ||= "Shipping limit cannot be interpreted."; }
+  }
+  const confOk = add("confidence_threshold", c.confidence >= ctx.minConfidence, `${c.confidence.toFixed(2)} vs ${ctx.minConfidence}`);
+  const base = { candidate: c, params, spanStart: start, spanEnd: end, checks };
+  if (!ok || !confOk) return { ...base, outcome: "NEEDS_CONFIRMATION", enforceable: false, summary: why || "Extractor confidence below threshold." };
+  return { ...base, outcome: "ENFORCEABLE", enforceable: true, summary: "The shopper's hard limit for their agent; Kept checks the PayPal result against it." };
 }

@@ -24,6 +24,7 @@ export function RemedySheet({ remedy: r, preview, discrepancyLabel, reviewThresh
   const [simulate, setSimulate] = useState<"" | "REFUND_FAILED_INSUFFICIENT_FUNDS" | "REFUND_PENDING">("");
   const policyOk = r.policyChecks.every((c) => c.ok);
   const isRefund = r.kind === "PARTIAL_REFUND" || r.kind === "FULL_REFUND";
+  const isDispute = r.kind === "DISPUTE_OFFER";
   const large = isRefund && (r.amountMinor ?? 0) > reviewThresholdMinor;
   const act = async (fn: () => Promise<unknown>) => {
     setBusy(true); setErr(null);
@@ -38,7 +39,7 @@ export function RemedySheet({ remedy: r, preview, discrepancyLabel, reviewThresh
       </div>
       <div className="mt-2 grid gap-4 lg:grid-cols-2">
         <div className="space-y-2 text-sm">
-          <p className="text-lg font-semibold">{kindLabel(r.kind)} {isRefund && <span className="money">{usd(r.amountMinor, r.currency)}</span>}</p>
+          <p className="text-lg font-semibold">{kindLabel(r.kind)} {(isRefund || (isDispute && r.amountMinor)) && <span className="money">{usd(r.amountMinor, r.currency)}</span>}</p>
           {discrepancyLabel && <p>Deterministic outstanding overcharge: <span className="money font-semibold">{discrepancyLabel}</span> <span className="text-ink-soft">(computed by code, not by AI)</span></p>}
           <p className="text-ink-soft">{r.rationale}</p>
           <details>
@@ -47,7 +48,7 @@ export function RemedySheet({ remedy: r, preview, discrepancyLabel, reviewThresh
           </details>
           {r.state === "PROPOSED" ? (
             <>
-              <label className="block font-semibold" htmlFor={`msg-${r.id}`}>Message to the customer (editable)</label>
+              <label className="block font-semibold" htmlFor={`msg-${r.id}`}>{isDispute ? "Note to PayPal and the buyer (editable)" : "Message to the customer (editable)"}</label>
               <textarea id={`msg-${r.id}`} className="field min-h-24" value={message} maxLength={600} onChange={(e) => setMessage(e.target.value)} />
             </>
           ) : <p className="quote">&ldquo;{r.customerMessage}&rdquo;</p>}
@@ -55,9 +56,10 @@ export function RemedySheet({ remedy: r, preview, discrepancyLabel, reviewThresh
           {r.errorCode && <p className="text-xs text-broken">PayPal error: <span className="mono">{r.errorCode}</span> {r.errorDetail}</p>}
         </div>
         <div className="text-sm">
-          {isRefund && preview ? (
+          {(isRefund || isDispute) && preview ? (
             <>
-              <p className="eyebrow">Exact PayPal request on approval</p>
+              <p className="eyebrow">Exact PayPal {isDispute ? "Disputes API " : ""}request on approval</p>
+              {isDispute && <p className="mb-1 text-xs text-ink-soft">Sent to PayPal&rsquo;s Disputes API. An offer moves money only if the buyer accepts it; PayPal then reports the refund.</p>}
               <pre className="mono mt-1 overflow-x-auto rounded border border-rule bg-raised p-3 text-xs">{JSON.stringify(preview, null, 2)}</pre>
             </>
           ) : !isRefund ? <p className="text-ink-soft">This remedy moves no money. Approving records the decision and shows the message on the customer&rsquo;s receipt (Kept does not send email).</p> : null}
@@ -76,7 +78,7 @@ export function RemedySheet({ remedy: r, preview, discrepancyLabel, reviewThresh
               <div className="flex flex-wrap gap-2">
                 <button className="btn btn-primary" disabled={busy || !policyOk || (large && !ack) || !message.trim()}
                   onClick={() => act(() => post(`/api/merchant/remedies/${r.id}/approve`, { customerMessage: message, acknowledgeLarge: ack, simulate: simulate || undefined }))}>
-                  {busy ? "Working…" : isRefund ? `Approve & refund ${usd(r.amountMinor, r.currency)}` : "Approve"}
+                  {busy ? "Working…" : isRefund ? `Approve & refund ${usd(r.amountMinor, r.currency)}` : isDispute ? "Approve & send to PayPal" : "Approve"}
                 </button>
                 <button className="btn" disabled={busy} onClick={() => act(() => post(`/api/merchant/remedies/${r.id}/reject`, { note: "" }))}>Reject</button>
               </div>
@@ -91,7 +93,7 @@ export function RemedySheet({ remedy: r, preview, discrepancyLabel, reviewThresh
 }
 
 function kindLabel(k: string) {
-  return ({ PARTIAL_REFUND: "Partial refund", FULL_REFUND: "Full refund", ADD_TRACKING_REMINDER: "Add tracking", MESSAGE_ONLY: "Message only", DISPUTE_OFFER: "Dispute offer" } as Record<string, string>)[k] ?? k;
+  return ({ PARTIAL_REFUND: "Partial refund", FULL_REFUND: "Full refund", ADD_TRACKING_REMINDER: "Add tracking", MESSAGE_ONLY: "Message only", DISPUTE_OFFER: "PayPal dispute response" } as Record<string, string>)[k] ?? k;
 }
 
 function label(r: RemedyView) {
@@ -99,7 +101,7 @@ function label(r: RemedyView) {
     case "PROPOSED": return "Awaiting your decision";
     case "EXECUTING": return "Sent to PayPal — awaiting confirmation";
     case "PENDING": return "PayPal reports PENDING — not completed";
-    case "COMPLETED": return r.kind.includes("REFUND") ? "Refund COMPLETED — confirmed by PayPal" : "Done";
+    case "COMPLETED": return r.kind.includes("REFUND") ? "Refund COMPLETED — confirmed by PayPal" : r.kind === "DISPUTE_OFFER" ? `Accepted by PayPal — dispute now ${r.paypalRefundStatus ?? ""}` : "Done";
     case "FAILED": return "FAILED at PayPal";
     case "REJECTED": return "Rejected by you";
     default: return r.state;

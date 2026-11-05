@@ -6,7 +6,9 @@ import { PayPalButtons, PayPalScriptProvider } from "@paypal/react-paypal-js";
 
 type Product = { id: string; name: string; description: string; priceMinor: number; currency: string; swatch: string; imageAlt: string; inStock: number };
 type Ship = "STANDARD" | "EXPRESS";
-type Msg = { role: "customer" | "assistant"; text: string; at: string; generatedBy?: "ai" | "scripted" };
+type Msg = { role: "customer" | "assistant" | "agent"; text: string; at: string; generatedBy?: "ai" | "scripted" };
+type Verdict = { decision: "PROCEED" | "DECLINE"; checks: Array<{ check: string; ok: boolean; detail: string }>; summary: string; by: "ai" | "scripted" } | null;
+const DEFAULT_MANDATE = "Buy me the Ada wrap dress. Keep the total under $90 and it must ship within 2 days.";
 type Checkout = { itemTotalMinor: number; shippingMinor: number; totalMinor: number } | null;
 
 const usd = (m: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(m / 100);
@@ -37,11 +39,16 @@ export function Storefront(props: {
   const [receiptUrl, setReceiptUrl] = useState<string | null>(null);
   const [simApproval, setSimApproval] = useState<{ keptOrderId: string; paypalOrderId: string } | null>(null);
   const keptOrderRef = useRef<string | null>(null);
+  const [mode, setMode] = useState<"customer" | "agent">("customer");
+  const [mandate, setMandate] = useState(DEFAULT_MANDATE);
+  const [verdict, setVerdict] = useState<Verdict>(null);
   const logRef = useRef<HTMLDivElement>(null);
 
   const refresh = useCallback(async (id: string) => {
-    const s = await api<{ messages: Msg[]; cart: Array<{ productId: string; qty: number }>; shipping: Ship; orderId: string | null; checkout: Checkout }>(`/api/chat/session?id=${id}`, undefined, "GET");
+    const s = await api<{ messages: Msg[]; cart: Array<{ productId: string; qty: number }>; shipping: Ship; orderId: string | null; checkout: Checkout; mode: "customer" | "agent"; mandate: string | null; verdict: Verdict }>(`/api/chat/session?id=${id}`, undefined, "GET");
     setMessages(s.messages);
+    if (s.mode === "agent") { setMode("agent"); if (s.mandate) setMandate(s.mandate); }
+    setVerdict(s.verdict);
     setCartState(Object.fromEntries(s.cart.map((c) => [c.productId, c.qty])));
     setShip(s.shipping);
     setCheckout(s.checkout);
@@ -52,7 +59,7 @@ export function Storefront(props: {
     const { sessionId: id } = await api<{ sessionId: string }>("/api/chat/session");
     try { localStorage.setItem(SESSION_KEY, id); } catch { /* storage unavailable */ }
     setSessionId(id);
-    setMessages([]); setCartState({}); setCheckout(null); setReceiptUrl(null); keptOrderRef.current = null;
+    setMessages([]); setCartState({}); setCheckout(null); setReceiptUrl(null); setVerdict(null); keptOrderRef.current = null;
     return id;
   }, []);
 
@@ -95,6 +102,23 @@ export function Storefront(props: {
     finally { setBusy(false); }
   }
 
+  async function sendAgent() {
+    if (!sessionId) return;
+    setBusy(true); setError(null); setVerdict(null); setMessages([]);
+    try {
+      const r = await api<{ messages: Msg[]; verdict: Verdict }>("/api/agent/run", { sessionId, mandate });
+      setMessages(r.messages); setVerdict(r.verdict);
+      await refresh(sessionId);
+    } catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); }
+  }
+
+  async function switchMode(next: "customer" | "agent") {
+    if (next === mode) return;
+    setMode(next);
+    if (messages.length > 0 || lines.length > 0) await newSession();
+  }
+
   async function createOrder(): Promise<string> {
     setError(null);
     const r = await api<{ id: string; keptOrderId: string }>("/api/orders", { sessionId });
@@ -123,6 +147,16 @@ export function Storefront(props: {
         </div>
         <Link href="/" className="text-sm underline">About Kept</Link>
       </header>
+
+      {!receiptUrl && (
+        <div role="tablist" aria-label="How to shop" className="mt-6 inline-flex rounded-lg border border-rule p-1">
+          {(["customer", "agent"] as const).map((m) => (
+            <button key={m} role="tab" aria-selected={mode === m} onClick={() => void switchMode(m)} className={`rounded-md px-4 py-2 text-sm font-semibold ${mode === m ? "bg-accent text-accent-ink" : "text-ink-soft"}`}>
+              {m === "customer" ? "Shop myself" : "Send my AI agent"}
+            </button>
+          ))}
+        </div>
+      )}
 
       {receiptUrl ? (
         <section className="paper mt-8 p-6" aria-live="polite">
@@ -188,8 +222,9 @@ export function Storefront(props: {
                   </>}
                 </dl>
               )}
-              {lines.length > 0 && sessionId && (
+              {lines.length > 0 && sessionId && (mode === "customer" || verdict?.decision === "PROCEED") && (
                 <div className="mt-4">
+                  {mode === "agent" && <p className="mb-2 text-xs text-ink-soft">Your agent cleared this purchase against your mandate. You still approve the payment yourself.</p>}
                   {props.mode === "simulated" ? (
                     <button className="btn btn-primary w-full" disabled={busy} onClick={async () => {
                       try { setBusy(true); const id = await createOrder(); setSimApproval({ keptOrderId: keptOrderRef.current!, paypalOrderId: id }); }
@@ -209,21 +244,37 @@ export function Storefront(props: {
           </section>
 
           <section aria-labelledby="chat-h" className="paper flex min-h-[28rem] flex-col">
-            <div className="rule-b p-4">
-              <h2 id="chat-h" className="font-semibold">Ask our assistant</h2>
+            {mode === "agent" && (
+              <div className="rule-b space-y-2 p-4">
+                <h2 id="chat-h" className="font-semibold">Your agent&rsquo;s mandate</h2>
+                <p className="text-xs text-ink-soft">Your own AI agent negotiates with Adaeze Studio&rsquo;s assistant. It can only proceed if every hard limit you set is met — checked by code, not by the model. Kept keeps your words and the merchant&rsquo;s words as evidence.</p>
+                <label htmlFor="mandate" className="sr-only">Mandate</label>
+                <textarea id="mandate" className="field min-h-20 quote text-base" value={mandate} maxLength={400} onChange={(e) => setMandate(e.target.value)} disabled={busy} />
+                <button className="btn btn-primary w-full" disabled={busy || !sessionId || mandate.trim().length < 8} onClick={() => void sendAgent()}>{busy ? "Your agent is negotiating…" : "Send my agent"}</button>
+              </div>
+            )}
+            <div className={`rule-b p-4 ${mode === "agent" ? "hidden" : ""}`}>
+              <h2 id={mode === "agent" ? undefined : "chat-h"} className="font-semibold">Ask our assistant</h2>
               <p className="text-xs text-ink-soft">{props.aiEnabled ? "AI assistant (Claude). It may only use Adaeze Studio's published information." : "Scripted demo assistant (no AI key configured) — grounded in the same published information."} Kept saves this conversation as evidence when you pay.</p>
             </div>
             <div ref={logRef} className="flex-1 space-y-3 overflow-y-auto p-4" aria-live="polite" aria-label="Conversation">
               {messages.length === 0 && <p className="text-sm text-ink-soft">Try: <em>&ldquo;What&rsquo;s my total with express shipping?&rdquo;</em></p>}
               {messages.map((m, i) => (
-                <div key={i} className={m.role === "customer" ? "ml-8 text-right" : "mr-8"}>
-                  <p className="text-[0.7rem] uppercase tracking-wider text-ink-soft">{m.role === "customer" ? "You" : `Adaeze Studio ${m.generatedBy === "scripted" ? "assistant (scripted)" : "assistant"}`}</p>
-                  <p className={`mt-0.5 inline-block rounded-lg px-3 py-2 text-left ${m.role === "customer" ? "bg-accent text-accent-ink" : "quote border border-rule bg-paper text-[1.05rem]"}`}>{m.text}</p>
+                <div key={i} className={m.role !== "assistant" ? "ml-8 text-right" : "mr-8"}>
+                  <p className="text-[0.7rem] uppercase tracking-wider text-ink-soft">{m.role === "customer" ? "You" : m.role === "agent" ? `Your AI agent${m.generatedBy === "scripted" ? " (scripted)" : ""}` : `Adaeze Studio ${m.generatedBy === "scripted" ? "assistant (scripted)" : "assistant"}`}</p>
+                  <p className={`mt-0.5 inline-block rounded-lg px-3 py-2 text-left ${m.role !== "assistant" ? "bg-accent text-accent-ink" : "quote border border-rule bg-paper text-[1.05rem]"}`}>{m.text}</p>
                 </div>
               ))}
               {busy && <p className="text-sm text-ink-soft">Assistant is typing…</p>}
             </div>
-            <form className="rule-t flex gap-2 p-3" onSubmit={(e) => { e.preventDefault(); void send(draft); }}>
+            {mode === "agent" && verdict && (
+              <div className={`rule-t p-4 text-sm ${verdict.decision === "PROCEED" ? "bg-kept-wash" : "bg-broken-wash"}`} aria-live="polite">
+                <p className={`eyebrow ${verdict.decision === "PROCEED" ? "text-kept" : "text-broken"}`}>Mandate check (deterministic) · {verdict.decision === "PROCEED" ? "cleared" : "declined"}</p>
+                <ul className="mt-1 space-y-0.5">{verdict.checks.map((c, i) => <li key={i}><span aria-hidden="true">{c.ok ? "✓" : "✕"}</span><span className="sr-only">{c.ok ? "passed" : "failed"}</span> {c.detail}</li>)}</ul>
+                <p className="mt-2">{verdict.summary}</p>
+              </div>
+            )}
+            <form className={`rule-t flex gap-2 p-3 ${mode === "agent" ? "hidden" : ""}`} onSubmit={(e) => { e.preventDefault(); void send(draft); }}>
               <label htmlFor="chat-in" className="sr-only">Message</label>
               <input id="chat-in" className="field" value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="Ask about price, shipping, returns…" maxLength={600} disabled={!sessionId || busy} />
               <button className="btn btn-primary" disabled={!sessionId || busy || !draft.trim()}>Send</button>

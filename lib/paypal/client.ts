@@ -54,6 +54,8 @@ export function paypalBaseUrl(env: "sandbox" | "live"): string {
 
 type RequestOptions = {
   body?: unknown;
+  /** multipart/form-data body (e.g. Disputes provide-evidence). Mutually exclusive with body. */
+  form?: FormData;
   requestId?: string;
   prefer?: "return=representation" | "return=minimal";
   /** Sandbox negative testing only (PayPal-Mock-Response). Ignored on live. */
@@ -125,7 +127,8 @@ export class PayPalClient {
 
   private async once<T>(method: string, path: string, opts: RequestOptions): Promise<T> {
     const token = await this.getAccessToken();
-    const headers: Record<string, string> = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+    const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
+    if (!opts.form) headers["Content-Type"] = "application/json";
     if (opts.requestId) headers["PayPal-Request-Id"] = opts.requestId;
     if (opts.prefer) headers["Prefer"] = opts.prefer;
     if (opts.mockResponse && this.cfg.env === "sandbox") {
@@ -135,7 +138,7 @@ export class PayPalClient {
     const res = await this.fetchImpl(`${this.baseUrl}${path}${qs}`, {
       method,
       headers,
-      body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
+      body: opts.form ?? (opts.body === undefined ? undefined : JSON.stringify(opts.body)),
     });
     const text = await res.text();
     const json = text ? safeJson(text) : {};

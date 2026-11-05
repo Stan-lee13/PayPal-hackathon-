@@ -10,7 +10,7 @@ import { AutoRefresh } from "@/components/auto-refresh";
 export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "Your receipt", robots: { index: false, follow: false } };
 
-const TYPE_LABEL: Record<string, string> = { PRICE_AS_QUOTED: "Price", SHIP_BY: "Shipping", REFUND_BY: "Refund", OTHER: "Other" };
+const TYPE_LABEL: Record<string, string> = { PRICE_AS_QUOTED: "Price", SHIP_BY: "Shipping", REFUND_BY: "Refund", OTHER: "Other", MANDATE_MAX_TOTAL: "Your spending limit", MANDATE_SHIP_WITHIN: "Your shipping limit" };
 
 function moneyWhere(r: NonNullable<Awaited<ReturnType<typeof getReceipt>>>) {
   const o = r.order;
@@ -32,6 +32,7 @@ export default async function ReceiptPage({ params }: { params: Promise<{ token:
   const o = r.order;
   const cur = o.captureCurrency ?? o.currency;
   const refundRemedies = r.remedies.filter((x) => x.kind === "PARTIAL_REFUND" || x.kind === "FULL_REFUND");
+  const disputeResponses = r.remedies.filter((x) => x.kind === "DISPUTE_OFFER" && x.state !== "PROPOSED");
   const messages = r.remedies.filter((x) => x.customerMessage && x.state !== "REJECTED");
 
   return (
@@ -60,8 +61,8 @@ export default async function ReceiptPage({ params }: { params: Promise<{ token:
             {r.promises.map((p) => (
               <li key={p.id} className="paper p-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span className="eyebrow">{TYPE_LABEL[p.type]} · {p.sourceKind === "CHAT_TRANSCRIPT" ? "said in chat" : p.sourceKind === "REFUND_POLICY" ? "refund policy" : "merchant source"}</span>
-                  <StateSeal state={p.state} size="sm" />
+                  <span className="eyebrow">{TYPE_LABEL[p.type]} · {p.sourceKind === "CHAT_TRANSCRIPT" ? "said in chat" : p.sourceKind === "REFUND_POLICY" ? "refund policy" : p.sourceKind === "USER_MANDATE" ? "your instruction to your agent" : "merchant source"}</span>
+                  <StateSeal state={p.state} size="sm" madeGood={(p.evaluation as Record<string, unknown> | null)?.madeGood === true} />
                 </div>
                 <blockquote className="quote mt-2 text-lg">&ldquo;{p.quote}&rdquo;</blockquote>
                 <p className="mt-1 text-sm text-ink-soft">{p.reason}</p>
@@ -84,6 +85,7 @@ export default async function ReceiptPage({ params }: { params: Promise<{ token:
                     {m.state === "COMPLETED" && "approved by the merchant and confirmed COMPLETED by PayPal."}
                     {m.state === "FAILED" && "PayPal did not complete this refund. The merchant has been alerted."}
                     {m.state === "REJECTED" && "the merchant chose a different resolution."}
+                  {m.state === "SUPERSEDED" && "replaced by the merchant's response to your PayPal dispute."}
                   </p>
                   {m.refundId && <p className="mt-1 text-ink-soft">PayPal refund ID <span className="mono">{m.refundId}</span></p>}
                 </li>
@@ -92,6 +94,14 @@ export default async function ReceiptPage({ params }: { params: Promise<{ token:
                 <li key={`msg-${m.id}`} className="rule-t pt-3 text-sm"><p className="eyebrow">Message from {r.merchantName}</p><p className="quote mt-1 text-base">{m.customerMessage}</p></li>
               ))}
             </ul>
+          </section>
+        )}
+
+        {r.disputes.length > 0 && (
+          <section className="mt-8" aria-labelledby="disp-h">
+            <h2 id="disp-h" className="eyebrow">Your PayPal dispute</h2>
+            {r.disputes.map((d) => <p key={d.id} className="mt-2 text-sm">Dispute <span className="mono">{d.id}</span> ({d.reason?.toLowerCase().replace(/_/g, " ")}) — PayPal status <strong>{d.status}</strong>, stage {d.stage}.</p>)}
+            {disputeResponses.map((x) => <p key={x.id} className="mt-1 text-sm text-ink-soft">The merchant responded through PayPal{x.amountMinor ? <> with a refund offer of <Money minor={x.amountMinor} currency={x.currency} /> (money moves only if you accept it in PayPal)</> : ""}.</p>)}
           </section>
         )}
 
@@ -141,6 +151,8 @@ function describe(action: string, d: Record<string, unknown>): string {
     case "paypal.refund.failed": return "PayPal did not complete a refund.";
     case "paypal.tracking.added": return "Shipment tracking was added to your PayPal order.";
     case "paypal.dispute.verified": return "A PayPal dispute was recorded on this order.";
+    case "dispute.response_approved": return "The merchant approved a response to your dispute.";
+    case "paypal.dispute_action.accepted": return `PayPal accepted the merchant's dispute response (dispute now ${d.disputeStatus}).`;
     default: return action;
   }
 }

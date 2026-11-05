@@ -65,7 +65,21 @@ const c32 = chat([["assistant", "That'll be $84 total, give or take."]]);
 const c33 = chat([["assistant", "Your total is 84 dollars."]]);
 const c34 = chat([["assistant", "Your total is $84.00. Your order ships within 48 hours. We'll sort you out if anything goes wrong."]]);
 
+export function mandateDoc(text: string, id = "src_mandate"): SourceDoc {
+  return { id, kind: "USER_MANDATE", title: "Mandate", text, merchantId: MERCHANT, orderId: ORDER };
+}
+const m1 = mandateDoc("Buy me the Ada wrap dress. Keep the total under $90 and it must ship within 2 days.");
+const m2 = mandateDoc("Spend around $90 on a dress.");
+const m3 = mandateDoc("No more than $90 all in.");
+const m4 = mandateDoc("Ideally ship within 2 days.");
+
 export const GOLDEN: GoldenCase[] = [
+  { name: "mandate: strict budget + shipping limit", sources: [m1], candidates: [cand(m1, "MANDATE_MAX_TOTAL", "Keep the total under $90 and it must ship within 2 days.", { amount: "90" }), cand(m1, "MANDATE_SHIP_WITHIN", "Keep the total under $90 and it must ship within 2 days.")], expect: [{ outcome: "ENFORCEABLE", params: { maxMinor: 9000, inclusive: false } }, { outcome: "ENFORCEABLE", params: { withinHours: 48 } }] },
+  { name: "mandate: soft budget 'around'", sources: [m2], candidates: [cand(m2, "MANDATE_MAX_TOTAL", "Spend around $90 on a dress.", { amount: "90" })], expect: [{ outcome: "NEEDS_CONFIRMATION" }] },
+  { name: "mandate: inclusive 'no more than'", sources: [m3], candidates: [cand(m3, "MANDATE_MAX_TOTAL", "No more than $90 all in.", { amount: "90" })], expect: [{ outcome: "ENFORCEABLE", params: { maxMinor: 9000, inclusive: true } }] },
+  { name: "mandate: soft shipping 'ideally'", sources: [m4], candidates: [cand(m4, "MANDATE_SHIP_WITHIN", "Ideally ship within 2 days.")], expect: [{ outcome: "NEEDS_CONFIRMATION" }] },
+  { name: "mandate cannot come from the merchant's chat", sources: [c1], candidates: [cand(c1, "MANDATE_MAX_TOTAL", "Your total is $84.00.", { amount: "84" })], expect: [{ outcome: "REJECTED" }] },
+  { name: "merchant promise cannot come from the shopper's mandate", sources: [m3], candidates: [cand(m3, "PRICE_AS_QUOTED", "No more than $90 all in.", { amount: "90" })], expect: [{ outcome: "REJECTED" }] },
   { name: "explicit total with cents", sources: [c1], candidates: [cand(c1, "PRICE_AS_QUOTED", "Your total is $84.00.", { amount: "84.00", currency: "USD", scope: "ORDER_TOTAL" })], expect: [{ outcome: "ENFORCEABLE", params: { amountMinor: 8400, currency: "USD" } }] },
   { name: "explicit total without cents", sources: [c2], candidates: [cand(c2, "PRICE_AS_QUOTED", "Your total is $84.", { amount: "84" })], expect: [{ outcome: "ENFORCEABLE", params: { amountMinor: 8400 } }] },
   { name: "approximate 'about'", sources: [c3], candidates: [cand(c3, "PRICE_AS_QUOTED", "It's about $84 all in.", { amount: "84" })], expect: [{ outcome: "NEEDS_CONFIRMATION" }] },
