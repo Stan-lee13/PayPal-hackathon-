@@ -498,6 +498,35 @@ d("Kept end-to-end (emulated PayPal)", () => {
       expect(trail).toEqual(expect.arrayContaining(["preflight.verdict", "checkout.corrected", "capture.requested"]));
     });
 
+    it("Intelligence figures equal database aggregates (prevention + recovery), with no invented rows", async () => {
+      const { promiseAnalytics } = await import("../lib/services/analytics");
+      // prevention: blocked → corrected → captured at $84.00
+      const a = await approvedOrder("EXPRESS");
+      await blocked(orders.captureKeptOrder(a.keptOrderId, a.paypalOrderId));
+      const { paypalOrderId: fixed } = await orders.correctBlockedOrder(a.keptOrderId, (await orderRow(a.keptOrderId)).merchantId);
+      emu.approveEmulatorOrder(fixed);
+      await orders.captureKeptOrder(a.keptOrderId, fixed);
+      // recovery: captured outside Kept at $93.33, refund approved and confirmed
+      const b = await sim.seedExternalCapturedOrder();
+      const [rem] = await db().select().from(schema.remedies).where(eq(schema.remedies.orderId, b.keptOrderId));
+      await remedies.approveRemedy(rem!.id);
+      await sim.deliverSimulatedEvents(); await pipeline.afterPaymentEvidence(a.keptOrderId);
+      const [m] = await db().select().from(schema.merchants);
+      const d = await promiseAnalytics(m!.id);
+      const sum = <T,>(rows: T[], f: (r: T) => number) => Math.round(rows.reduce((x, r) => x + f(r), 0) * 100) / 100;
+      expect(sum(d.preflights, (p) => p.stoppedBeforeCapture)).toBe(9.33);          // the over-charge Kept refused to capture
+      expect(sum(d.preflights, (p) => p.blocked)).toBe(1);           // only the protected checkout counts as blocked
+      expect(sum(d.preflights, (p) => p.recordedMismatch)).toBe(1);  // the external capture: recorded, not stoppable
+      expect(sum(d.refunds, (r) => r.completed)).toBe(9.33);
+      expect(d.orders.map((o) => o.channel).sort()).toEqual(["Kept protected checkout", "Outside Kept's checkout"]);
+      const dbPromises = await db().select().from(schema.commitments);
+      expect(d.promises).toHaveLength(dbPromises.length);
+      expect(d.promises.every((p) => dbPromises.some((c) => c.id === p.id))).toBe(true);
+      const dbChecks = await db().select().from(schema.preflights);
+      expect(d.preflights.map((p) => p.id).sort()).toEqual(dbChecks.map((p) => p.id).sort());
+      expect(new Set(d.orders.map((o) => o.currency))).toEqual(new Set(["USD"]));
+    });
+
     it("repair path is separate: an order captured OUTSIDE Kept's checkout is only monitored, then repaired", async () => {
       const { keptOrderId } = await sim.seedExternalCapturedOrder();
       const o = await orderRow(keptOrderId);

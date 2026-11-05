@@ -7,17 +7,17 @@
  */
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   ClientSideRowModelModule, ColumnAutoSizeModule, DateFilterModule, NumberFilterModule, QuickFilterModule,
-  TextFilterModule, CellStyleModule, TooltipModule, RowStyleModule, themeQuartz,
+  TextFilterModule, CellStyleModule, TooltipModule, RowStyleModule, PaginationModule, ColumnApiModule, themeQuartz,
   type ColDef, type ICellRendererParams, type ValueFormatterParams,
 } from "ag-grid-community";
 import { AgGridProvider, AgGridReact } from "ag-grid-react";
 import { StateSeal } from "./seal";
 import type { CommitmentState } from "@/lib/db/schema";
 
-const modules = [ClientSideRowModelModule, TextFilterModule, NumberFilterModule, DateFilterModule, QuickFilterModule, ColumnAutoSizeModule, CellStyleModule, TooltipModule, RowStyleModule];
+const modules = [ClientSideRowModelModule, TextFilterModule, NumberFilterModule, DateFilterModule, QuickFilterModule, ColumnAutoSizeModule, CellStyleModule, TooltipModule, RowStyleModule, PaginationModule, ColumnApiModule];
 
 const theme = themeQuartz.withParams({
   fontFamily: "var(--font-sans)",
@@ -43,6 +43,7 @@ const when = (v: unknown) => (typeof v === "string" ? v.slice(0, 16).replace("T"
 export type PromiseRow = {
   id: string; orderId: string; state: CommitmentState; madeGood: boolean; type: string; typeLabel: string; quote: string; reason: string;
   source: string; customer: string; amountMinor: number | null; gapMinor: number | null; currency: string; dueAt: string | null; remedy: string | null; createdAt: string;
+  promisedMinor: number | null; actualMinor: number | null; verifiedBy: string; updatedAt: string;
 };
 export type OrderRow = {
   id: string; createdAt: string; customer: string; email: string; status: string; capturedMinor: number | null; refundedMinor: number; currency: string;
@@ -59,7 +60,7 @@ const OrderLink = ({ id }: { id: string | null }) => (id ? <Link className="mono
 
 function promiseColumns(): ColDef<PromiseRow>[] {
   return [
-    { field: "state", headerName: "Seal", width: 185, sort: "asc", filter: "agTextColumnFilter",
+    { field: "state", headerName: "Seal", width: 215, sort: "asc", filter: "agTextColumnFilter",
       comparator: (a, b) => (STATE_PRIORITY[a] ?? 9) - (STATE_PRIORITY[b] ?? 9),
       cellRenderer: (p: ICellRendererParams<PromiseRow>) => p.data ? <StateSeal state={p.data.state} size="sm" madeGood={p.data.madeGood} /> : null },
     { field: "quote", headerName: "Promise", flex: 2, minWidth: 300,
@@ -70,6 +71,11 @@ function promiseColumns(): ColDef<PromiseRow>[] {
           <span className="block truncate text-xs text-ink-soft">{p.data.reason}</span>
         </div>) : null },
     { field: "source", headerName: "Said in", hide: true },
+    { field: "promisedMinor", headerName: "Promised", width: 110, type: "rightAligned", filter: "agNumberColumnFilter", cellClass: "money", valueFormatter: (p: ValueFormatterParams<PromiseRow>) => money(p.value, p.data?.currency) },
+    { field: "actualMinor", headerName: "Actual (PayPal)", width: 130, type: "rightAligned", filter: "agNumberColumnFilter", cellClass: "money", valueFormatter: (p: ValueFormatterParams<PromiseRow>) => money(p.value, p.data?.currency) },
+    { field: "currency", headerName: "Currency", width: 100, hide: true },
+    { field: "verifiedBy", headerName: "Verified against", width: 170, hide: true },
+    { field: "updatedAt", headerName: "Last updated (UTC)", width: 150, cellClass: "mono text-xs", valueFormatter: (p) => when(p.value), hide: true },
     { field: "customer", headerName: "Order", width: 170,
       cellRenderer: (p: ICellRendererParams<PromiseRow>) => p.data ? <div className="flex h-full flex-col justify-center leading-tight"><span className="block">{p.data.customer}</span><OrderLink id={p.data.orderId} /></div> : null },
     { field: "amountMinor", headerName: "Charged", width: 110, hide: true, type: "rightAligned", filter: "agNumberColumnFilter", cellClass: "money",
@@ -112,20 +118,40 @@ function activityColumns(): ColDef<ActivityRow>[] {
   ];
 }
 
+const LABELS: Record<string, string> = {};
 export function LedgerGrid(props: Kind & { searchLabel?: string; pageSize?: number }) {
   const router = useRouter();
   const [search, setSearch] = useState("");
+  const grid = useRef<AgGridReact<Record<string, unknown>>>(null);
+  const [, force] = useState(0);
   const columnDefs = useMemo(() => (props.kind === "promises" ? promiseColumns() : props.kind === "orders" ? orderColumns() : activityColumns()), [props.kind]);
   const onRowClicked = (orderId: string | null | undefined) => { if (orderId) router.push(`/merchant/orders/${orderId}`); };
 
   return (
     <div className="mt-4 space-y-2">
-      <input type="search" className="field max-w-sm" value={search} onChange={(e) => setSearch(e.target.value)}
-        placeholder={props.searchLabel ?? "Search every column…"} aria-label={props.searchLabel ?? "Search every column"} />
+      <div className="flex flex-wrap items-center gap-2">
+        <input type="search" className="field max-w-sm" value={search} onChange={(e) => setSearch(e.target.value)}
+          placeholder={props.searchLabel ?? "Search every column…"} aria-label={props.searchLabel ?? "Search every column"} />
+        <details className="relative text-sm">
+          <summary className="btn min-h-9 cursor-pointer list-none px-3 py-1">Columns</summary>
+          <div className="paper absolute z-20 mt-1 w-56 space-y-1 p-3">
+            {(columnDefs as ColDef[]).filter((c) => c.field).map((c) => {
+              const col = grid.current?.api?.getColumn(c.field!);
+              const visible = col ? col.isVisible() : !c.hide;
+              return <label key={c.field} className="flex items-center gap-2"><input type="checkbox" checked={visible} onChange={(e) => { grid.current?.api?.setColumnsVisible([c.field!], e.target.checked); force((n) => n + 1); }} /> {c.headerName ?? LABELS[c.field!] ?? c.field}</label>;
+            })}
+          </div>
+        </details>
+        <span className="text-xs text-ink-soft">{props.rows.length} row{props.rows.length === 1 ? "" : "s"}</span>
+      </div>
       <AgGridProvider modules={modules}>
         {/* Generic over three row shapes; each column set is typed above. */}
         <AgGridReact<Record<string, unknown>>
+          ref={grid}
           theme={theme}
+          pagination={props.rows.length > (props.pageSize ?? 25)}
+          paginationPageSize={props.pageSize ?? 25}
+          paginationPageSizeSelector={[25, 50, 100]}
           rowData={props.rows as unknown as Record<string, unknown>[]}
           columnDefs={columnDefs as unknown as ColDef<Record<string, unknown>>[]}
           defaultColDef={{ filter: true, sortable: true, resizable: true }}

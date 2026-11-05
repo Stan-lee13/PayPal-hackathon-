@@ -27,7 +27,10 @@ export default async function InboxPage() {
       id: c.id, orderId: o.id, state: c.state, madeGood: ev.madeGood === true, type: c.type, typeLabel: TYPE[c.type] ?? c.type, quote: c.quote, reason: c.stateReason ?? "",
       source: sourceKind ? SOURCE[sourceKind] ?? sourceKind : "—", customer: o.buyerFirstName ?? "Customer",
       amountMinor: o.captureAmountMinor ?? o.requestedTotalMinor, gapMinor: gap, currency: o.captureCurrency ?? o.currency,
-      dueAt: c.dueAt?.toISOString() ?? null, createdAt: c.createdAt.toISOString(),
+      dueAt: c.dueAt?.toISOString() ?? null, createdAt: c.createdAt.toISOString(), updatedAt: c.updatedAt.toISOString(),
+      promisedMinor: typeof ev.promisedMinor === "number" ? ev.promisedMinor : typeof ev.maxMinor === "number" ? ev.maxMinor : null,
+      actualMinor: typeof ev.netMinor === "number" ? ev.netMinor : typeof ev.capturedMinor === "number" ? ev.capturedMinor : null,
+      verifiedBy: c.type === "PRICE_AS_QUOTED" || c.type === "MANDATE_MAX_TOTAL" ? "PayPal capture + refunds (GET)" : c.type === "SHIP_BY" || c.type === "MANDATE_SHIP_WITHIN" ? "PayPal order tracking" : c.type === "REFUND_BY" ? "PayPal refunds (GET)" : "Not checkable against PayPal",
       remedy: remedy ? (remedy.state === "PROPOSED" ? "Remedy awaiting approval" : `Remedy ${remedy.state.toLowerCase()}`) : null,
     };
   });
