@@ -22,6 +22,8 @@ const sim = await import("../lib/services/simulation");
 const webhooks = await import("../lib/services/webhooks");
 const views = await import("../lib/services/views");
 const emu = await import("../lib/paypal/emulator");
+const ppApi = await import("../lib/paypal/api");
+const { getPayPal } = await import("../lib/paypal/client");
 
 async function placeOrder(shipping: "EXPRESS" | "STANDARD", question = "What's my total with shipping?") {
   const sessionId = await chat.createSession();
@@ -241,6 +243,11 @@ d("Kept end-to-end (emulated PayPal)", () => {
     const [resp] = await db.select().from(schema.remedies).where(eq(schema.remedies.kind, "DISPUTE_OFFER"));
     expect(resp?.disputeAction).toMatchObject({ type: "PROVIDE_EVIDENCE", disputeId, trackingNumber: "DHL7654321" });
     expect(resp?.policyChecks.every((c) => c.ok)).toBe(true);
+    // nothing is sent to the Disputes API until the merchant approves
+    expect(resp?.state).toBe("PROPOSED");
+    const before = (await db.query.disputes.findFirst({ where: eq(schema.disputes.paypalDisputeId, disputeId) }))!;
+    expect(before.status).not.toBe("UNDER_REVIEW");
+    expect((await ppApi.getDispute(getPayPal(), disputeId)).status).not.toBe("UNDER_REVIEW");
     const done = await remedies.approveRemedy(resp!.id);
     expect(done.state).toBe("COMPLETED");
     const d = (await db.query.disputes.findFirst({ where: eq(schema.disputes.paypalDisputeId, disputeId) }))!;

@@ -56,6 +56,48 @@ The other scenarios are covered by tests and reachable in the UI:
 
 ---
 
+## Agent-to-agent commerce: "Send my AI agent"
+
+AI agents are starting to buy on people's behalf. When the shopper's agent talks to the merchant's agent, two sets of promises matter:
+
+- what the **merchant's agent** said ("Your total is $84.00");
+- what the **shopper told their own agent** ("Keep the total under $90 and it must ship within 2 days").
+
+Kept treats both as evidence.
+
+1. On `/store`, choose **Send my AI agent** and write a mandate. The shopper's agent (Claude with tools, or a labelled scripted fallback) picks the product and shipping, and asks the merchant's assistant for a total and a ship time.
+2. **A deterministic guard, not the model, is the only thing that can clear the purchase.** It checks four things:
+   - the mandate has a hard limit;
+   - the merchant committed to an explicit total in writing;
+   - the quoted total is within the limit (strict for "under", inclusive for "no more than");
+   - the merchant's shipping promise is within the limit.
+
+   If any check fails, the result is DECLINE and no pay button appears. If all pass, the shopper still approves the payment in PayPal themselves. The agent never holds credentials or moves money.
+3. The mandate is stored as an immutable `USER_MANDATE` source. It becomes `MANDATE_MAX_TOTAL` and `MANDATE_SHIP_WITHIN` commitments, which go through the same validator:
+   - mandates can only come from the shopper's words;
+   - merchant promises can never come from them.
+4. After capture, the evaluator checks the mandate against PayPal's records and **attributes fault**:
+   - **merchant**: the agent was quoted within the limit, but PayPal captured more;
+   - **agent**: the agent accepted an over-limit quote.
+5. A mandate has no remedy of its own. It is made good through the merchant promise it depends on. In the demo, the $9.33 refund brings the net back to $84.00, and the mandate shows **Broken · made good**.
+
+## Dispute shield
+
+When PayPal reports a dispute (`CUSTOMER.DISPUTE.CREATED`, re-fetched with `GET /v1/customer/disputes/{id}`), Kept already has the promise ledger. It proposes a response chosen by **deterministic rules**:
+
+| Situation (from PayPal records) | Proposed response | PayPal Disputes API call |
+|---|---|---|
+| "Not received", with a tracker PayPal recorded | Proof of fulfilment (carrier + tracking number + factual note) | `POST /v1/customer/disputes/{id}/provide-evidence` (multipart) |
+| "Not received", no tracker, inquiry stage | Refund offer of the remaining refundable amount | `POST …/make-offer` (`offer_type: REFUND`) |
+| Price promise BROKEN and not yet made good, inquiry stage | Refund offer of **exactly** the deterministic overcharge | `POST …/make-offer` |
+| Anything else (e.g. already refunded) | A factual message citing the promises and PayPal records | `POST …/send-message` |
+
+- **Every response is a remedy.** It is policy-checked, shown with the exact Disputes API request, editable, and sent **only after the merchant approves it**.
+- **An offer moves no money by itself.** Money moves only if the buyer accepts it in PayPal. Kept then reports the refund PayPal records.
+- **Supersession.** A dispute response supersedes any still-PROPOSED remedy on the same promise, so the buyer is never paid twice.
+
+---
+
 ## Quick start (local, no credentials needed)
 
 Requirements: Node 20.11+ and PostgreSQL 14+. A throwaway local Postgres 16 helper is included.
@@ -178,7 +220,9 @@ lib/promises/ transcript.ts · rules-extractor.ts · llm-extractor.ts (Claude, s
 lib/ledger/   evaluator.ts   — pure, deterministic state machine (no I/O, no AI, integer money)
 lib/policy/   engine.ts      — deterministic remedy validation
 lib/ai/       assistant.ts (sales chat, quote tool) · remedy-agent.ts (read-only tools → propose_remedy)
-lib/services/ orders · ledger · remedies · webhooks · pipeline (reconcile) · merchant-actions · views · chat
+              buyer-agent.ts (shopper's agent + deterministic mandate guard)
+lib/services/ orders · ledger · remedies · disputes (dispute shield) · webhooks · pipeline (reconcile)
+              merchant-actions · views · chat
 lib/db/       Drizzle schema (Postgres) — drizzle/ holds migrations
 ```
 
@@ -191,6 +235,8 @@ lib/db/       Drizzle schema (Postgres) — drizzle/ holds migrations
 | Discrepancy, deadlines, states | **Deterministic evaluator** (integer minor units) |
 | Remedy wording | AI agent (read-only tools) or rules |
 | Whether a remedy is allowed | **Policy engine** (type allowed, amount ≤ computed discrepancy, ≤ remaining refundable, ≤ policy cap, currency, capture refundable, no other remedy live) — checked at proposal *and* again at approval |
+| Whether a shopper's agent may proceed to payment | **Deterministic mandate guard**; the shopper still approves in PayPal |
+| Which dispute response to propose | **Deterministic rules** over PayPal records and the ledger |
 | Whether money moves | **The merchant**, with an explicit click, after seeing the exact PayPal request |
 
 **Promise validation.** An extracted promise is enforceable only if **all** of the following hold. Otherwise it is *needs confirmation*, *unverifiable* (OTHER), or *rejected* (not anchored to a real source; never stored).
@@ -249,11 +295,12 @@ lib/db/       Drizzle schema (Postgres) — drizzle/ holds migrations
 ```bash
 npm test                 # unit + golden set + end-to-end flow (needs TEST_DATABASE_URL; uses the emulator)
 npm run lint             # TypeScript strict type-check
-node scripts/e2e-ui.mjs  # Playwright drive of the full demo against a running instance (BASE_URL, MERCHANT_PASSCODE)
+node scripts/e2e-ui.mjs     # Playwright drive of the full demo against a running instance (BASE_URL, MERCHANT_PASSCODE)
+node scripts/e2e-agent.mjs  # Playwright drive of the agent-to-agent demo (declined mandate, cleared mandate, refund, receipt)
 npm run eval:extraction  # runs the REAL Claude extractor over the golden set (needs ANTHROPIC_API_KEY)
 ```
 
-- **Golden set** (`tests/fixtures/golden-promises.ts`): 33 adversarial cases (39 assertions). Covers:
+- **Golden set** (`tests/fixtures/golden-promises.ts`): 39 adversarial cases (46 assertions), including 6 shopper-mandate cases. Covers:
   - "about/up to/usually";
   - item price vs total;
   - £ vs a USD order;
@@ -269,7 +316,8 @@ npm run eval:extraction  # runs the REAL Claude extractor over the golden set (n
   - conflicting totals;
   - low confidence;
   - foreign-order sources;
-  - wrong spans.
+  - wrong spans;
+  - mandates: strict ("under") vs inclusive ("no more than") limits, hedged mandates ("around", "ideally"), a mandate claimed from the merchant's chat, and a merchant promise claimed from the shopper's mandate.
 
   The bar: ≥90% correct and **zero** false or fabricated enforceable promises.
 - **End-to-end flow** (`tests/flow.test.ts`, real Postgres + emulator):
@@ -283,7 +331,9 @@ npm run eval:extraction  # runs the REAL Claude extractor over the golden set (n
   - invalid signature;
   - custom_id binding;
   - disputes;
-  - lost-webhook reconciliation.
+  - lost-webhook reconciliation;
+  - agent-to-agent: mandate cleared, then broken by the capture, blamed on the merchant, and made good by the refund; over-limit quote declined before payment; no payment without a PROCEED verdict;
+  - dispute shield: proof of fulfilment submitted after approval; refund offer for a broken price promise; no Disputes API call without approval.
 
 ---
 
@@ -298,6 +348,8 @@ npm run eval:extraction  # runs the REAL Claude extractor over the golden set (n
 - **The golden set was written alongside the validator.** It is a regression and adversarial suite, not an independent benchmark. `eval:extraction` measures the real LLM extractor.
 - **Single-merchant demo.** There is no production authentication, multi-tenancy, email sending, or chargeback representment.
 - **Simulated mode.** The emulator's PayPal fee figures are illustrative. Simulated events are unsigned and only accepted in simulated mode.
+- **Disputes API calls are emulator-tested only.** The `make-offer`, `provide-evidence` and `send-message` request shapes follow PayPal's Disputes API reference. They have not been exercised against a real sandbox dispute yet.
+- **Agent mode is a demo of the pattern, not an agent-payments protocol.** The shopper's agent talks to the merchant's assistant inside this app. Kept does not implement an external agent-payments protocol. The PayPal Agent Toolkit was evaluated and not used: its dependencies conflicted with this stack, and Kept needs its own idempotency and verification around every PayPal call.
 - **AI choice.** Claude is called through the official Anthropic SDK (not the Vercel AI SDK suggested in the original spec), so structured outputs and refusal fallbacks are first-class. Default model: `claude-opus-5-5`. Set `KEPT_AI_MODEL=claude-haiku-5-5` for a lower cost per call.
 
 ## Licence
