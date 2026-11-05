@@ -356,6 +356,13 @@ export const aiCache = pgTable("ai_cache", {
   createdAt: ts("created_at").notNull().defaultNow(),
 });
 
+/** Simulated PayPal state, persisted only when KEPT_EMULATOR_PERSIST=1 (serverless hosts). */
+export const emulatorState = pgTable("emulator_state", {
+  id: text("id").primaryKey(),
+  state: jsonb("state").$type<Record<string, unknown>>().notNull(),
+  updatedAt: ts("updated_at").notNull().defaultNow(),
+});
+
 export const rateLimits = pgTable("rate_limits", {
   key: text("key").primaryKey(),
   windowStart: ts("window_start").notNull(),

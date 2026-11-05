@@ -9,7 +9,8 @@ export async function POST(req: Request) {
     if (paypalMode() !== "simulated") throw new UserFacingError("Not available: real PayPal mode.", 404);
     const b = z.object({ paypalOrderId: z.string().startsWith("SIM") }).parse(await req.json());
     const { approveEmulatorOrder } = await import("@/lib/paypal/emulator");
-    approveEmulatorOrder(b.paypalOrderId);
+    const { withEmulatorState } = await import("@/lib/paypal/emulator-store");
+    await withEmulatorState(() => approveEmulatorOrder(b.paypalOrderId));
     return json({ ok: true });
   } catch (e) { return errorResponse(e); }
 }

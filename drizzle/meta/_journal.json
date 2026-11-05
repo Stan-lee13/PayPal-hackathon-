@@ -36,6 +36,13 @@
       "when": 1793900000000,
       "tag": "0004_ai_budget_cache",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1793910000000,
+      "tag": "0005_emulator_state",
+      "breakpoints": true
     }
   ]
 }
