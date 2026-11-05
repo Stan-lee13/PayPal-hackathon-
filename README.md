@@ -23,7 +23,10 @@ Product research and rationale: [`docs/PRODUCT_DISCOVERY.md`](docs/PRODUCT_DISCO
 
 | Part | Status |
 |---|---|
-| Full loop in simulated mode (labelled local PayPal emulator) | **Ran.** 98 automated tests (`npm test`), plus three Playwright browser runs of the demo: `scripts/e2e-ui.mjs`, `e2e-agent.mjs` and `e2e-dispute.mjs` |
+| Full loop in simulated mode (labelled local PayPal emulator) | **Ran.** 129 automated tests (`npm test`), plus three Playwright browser runs of the demo: `scripts/e2e-ui.mjs`, `e2e-agent.mjs` and `e2e-dispute.mjs` |
+| Tamper-evident evidence packs | **Ran.** A real downloaded pack verifies offline with `scripts/verify-evidence.ts`, and an edited copy is rejected at the exact entry |
+| MCP promise-record server | **Ran.** The official MCP TypeScript SDK client (1.32.2) connects, lists the tool and calls it (`scripts/mcp-check.mjs`) |
+| AI-vs-rules evaluation | **Rules ran:** 3 of 11 harder promises found, 4 of 4 controls, 0 false promises on 8 traps. A correct extraction passes the validator for all 11. **Claude: not yet run** (`npm run eval:ai` with a key). Results: [`docs/evidence/ai-eval-results.json`](docs/evidence/ai-eval-results.json) |
 | PayPal sandbox: OAuth endpoint | **Reached.** It correctly rejected placeholder credentials |
 | PayPal sandbox: orders, capture, refund, tracking, Disputes API, signed webhooks | **Not yet run.** Needs the owner's sandbox credentials. `scripts/sandbox-smoke.ts` is the first step |
 | Claude (assistant, extractor, shopper agent, remedy agent) | **Not yet run live.** Labelled deterministic fallbacks are used. `npm run eval:extraction` measures the real extractor |
@@ -89,6 +92,64 @@ Either outcome is audited and appears on the customer's receipt. The test suite 
   - a per-promise table.
 
   The merchant can switch to **Edit** and build their own widgets from the same data. Colours are deliberately non-semantic, because AG Studio assigns them by category order. Without an `AG_STUDIO` licence key it runs in evaluation mode (watermark).
+
+## Where the AI earns its place: the evaluation
+
+The demo runs without an API key, so here is the honest question: what does Claude add over the rules? [`tests/fixtures/ai-eval.ts`](tests/fixtures/ai-eval.ts) has 20 cases of three kinds:
+
+- **Beyond the rules:** 8 cases, 11 promises. Real promises the rules extractor misses:
+  - a total and a shipping time in one sentence;
+  - a second amount in the sentence;
+  - "posted" or "send it out" instead of "ship";
+  - a refund promise after a price;
+  - Nigerian Pidgin ("Your total na $84.00, and we go ship am within 48 hours").
+- **Controls:** 4 plain promises both should find.
+- **Traps:** 8 statements that must never become promises:
+  - customer words;
+  - "should", "I think", "maybe";
+  - Pidgin "e fit ship" (fit = can/might);
+  - "plus shipping";
+  - pounds on a dollar order;
+  - prompt injection.
+
+`npm test` checks every premise before any model runs. A correct extraction passes the validator in every "beyond" case, the rules really do miss each one, the rules find every control, and every careless extraction of a trap is blocked. `npm run eval:ai` then runs rules and Claude through the same validator.
+
+| | Beyond-rules promises | Controls | False promises on traps |
+|---|---|---|---|
+| Validator ceiling (perfect extraction) | 11/11 | 4/4 | 0 |
+| Rules extractor | **3/11** | 4/4 | 0 |
+| Claude | *not yet run* | | |
+
+**The evaluation found a real bug.** Before it existed, "I think it ships within 48 hours", "Maybe your total go be $84.00" and "E fit ship within 48 hours" were accepted as enforceable promises. The validator now treats opinion words and the Pidgin modal "fit" as hedges. The Claude extractor's prompt was revised at the same time with general guidance (one candidate per promise, clause-level quotes, Pidgin hedges). Pidgin cases were written by the developer and should be reviewed by a native speaker.
+
+## Tamper-evident evidence
+
+- **Hash-chained audit log.** Every audit entry is linked to the one before it by SHA-256. There is one chain per order (`lib/ledger/chain.ts`), and merchant-level entries share one. Editing, deleting or reordering any past entry breaks every hash after it. A per-chain advisory lock and a unique `(merchant, order, seq)` index make a forked chain impossible; a test with 25 concurrent writers checks this.
+- **Evidence pack.** The order ledger offers **Download evidence pack**: one JSON file with:
+  - the fingerprinted sources (chat, mandate and the policies behind each promise);
+  - every promise and how it was judged;
+  - the PayPal-confirmed facts and the remedies;
+  - the chain itself.
+
+  `npx tsx scripts/verify-evidence.ts pack.json` re-verifies it offline, with no database or server.
+- **External anchors.** A chain alone can't prove that the newest entries weren't cut off, so Kept hands its head hash to others:
+  - the customer's receipt shows the current **evidence fingerprint**;
+  - dispute evidence that Kept sends to PayPal includes it, so a third party holds an anchor of the record.
+
+## A promise record for shoppers' AI agents (MCP)
+
+- **What it is.** Before an AI agent buys, it can check how often the shop keeps its word.
+- **How it's computed.** Only from outcomes that deterministic code judged against PayPal records:
+  - kept as promised, made good, or still broken, overall and per promise type;
+  - small samples and simulated data flagged;
+  - every order's audit chain re-verified on each request.
+
+  It contains aggregates only, with no customer, order or chat data.
+- **Where to get it:**
+  - **MCP** (Streamable HTTP, stateless): `POST /api/mcp`, read-only tool `get_promise_record` with `{"merchant":"adaeze-studio"}`. Checked with the official MCP SDK client: `npm i --no-save @modelcontextprotocol/sdk@1 && node scripts/mcp-check.mjs`.
+  - **JSON:** `GET /api/promise-record/adaeze-studio` (CORS-open, rate-limited).
+  - **For people:** `/record/adaeze-studio`.
+- **Kept's own shopper agent** checks the record before negotiating. A mandate such as *"only buy from a shop that keeps at least 90% of its promises"* becomes a deterministic check. It declines with fewer than 10 resolved promises, a failed audit chain, or a rate below the bar; hedged wording is not enforced.
 
 ## Agent-to-agent commerce: "Send my AI agent"
 
@@ -338,6 +399,8 @@ node scripts/e2e-ui.mjs     # Playwright drive of the full demo against a runnin
 node scripts/e2e-agent.mjs  # Playwright drive of the agent-to-agent demo (declined mandate, cleared mandate, refund, receipt)
 node scripts/e2e-dispute.mjs # Playwright drive of a dispute answered from the ledger (tracking → simulated buyer dispute → evidence approved → UNDER_REVIEW)
 npm run eval:extraction  # runs the REAL Claude extractor over the golden set (needs ANTHROPIC_API_KEY)
+npm run eval:ai          # AI-vs-rules evaluation through the validator; Claude column needs ANTHROPIC_API_KEY
+npx tsx scripts/verify-evidence.ts <pack.json> [fingerprint]   # verify a downloaded evidence pack offline
 ```
 
 - **Golden set** (`tests/fixtures/golden-promises.ts`): 39 adversarial cases (46 assertions), including 6 shopper-mandate cases. Covers:

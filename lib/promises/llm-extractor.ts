@@ -23,7 +23,9 @@ Types:
 Lines starting "BUYER_AGENT [...]:" are the shopper's own AI agent; they are neither merchant promises nor the shopper's mandate.
 
 Rules:
-- "quote" MUST be copied character-for-character from the source text, as short as possible while containing the whole promise (usually one sentence). Do not paraphrase, fix typos, or merge sentences.
+- "quote" MUST be copied character-for-character from the source text, as short as possible while containing the whole promise (usually one sentence or one clause). Do not paraphrase, fix typos, or merge sentences.
+- If one sentence contains several promises (e.g. a total AND a shipping time), return EACH as its own candidate, each quoting only its own clause. A price quote must contain only the one amount it is about.
+- Shipping can be phrased as ship, dispatch, post, or send out. Customers and assistants may write in English or Nigerian Pidgin; read Pidgin as written ("Your total na $84.00", "we go ship am within 48 hours"). Treat "I think", "maybe", and Pidgin "fit" (can/might, e.g. "e fit ship") as hedges: low confidence, not verifiable.
 - span_start/span_end are character offsets of the quote in that source's text.
 - confidence (0-1): how sure you are this is a genuine merchant promise with the stated parameters. Use low confidence for hedged or approximate statements ("about", "usually", "up to").
 - verifiable: true only if the promise is exact and could be checked against payment, refund, or shipment-tracking records.

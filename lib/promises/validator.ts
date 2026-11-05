@@ -23,7 +23,11 @@ const HEDGES = [
   "from", "starting at", "starts at", "at least", "estimated", "estimate", "usually", "typically", "normally",
   "generally", "aim to", "try to", "should", "may", "might", "hopefully", "possibly", "probably", "or so", "ish",
   "subject to", "give or take", "at our discretion", "if eligible", "where eligible", "we'll see", "depending",
+  // opinion / uncertainty (found by the AI-vs-rules evaluation, tests/fixtures/ai-eval.ts)
+  "i think", "i believe", "i guess", "maybe", "perhaps", "not sure", "if all goes well",
 ];
+/** Nigerian Pidgin modal "fit" (can / might): "e fit ship", "we fit send am". Not the English "fits true to size". */
+const PIDGIN_HEDGE = /\b(e|we|i|una|dem|e go|we go|it)\s+fit\b/i;
 const EXCLUSIONS = ["plus shipping", "+ shipping", "excluding", "excl", "before tax", "before shipping", "plus tax", "+ tax", "not including"];
 const TOTAL_WORDS = /\b(total|all[- ]in|in total|altogether|grand total|comes to|including shipping|incl\.? shipping)\b/i;
 const WORD_NUM: Record<string, number> = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, fourteen: 14, thirty: 30, "twenty-four": 24, "forty-eight": 48, "seventy-two": 72 };
@@ -54,6 +58,8 @@ export function findMoney(quote: string): Money[] {
 
 function hasHedge(quote: string): string | null {
   const q = ` ${quote.toLowerCase()} `;
+  const pidgin = quote.match(PIDGIN_HEDGE);
+  if (pidgin) return pidgin[0].toLowerCase();
   for (const h of HEDGES) {
     // "may" the month (e.g. "by 3 May 2027") is not a hedge
     if (h === "may" && /\d\s+may\b|\bmay\s+\d/.test(q) && !/\bmay\s+(ship|be|take|arrive)/.test(q)) continue;
@@ -284,7 +290,7 @@ export function validateAll(cands: Candidate[], ctx: ValidateContext): Validated
   return unique;
 }
 
-const MANDATE_HEDGES = ["about", "around", "roughly", "approximately", "or so", "ish", "give or take", "ideally", "preferably", "if possible", "try to"];
+const MANDATE_HEDGES = ["about", "around", "roughly", "approximately", "or so", "ish", "give or take", "ideally", "preferably", "if possible", "try to", "maybe", "perhaps"];
 
 /** Shopper → agent mandate: "keep the total under $90", "it must ship within 2 days". */
 export function validateMandate(c: Candidate, ctx: ValidateContext, checks: ValidationCheck[], add: (check: string, ok: boolean, detail: string) => boolean, start: number, end: number): ValidatedPromise {

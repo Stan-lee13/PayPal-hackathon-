@@ -59,6 +59,10 @@ Kept is a promise-verification layer for merchants paid through PayPal.
 
 All of it comes from Kept's own records and PayPal-confirmed amounts, and the merchant can edit the report.
 
+**Tamper-evident evidence.** Every order's audit trail is a SHA-256 hash chain. The merchant can download a self-verifying evidence pack, the customer's receipt shows the current fingerprint, and dispute evidence sent to PayPal carries it. That way the record can't be rewritten without it showing.
+
+**A promise record for shoppers' AI agents.** Any MCP-capable agent can call `get_promise_record` before buying. It returns how often the shop kept its word, judged against PayPal records, with sample-size caveats and the audit chains re-verified. Kept's own shopper agent uses it, and a mandate like "only from shops that keep 90% of their promises" becomes a deterministic check.
+
 **Disputes, answered from the ledger.**
 
 - When a buyer opens a PayPal dispute, Kept already holds the ledger. Deterministic rules pick an honest response:
@@ -123,9 +127,17 @@ All of it comes from Kept's own records and PayPal-confirmed amounts, and the me
 ## Accomplishments that we're proud of
 
 - **The whole loop works end to end:** promise → extraction → validation → PayPal binding → verified events → evaluation → remedy → human approval → PayPal execution → confirmation → customer receipt.
-- **98 automated tests**, including the price check (stale, made-up and hedged quotes are never honoured), concurrent double-approval (exactly one refund), duplicate webhooks, refund failure and pending, lost-webhook recovery, agent-to-agent blame, and three dispute-shield flows.
+- **129 automated tests**, including tamper detection (edits, deletions, a direct database edit, 25 concurrent writers), the MCP protocol,  the price check (stale, made-up and hedged quotes are never honoured), concurrent double-approval (exactly one refund), duplicate webhooks, refund failure and pending, lost-webhook recovery, agent-to-agent blame, and three dispute-shield flows.
 - **Three Playwright browser runs**, one per demo scenario.
 - **A two-sided product, not a dashboard:** a merchant ledger (Said / Seal / Happened), a remedy sheet that shows the exact PayPal request, a shopper-agent mode, and a customer receipt that works on a 360 px phone.
+
+**Where the AI earns its place.** A 20-case evaluation (`npm run eval:ai`) separates what the rules can do from what needs a model:
+- compound sentences;
+- "posted" instead of "shipped";
+- Nigerian Pidgin;
+- eight traps that must never become promises.
+
+Rules find 3 of 11 of the harder promises, a correct extraction passes the validator for all 11, and the traps all stay blocked. Claude's score: `[FILL IN after running with a key]`. Building the evaluation exposed a real bug: "I think it ships…" and Pidgin "e fit ship…" were being accepted as promises. The validator now treats them as hedges.
 
 ## What we learned
 
@@ -146,7 +158,7 @@ The hard part of AI commerce isn't getting an agent to buy something. It's knowi
 
 ## Built with
 
-`paypal-orders-v2` `paypal-payments` `paypal-disputes-api` `paypal-webhooks` `paypal-js-sdk` `claude` `anthropic-sdk` `ag-grid` `ag-studio` `next.js` `react` `typescript` `postgresql` `drizzle` `tailwind` `vitest` `playwright` `render` `neon`
+`paypal-orders-v2` `paypal-payments` `paypal-disputes-api` `paypal-webhooks` `paypal-js-sdk` `claude` `anthropic-sdk` `ag-grid` `ag-studio` `mcp` `next.js` `react` `typescript` `postgresql` `drizzle` `tailwind` `vitest` `playwright` `render` `neon`
 
 ---
 
@@ -154,7 +166,9 @@ The hard part of AI commerce isn't getting an agent to buy something. It's knowi
 
 | Claim | Status at submission |
 |---|---|
-| Full loop in simulated mode (labelled emulator) | Verified by the 98 tests and three Playwright runs |
+| Full loop in simulated mode (labelled emulator) | Verified by the 129 tests and three Playwright runs |
+| MCP promise-record server | Verified with the official MCP TypeScript SDK client |
+| AI-vs-rules evaluation | Rules: 3/11 beyond-rules, 4/4 controls, 0 false on traps. Claude: `[RUN npm run eval:ai and fill in]` |
 | PayPal sandbox: OAuth, orders, capture, refund, tracking, webhooks | `[VERIFIED on DATE / NOT YET RUN]` |
 | PayPal Disputes API (`make-offer`, `provide-evidence`) on a real sandbox dispute | `[VERIFIED on DATE / emulator-tested only]` |
 | Live Claude calls (assistant, extractor, shopper agent, remedy agent) | `[VERIFIED: eval:extraction score X/46 / fallbacks only]` |

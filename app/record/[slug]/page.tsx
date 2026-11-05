@@ -34,7 +34,7 @@ export default async function RecordPage({ params }: { params: Promise<{ slug: s
         </table>
 
         <p className={`mt-4 text-sm ${r.auditChains.intact ? "text-kept" : "text-broken font-semibold"}`}>
-          {r.auditChains.intact ? `✓ All ${r.auditChains.verified} order histories behind this record re-verified intact (SHA-256 audit chains) just now.` : "✕ An order history behind this record failed verification."}
+          {r.auditChains.intact ? `✓ ${r.auditChains.verified === 1 ? "The 1 order history" : `All ${r.auditChains.verified} order histories`} behind this record re-verified intact (SHA-256 audit chains) just now.` : "✕ An order history behind this record failed verification."}
         </p>
         <ul className="mt-4 list-disc space-y-1 pl-5 text-xs text-ink-soft">{r.caveats.map((c) => <li key={c}>{c}</li>)}</ul>
 
