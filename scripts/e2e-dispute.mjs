@@ -16,7 +16,7 @@ const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } })
 
 const tour = await ctx.newPage();
 await tour.goto(`${BASE}/tour`);
-await tour.getByRole("heading", { name: /Three promises/ }).waitFor();
+await tour.getByRole("heading", { name: /prevents and repairs/ }).waitFor();
 await tour.screenshot({ path: `${OUT}/T1-tour.png`, fullPage: true });
 step("tour page renders");
 

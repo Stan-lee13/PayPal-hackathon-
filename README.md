@@ -4,15 +4,19 @@
 
 Kept is a promise-verification layer for merchants paid through PayPal. Businesses are now answerable for what their AI assistants say (*Moffatt v. Air Canada*, 2024 BCCRT 149), but nothing checks those promises against the payment. Kept does.
 
-- **Before payment:** it compares the total the assistant promised in the chat with what PayPal is about to charge. It warns the buyer, or honours the promise, by the merchant's rule.
-- **After payment:** it turns every verifiable promise into a commitment bound to the PayPal order and watches PayPal's own records.
-- **When they disagree:** code computes the gap, a remedy is proposed, and the merchant approves every cent. The customer's living receipt updates.
+**Kept prevents and repairs broken promises.**
+
+- **Before payment.** In Kept's protected checkout, Kept fetches the PayPal order from PayPal right before capture and compares it with the total the assistant promised. If they contradict each other, the capture is blocked and nothing is charged. The merchant corrects the order, the buyer approves the corrected amount, and only then does money move.
+- **After payment.** For payments Kept could not check first (captured by another checkout), and for promises that can only be judged later (shipping, refunds), Kept watches PayPal's own records. When a promise breaks, code computes the gap, a remedy is proposed, the merchant approves every cent, and PayPal confirms it. The customer's living receipt updates.
 
 The same promise ledger also covers shoppers' AI agents (their spending limits become promises too) and PayPal disputes (answered with what was promised and what PayPal recorded).
 
 ```
-PROMISE → EXTRACTION → VALIDATION → PAYPAL BINDING → EVENT MONITORING → EVALUATION
-        → REMEDY PROPOSAL → MERCHANT APPROVAL → PAYPAL REFUND → CONFIRMATION → CUSTOMER RECEIPT
+PROMISE → VERIFY → AUTHORIZE → CAPTURE → MONITOR → RESOLVE → CONFIRM
+ (chat)   (PayPal  (buyer      (only if   (verified (merchant- (GET +
+           order    approves    verdict    webhooks  approved   living
+           vs       in PayPal)  is READY)  + GETs)   remedy)    receipt)
+           promise)
 ```
 
 > **MVP, not production banking infrastructure.** The merchant console uses one shared demo passcode. Adaeze Studio is a demonstration merchant. Run with sandbox credentials only. Read [Limitations](#limitations).
@@ -23,7 +27,8 @@ Product research and rationale: [`docs/PRODUCT_DISCOVERY.md`](docs/PRODUCT_DISCO
 
 | Part | Status |
 |---|---|
-| Full loop in simulated mode (labelled local PayPal emulator) | **Ran.** 129 automated tests (`npm test`), plus three Playwright browser runs of the demo: `scripts/e2e-ui.mjs`, `e2e-agent.mjs` and `e2e-dispute.mjs` |
+| Full loop in simulated mode (labelled local PayPal emulator) | **Ran.** 141 automated tests (`npm test`), plus five Playwright browser runs: `scripts/e2e-ui.mjs` (Demonstration 1: stop the mismatch), `e2e-repair.mjs` (Demonstration 2: repair what was already paid), `e2e-agent.mjs` and `e2e-dispute.mjs` |
+| Pre-capture gate | **Ran (simulated).** It blocks a $93.33 order against an $84.00 promise and proves the order uncaptured by GET; the corrected $84.00 order is captured after buyer approval. The 11 directive cases are tested. Full matrix: [`docs/evidence/IMPLEMENTATION_EVIDENCE.md`](docs/evidence/IMPLEMENTATION_EVIDENCE.md) |
 | Tamper-evident evidence packs | **Ran.** A real downloaded pack verifies offline with `scripts/verify-evidence.ts`, and an edited copy is rejected at the exact entry |
 | MCP promise-record server | **Ran.** The official MCP TypeScript SDK client (1.32.2) connects, lists the tool and calls it (`scripts/mcp-check.mjs`) |
 | AI-vs-rules evaluation | **Rules ran:** 3 of 11 harder promises found, 4 of 4 controls, 0 false promises on 8 traps. A correct extraction passes the validator for all 11. **Claude: not yet run** (`npm run eval:ai` with a key). Results: [`docs/evidence/ai-eval-results.json`](docs/evidence/ai-eval-results.json) |
@@ -34,15 +39,22 @@ Product research and rationale: [`docs/PRODUCT_DISCOVERY.md`](docs/PRODUCT_DISCO
 
 ---
 
-## The demo scenario
+## The two demonstrations
 
-1. A customer chats with **Adaeze Studio**'s assistant. The assistant answers only from the merchant's published sources. It gets totals from a deterministic quote tool.
-2. The assistant says:
-   - *"Your total is $84.00."* This applies the studio's published *free express shipping over $75* promotion.
-   - *"Your order ships within 48 hours."*
-   - *"We'll sort you out if anything goes wrong."*
-3. The demo checkout does **not** apply chat-advertised promotions. This is a deliberate, labelled `DEMO_MODE` integration gap: the conversation layer and the checkout disagree. Before payment, Kept's price check (default mode **Warn**) shows the buyer the $9.33 difference. If they pay anyway, PayPal captures **$93.33** ($84.00 + $9.33 express). In **Honour** mode, the PayPal order is created at $84.00 instead and the promise is simply KEPT.
-4. Kept receives the signed `PAYMENT.CAPTURE.COMPLETED` webhook. It re-fetches the capture with `GET /v2/payments/captures/{id}`, then extracts and validates the promises:
+Both use **Adaeze Studio**, a demonstration merchant. Its assistant answers only from the merchant's published sources and gets totals from a deterministic quote tool. It says *"Your total is $84.00."* (applying the published *free express shipping over $75* promotion), *"Your order ships within 48 hours."* and *"We'll sort you out if anything goes wrong."*. The demo checkout does **not** apply chat-advertised promotions, a deliberate, labelled `DEMO_MODE` integration gap, so checkout would charge **$93.33**.
+
+**Demonstration 1: stop the mismatch** (`scripts/e2e-ui.mjs`):
+
+1. The store shows a pre-payment price check: promised $84.00, checkout $93.33.
+2. The buyer approves the $93.33 PayPal order.
+3. Before capture, Kept calls `GET /v2/checkout/orders/{id}`. Its verdict is **BLOCKED_MISMATCH**, so nothing is captured: PayPal still reports the order as APPROVED.
+4. The merchant clicks **Correct the order to the promised $84.00**. Kept creates a new PayPal order with a labelled $9.33 discount, and the buyer approves it.
+5. The fresh check is **READY_TO_CAPTURE**. Kept captures $84.00, and the price promise is **KEPT**.
+6. The receipt says the earlier order was never charged.
+
+**Demonstration 2: repair what was already paid** (`scripts/e2e-repair.mjs`). This is a *separate* order, captured **outside** Kept's checkout (Demo tools → *Add an order captured outside Kept's checkout*), so no pre-capture check could stop it.
+
+1. Kept receives `PAYMENT.CAPTURE.COMPLETED` and re-fetches the capture with `GET /v2/payments/captures/{id}`. It then extracts and validates the promises:
 
    | Promise | Kept's decision |
    |---|---|
@@ -50,24 +62,46 @@ Product research and rationale: [`docs/PRODUCT_DISCOVERY.md`](docs/PRODUCT_DISCO
    | 48-hour shipping | **enforceable** |
    | "We'll sort you out" | **unverifiable**, never enforced |
 
-5. The deterministic evaluator computes **$93.33 − $84.00 = $9.33** and marks the price promise **BROKEN**. The AI agent (or the rules fallback) proposes a **$9.33 partial refund**. The policy engine re-checks it independently.
-6. The merchant sees *Said / Seal / Happened*, the computed gap, and the **exact PayPal request**. They approve.
-7. Kept calls `POST /v2/payments/captures/{id}/refund` with a stored `PayPal-Request-Id`. It confirms the result with `GET /v2/payments/refunds/{id}`, then reconciles the `PAYMENT.CAPTURE.REFUNDED` webhook.
-8. The customer's living receipt updates. It only shows the refund as COMPLETED once PayPal confirms it.
+2. The deterministic evaluator computes **$93.33 − $84.00 = $9.33** and marks the promise **BROKEN**. A **$9.33 partial refund** is proposed and checked by the policy engine.
+3. The merchant sees *Said / Seal / Happened* and the **exact PayPal request**, and approves.
+4. Kept refunds with a stored `PayPal-Request-Id` and confirms with `GET /v2/payments/refunds/{id}`. The receipt reads *Broken · made good*.
 
 The other scenarios are covered by tests and reachable in the UI:
 
 - a matching-price order is KEPT;
-- an ambiguous promise needs confirmation;
 - a shipping deadline goes AT_RISK and then BROKEN (simulated clock);
-- a refund fails (`REFUND_FAILED_INSUFFICIENT_FUNDS`);
-- a refund stays PENDING;
+- a refund fails, or stays PENDING;
 - a duplicate webhook is ignored;
 - a remedy is rejected;
-- a dispute is ingested;
+- disputes are answered from the ledger;
 - a lost webhook is recovered by reconciliation.
 
 ---
+
+## The capture gate (pre-capture verification)
+
+`lib/services/preflight.ts` and `captureKeptOrder` in `lib/services/orders.ts`.
+
+**What the gate compares.** It fetches the **authoritative** PayPal order and reads `purchase_units[0].amount`. It compares that with the enforceable total the assistant promised, read from the immutable chat source by the same rules extractor and validator Kept uses after capture, in integer minor units.
+
+| Verdict | When | Capture? |
+|---|---|---|
+| `READY_TO_CAPTURE` | Promised total equals the order amount and currency, or no enforceable total was promised (an approximate "about $84", an item price, or nothing at all is never treated as an exact total) | Yes |
+| `BLOCKED_MISMATCH` | The order is **more** than promised, or in another currency | No. The merchant corrects the order; the buyer approves the new amount |
+| `NEEDS_CONFIRMATION` | The order is **less** than promised, or the chat states conflicting totals | No, until the merchant confirms this exact order (bound to its digest) |
+| `PRECHECK_FAILED` | The PayPal GET failed or was unreadable, the buyer hasn't approved, or the order isn't bound to this Kept order (`custom_id`) | No. A failure is never a pass |
+
+**How capture runs.**
+
+1. **Atomic claim:** one conditional `UPDATE`, so duplicate requests can't both proceed.
+2. **Fresh check:** a new authoritative GET every time. A verdict is bound to a SHA-256 digest of the order's money-relevant fields, so an order changed after verification is caught. Verdicts expire after 10 minutes.
+3. **Write-ahead:** `capture.requested` is written to the hash-chained audit log before the PayPal call.
+4. **Capture:** with a `PayPal-Request-Id` per PayPal order.
+5. **Confirm:** GET the capture.
+
+There is **no override** that captures an amount the buyer didn't approve. These patterns were adapted from Graphite's execution boundary: [`docs/GRAPHITE_ADAPTATION.md`](docs/GRAPHITE_ADAPTATION.md).
+
+**Boundary.** Kept can block only in a checkout where Kept performs the capture. Orders captured elsewhere (`checkoutChannel = EXTERNAL`) are checked and recorded, then monitored and repaired after payment.
 
 ## Before the buyer pays: the price check
 
@@ -75,21 +109,26 @@ The cheapest broken promise is the one that never happens. When the bag is ready
 
 | Mode | What happens |
 |---|---|
-| **Warn** (default) | The buyer sees the difference before paying: *"The assistant told you 'Your total is $84.00.' but checkout is $93.33."* Kept records the warning, and after capture the promise is enforced as usual. |
+| **Block** (default) | The buyer is warned in the bag, and the capture gate above refuses a mismatched capture. |
+| **Warn** | Monitor-only checkout. The buyer sees the difference before paying: *"The assistant told you 'Your total is $84.00.' but checkout is $93.33."* Kept records the warning, and after capture the promise is enforced as usual. |
 | **Honour** | Kept creates the PayPal order at the promised total, with the difference as a labelled order `discount` in the breakdown. Only when the promised total is exactly what the merchant's own published pricing gives for this cart, and within the maximum single refund. A stale quote (the cart changed after the assistant spoke) or a made-up number is never honoured automatically; it falls back to Warn. |
 | **Off** | No pre-payment check. Promises are still verified after capture. |
 
 Either outcome is audited and appears on the customer's receipt. The test suite covers stale quotes, made-up quotes, hedged quotes, the refund cap, customer-written "quotes", and an end-to-end Honour flow ($84.00 captured, promise KEPT, no refund needed).
 
-## Promise analytics (AG Grid + AG Studio)
+## Kept Intelligence (AG Grid + AG Studio)
 
 - **AG Grid ledgers.** The merchant console's promises inbox, orders and activity trail are AG Grid tables (Community, MIT), themed with Kept's design tokens. They support sorting, per-column filters and search across every column. Rows open the order ledger.
-- **AG Studio report.** `/merchant/analytics` is an AG Studio report over Kept's own records: promises, orders and remedies, related by order. It shows:
-  - **kept as promised** and **kept or made good**, both measured over *resolved* promises only;
-  - broken promises still open;
-  - money refunded through PayPal and money honoured before payment;
-  - where promises were made (AI chat, policy, shopper's mandate) and how they ended;
-  - a per-promise table.
+- **Commitments grid columns:** quote, type, promised and actual (PayPal) value, currency, deadline, state, verification source, last updated. It also has pagination and a column chooser.
+- **AG Studio report.** `/merchant/analytics` ("Kept Intelligence") is an AG Studio report over Kept's persisted records: orders, promises, pre-capture checks, remedies, refunds, PayPal events and the last AI evaluation, related by order, with a currency filter. It shows:
+  - **promise health:** kept as promised and kept or made good (over *resolved* promises), at risk, broken;
+  - **prevention:** pre-capture checks, verified, blocked in the protected checkout, value stopped before capture;
+  - **recovery:** remedies proposed and approved, refunds completed, pending and failed;
+  - **AI quality:** extracted, needs confirmation, unverifiable, extraction failures, evaluation results;
+  - **payment operations:** events and processing failures.
+
+  A test checks the figures against database aggregates. Money is never summed across currencies.
+- **Not shipped:** the AG Studio read-only analytics agent. It needs a Claude adapter that can't be verified without an API key; see the evidence report.
 
   The merchant can switch to **Edit** and build their own widgets from the same data. Colours are deliberately non-semantic, because AG Studio assigns them by category order. Without an `AG_STUDIO` licence key it runs in evaluation mode (watermark).
 

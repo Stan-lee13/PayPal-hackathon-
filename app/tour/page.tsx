@@ -20,23 +20,31 @@ export default function Tour() {
 
   const scenarios: Scenario[] = [
     {
-      n: "01", title: "The AI assistant's promise vs PayPal's charge", minutes: "≈ 2 min",
-      why: "In Moffatt v. Air Canada (2024), a tribunal held the airline to what its chatbot told a customer. Merchants are now accountable for what their AI says, and nobody checks it against the payment.",
+      n: "01", title: "Stop the mismatch: Kept checks the PayPal order before capture", minutes: "≈ 2 min",
+      why: "In Moffatt v. Air Canada (2024), a tribunal held the airline to what its chatbot told a customer. Merchants are now accountable for what their AI says. Kept checks that promise against the PayPal order before money moves.",
       steps: [
-        { text: <>Open the <Link className="underline" href="/store">store</Link>. Set Ada Wrap Dress to 1, choose <strong>Express</strong>, and ask <em>&ldquo;What&rsquo;s my total with express shipping?&rdquo;</em></> },
-        { text: <>The assistant says <em>&ldquo;Your total is $84.00&rdquo;</em> (it applies the published free-express promo). Before you pay, Kept&rsquo;s <strong>price check</strong> warns that checkout is $93.33. Pay anyway. {simulated ? "The simulated PayPal approval is labelled." : "Use the sandbox Personal account."}</> },
-        { text: <>Open the <Link className="underline" href="/merchant">merchant console</Link>{demo ? <> (passcode in the README / submission notes)</> : null}. PayPal captured <strong>$93.33</strong>: the promise is <strong>BROKEN</strong> by $9.33, computed by code.</> },
-        { text: <>Open the order. Read the exact PayPal refund request, then <strong>Approve &amp; refund $9.33</strong>. Kept confirms it with a GET on the refund.</> },
-        { text: <>Click <strong>Customer receipt ↗</strong>: the promise now reads <em>Broken · made good</em>, with PayPal&rsquo;s refund id and the record&rsquo;s <strong>evidence fingerprint</strong>. On the order page, <strong>Download evidence pack</strong> gives a file anyone can verify offline.</> },
-        { text: <>Optional: in <strong>Settings</strong>, set the price check to <strong>Honour the promise</strong> and repeat. Now the PayPal order is created at $84.00 and the promise is simply <strong>KEPT</strong>. Then open <strong>Analytics</strong> (AG Studio) to see the kept-as-promised and kept-or-made-good rates.</> },
+        { text: <>Open the <Link className="underline" href="/store">store</Link>. Set Ada Wrap Dress to 1, choose <strong>Express</strong>, and ask <em>&ldquo;What&rsquo;s my total with express shipping?&rdquo;</em> The assistant says <em>&ldquo;Your total is $84.00&rdquo;</em>, but checkout would charge $93.33.</> },
+        { text: <>Pay and approve. {simulated ? "The simulated PayPal approval is labelled." : "Use the sandbox Personal account."} Before capturing, Kept fetches the order from PayPal: <strong>Payment mismatch detected — capture blocked</strong>. Nothing is charged.</> },
+        { text: <>In the <Link className="underline" href="/merchant">merchant console</Link>{demo ? " (passcode in the README / submission notes)" : ""}, open the held checkout and click <strong>Correct the order to the promised $84.00</strong>.</> },
+        { text: <>Back in the store, <strong>Corrected order ready</strong> appears. Approve $84.00: Kept re-checks (<em>verified</em>), captures, and the promise is <strong>KEPT</strong>. The receipt says the first order was never charged.</> },
       ],
-      see: "Prevent (price check before payment) and repair (after capture) · verbatim-quote validation · integer-money evaluator · policy engine · human approval · idempotent refund · authoritative confirmation.",
+      see: "Authoritative GET before capture · a coded verdict bound to the order's digest · no override that charges an unapproved amount · audit trail written before the capture call.",
     },
     {
-      n: "02", title: "Agent-to-agent: the shopper sends their own AI", minutes: "≈ 2 min",
+      n: "02", title: "Repair what was already paid", minutes: "≈ 1 min",
+      why: "Not every payment goes through a checkout Kept controls. For those, Kept watches PayPal's records after payment and repairs what broke.",
+      steps: [
+        { text: <>{simulated ? <>In the merchant console, <strong>Demo tools → Add an order captured outside Kept&rsquo;s checkout</strong>: the same $84.00 promise, but captured at $93.33 by a checkout Kept didn&rsquo;t control.</> : <>Set the price check to <strong>Warn</strong> in Settings, buy as in 01, and pay the $93.33. That is a monitor-only checkout.</>}</> },
+        { text: <>The promise is <strong>BROKEN</strong> by $9.33, computed by code. Open the order, read the exact PayPal refund request, and click <strong>Approve &amp; refund $9.33</strong>. PayPal confirms it.</> },
+        { text: <>Open <strong>Customer receipt ↗</strong>: <em>Broken · made good</em>, with PayPal&rsquo;s refund id and the record&rsquo;s <strong>evidence fingerprint</strong>. <strong>Download evidence pack</strong> gives a file anyone can verify offline. <strong>Intelligence</strong> (AG Studio) shows what was stopped before payment and what was repaired after.</> },
+      ],
+      see: "Verbatim-quote validation · integer-money evaluator · policy engine · merchant approval · idempotent refund confirmed by GET · tamper-evident record.",
+    },
+    {
+      n: "03", title: "Agent-to-agent: the shopper sends their own AI", minutes: "≈ 2 min",
       why: "When agents buy from agents, two sets of words matter: what the merchant's agent promised, and the limits the shopper gave their own agent. Kept keeps both as evidence.",
       steps: [
-        { text: <>In the store, choose <strong>Send my AI agent</strong>. First try a limit of <em>under $60</em>: the deterministic guard <strong>declines</strong> and no pay button appears.</> },
+        { text: <>To see blame assigned after payment, first set the price check to <strong>Warn</strong> in Settings (with <strong>Block</strong>, the agent&rsquo;s mismatched purchase is simply stopped before capture). Then in the store, choose <strong>Send my AI agent</strong>. First try a limit of <em>under $60</em>: the deterministic guard <strong>declines</strong> and no pay button appears.</> },
         { text: <>Now use the default mandate (<em>under $90, ship within 2 days</em>). The guard <strong>clears</strong> the $84.00 quote. You still approve the payment yourself.</> },
         { text: <>In the console, the shopper&rsquo;s mandate is <strong>BROKEN</strong> too ($93.33 &gt; $90), with <strong>Accountable: merchant</strong>, because the agent was quoted within the limit.</> },
         { text: <>Approve the $9.33 refund. The mandate becomes <em>Broken · made good</em> (net $84.00) without a second refund.</> },
@@ -45,10 +53,10 @@ export default function Tour() {
       see: "The model can't say PROCEED; only the guard can · fault attribution · one remedy repairs both promises.",
     },
     {
-      n: "03", title: "Disputes: answer PayPal from the promise ledger", minutes: "≈ 1 min",
+      n: "04", title: "Disputes: answer PayPal from the promise ledger", minutes: "≈ 1 min",
       why: "When a buyer disputes, the merchant usually starts from nothing. Kept already holds what was promised and what PayPal recorded.",
       steps: [
-        { text: <>Place an Express order (scenario 01), then on the order page add a tracking number (e.g. DHL, <span className="mono">DHL7654321</span>). It is sent to PayPal&rsquo;s tracking API.</> },
+        { text: <>Place a Standard-shipping order ($88.50 promised and charged, so it passes the gate), then on the order page add a tracking number (e.g. DHL, <span className="mono">DHL7654321</span>). It is sent to PayPal&rsquo;s tracking API.</> },
         { text: simulated
           ? <>Use <strong>Play the buyer: open a dispute → &ldquo;I never received it&rdquo;</strong> (simulated PayPal only).</>
           : <>As the sandbox buyer, open a &ldquo;not received&rdquo; dispute in PayPal&rsquo;s Resolution Center.</> },
@@ -63,8 +71,8 @@ export default function Tour() {
     <>
       <ModeBanner />
       <main id="main" className="mx-auto max-w-3xl px-4 py-10">
-        <p className="eyebrow">Judge&rsquo;s tour · about 5 minutes</p>
-        <h1 className="quote mt-2 text-4xl leading-tight">Three promises, checked against PayPal&rsquo;s own records.</h1>
+        <p className="eyebrow">Judge&rsquo;s tour · about 6 minutes</p>
+        <h1 className="quote mt-2 text-4xl leading-tight">Kept prevents and repairs broken promises.</h1>
         <p className="mt-4 text-ink-soft">Kept turns what a merchant, its AI assistant, or a shopper&rsquo;s agent said into commitments bound to the PayPal order. It watches PayPal and proposes a fix when the two disagree. A person approves every cent.</p>
 
         <section className="paper mt-6 p-4 text-sm" aria-labelledby="mode-h">

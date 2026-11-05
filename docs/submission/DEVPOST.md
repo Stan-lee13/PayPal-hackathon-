@@ -4,7 +4,7 @@
 
 **Tagline (≤ 60 chars):** Every payment is a promise. Kept makes sure it's kept.
 
-**Short description:** Kept checks what a merchant's AI assistant promised against what PayPal charges. It warns or honours the promise before payment, and catches and repairs it after payment, with the merchant approving every cent.
+**Short description:** Kept prevents and repairs broken promises. Before capture, it checks the PayPal order against what the merchant's AI assistant promised, and blocks a mismatch. After payment, it proves broken promises from PayPal's records and repairs them with merchant-approved refunds.
 
 ---
 
@@ -22,7 +22,13 @@ I'm building from Lagos. PayPal reopened incoming payments for Nigerians through
 
 Kept is a promise-verification layer for merchants paid through PayPal.
 
-1. **Checks before the buyer pays.** When the bag is ready, Kept compares the total the assistant promised in the chat with what PayPal is about to charge. The merchant's rule decides what happens:
+1. **Stops the mismatch before capture.** In Kept's protected checkout, right before capturing, Kept GETs the PayPal order from PayPal and compares its amount and currency with the enforceable total the assistant promised. The verdict is coded: `READY_TO_CAPTURE`, `BLOCKED_MISMATCH`, `NEEDS_CONFIRMATION` or `PRECHECK_FAILED`, and a failure never counts as a pass.
+   - The verdict is bound to a SHA-256 digest of the order, so a change after verification is caught.
+   - The capture request is written to the audit chain *before* PayPal is called.
+   - A blocked order is never captured. The merchant corrects it, the buyer approves the corrected amount, and Kept verifies again.
+   - There is no override that charges what the buyer didn't approve.
+
+   It also warns the buyer in the bag, or can honour the promise at order creation, by the merchant's rule:
    - **Warn:** the buyer sees the gap before paying.
    - **Honour:** the PayPal order is created at the promised total, as a labelled discount. Kept honours a quote only when it exactly matches the merchant's published pricing for that cart; a stale or made-up quote is never honoured automatically.
 2. **Captures the promise.** It reads the sales chat (human or AI), the refund policy, and, in agent mode, the shopper's own instructions to their AI agent. It turns verifiable statements into structured commitments bound to the PayPal order through `custom_id`:
@@ -127,7 +133,8 @@ All of it comes from Kept's own records and PayPal-confirmed amounts, and the me
 ## Accomplishments that we're proud of
 
 - **The whole loop works end to end:** promise → extraction → validation → PayPal binding → verified events → evaluation → remedy → human approval → PayPal execution → confirmation → customer receipt.
-- **129 automated tests**, including tamper detection (edits, deletions, a direct database edit, 25 concurrent writers), the MCP protocol,  the price check (stale, made-up and hedged quotes are never honoured), concurrent double-approval (exactly one refund), duplicate webhooks, refund failure and pending, lost-webhook recovery, agent-to-agent blame, and three dispute-shield flows.
+- **Both defining moments, end to end in the browser:** a $93.33 capture blocked against an $84.00 promise and then corrected to $84.00; and, on a separate order captured elsewhere, a $9.33 overcharge proven and refunded.
+- **141 automated tests**, including the 11 pre-capture cases (match, over, under, currency, approximate, item price, missing quote, GET failure, an order changed after verification, duplicate captures, an unapproved corrected order), tamper detection (edits, deletions, a direct database edit, 25 concurrent writers), the MCP protocol,  the price check (stale, made-up and hedged quotes are never honoured), concurrent double-approval (exactly one refund), duplicate webhooks, refund failure and pending, lost-webhook recovery, agent-to-agent blame, and three dispute flows answered from the ledger.
 - **Three Playwright browser runs**, one per demo scenario.
 - **A two-sided product, not a dashboard:** a merchant ledger (Said / Seal / Happened), a remedy sheet that shows the exact PayPal request, a shopper-agent mode, and a customer receipt that works on a 360 px phone.
 
@@ -166,7 +173,8 @@ The hard part of AI commerce isn't getting an agent to buy something. It's knowi
 
 | Claim | Status at submission |
 |---|---|
-| Full loop in simulated mode (labelled emulator) | Verified by the 129 tests and three Playwright runs |
+| Full loop in simulated mode (labelled emulator) | Verified by the 141 tests and five Playwright runs (both demonstrations) |
+| Pre-capture gate against the real PayPal sandbox | `[VERIFIED on DATE / NOT YET RUN]` |
 | MCP promise-record server | Verified with the official MCP TypeScript SDK client |
 | AI-vs-rules evaluation | Rules: 3/11 beyond-rules, 4/4 controls, 0 false on traps. Claude: `[RUN npm run eval:ai and fill in]` |
 | PayPal sandbox: OAuth, orders, capture, refund, tracking, webhooks | `[VERIFIED on DATE / NOT YET RUN]` |
