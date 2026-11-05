@@ -29,7 +29,7 @@ export async function getOrderBundle(orderId: string) {
   return { order, commitments: cms, remedies: rems, refunds: refs, trackers: trks, events: evs, audit: auditRows, disputes: disps, orderSources: srcs, commitmentSources, merchant: merchant! };
 }
 
-export type InboxRow = { commitment: Commitment; order: typeof orders.$inferSelect; remedy: Remedy | null };
+export type InboxRow = { commitment: Commitment; order: typeof orders.$inferSelect; remedy: Remedy | null; sourceKind: string | null };
 
 export async function getInbox(merchantId: string): Promise<InboxRow[]> {
   const db = getDb();
@@ -37,13 +37,24 @@ export async function getInbox(merchantId: string): Promise<InboxRow[]> {
   if (cms.length === 0) return [];
   const ords = await db.select().from(orders).where(inArray(orders.id, [...new Set(cms.map((c) => c.orderId))]));
   const rems = await db.select().from(remedies).where(and(eq(remedies.merchantId, merchantId), inArray(remedies.state, ["PROPOSED", "EXECUTING", "PENDING", "FAILED"])));
+  const srcs = await db.select({ id: sources.id, kind: sources.kind }).from(sources).where(inArray(sources.id, [...new Set(cms.map((c) => c.sourceId)), "__none__"]));
   return cms
-    .map((c) => ({ commitment: c, order: ords.find((o) => o.id === c.orderId)!, remedy: rems.find((r) => r.commitmentId === c.id) ?? null }))
+    .map((c) => ({ commitment: c, order: ords.find((o) => o.id === c.orderId)!, remedy: rems.find((r) => r.commitmentId === c.id) ?? null, sourceKind: srcs.find((x) => x.id === c.sourceId)?.kind ?? null }))
     .sort((a, b) => (STATE_PRIORITY[a.commitment.state] ?? 9) - (STATE_PRIORITY[b.commitment.state] ?? 9) || b.order.createdAt.getTime() - a.order.createdAt.getTime());
 }
 
 export async function listOrders(merchantId: string) {
   return getDb().select().from(orders).where(eq(orders.merchantId, merchantId)).orderBy(desc(orders.createdAt)).limit(100);
+}
+
+/** Orders with their promise tallies, for the orders grid. */
+export async function listOrdersWithPromises(merchantId: string) {
+  const ords = await listOrders(merchantId);
+  const cms = ords.length ? await getDb().select({ orderId: commitments.orderId, state: commitments.state, evaluation: commitments.evaluation }).from(commitments).where(inArray(commitments.orderId, ords.map((o) => o.id))) : [];
+  return ords.map((o) => {
+    const mine = cms.filter((c) => c.orderId === o.id);
+    return { order: o, promises: mine.length, broken: mine.filter((c) => c.state === "BROKEN" && c.evaluation?.madeGood !== true).length, madeGood: mine.filter((c) => c.state === "BROKEN" && c.evaluation?.madeGood === true).length };
+  });
 }
 
 export async function merchantAudit(merchantId: string, limit = 200) {
@@ -83,5 +94,5 @@ export async function getReceipt(token: string) {
 const CUSTOMER_VISIBLE_ACTIONS = new Set([
   "order.created", "paypal.order.created", "paypal.capture.verified", "promises.extracted", "commitment.state_changed",
   "remedy.proposed", "remedy.approved", "remedy.rejected", "paypal.refund.requested", "paypal.refund.verified", "paypal.refund.failed",
-  "paypal.tracking.added", "paypal.dispute.verified", "dispute.response_approved", "paypal.dispute_action.accepted",
+  "paypal.tracking.added", "paypal.dispute.verified", "dispute.response_approved", "paypal.dispute_action.accepted", "checkout_guard.honored", "checkout_guard.warned",
 ]);

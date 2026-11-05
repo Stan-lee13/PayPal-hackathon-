@@ -9,7 +9,8 @@ type Ship = "STANDARD" | "EXPRESS";
 type Msg = { role: "customer" | "assistant" | "agent"; text: string; at: string; generatedBy?: "ai" | "scripted" };
 type Verdict = { decision: "PROCEED" | "DECLINE"; checks: Array<{ check: string; ok: boolean; detail: string }>; summary: string; by: "ai" | "scripted" } | null;
 const DEFAULT_MANDATE = "Buy me the Ada wrap dress. Keep the total under $90 and it must ship within 2 days.";
-type Checkout = { itemTotalMinor: number; shippingMinor: number; totalMinor: number } | null;
+type Guard = { action: "NONE" | "WARN" | "HONOR"; quotedMinor: number | null; quote: string | null; checkoutMinor: number; gapMinor: number; honorDiscountMinor: number };
+type Checkout = { itemTotalMinor: number; shippingMinor: number; totalMinor: number; guard?: Guard } | null;
 
 const usd = (m: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(m / 100);
 const SESSION_KEY = "kept.store.session";
@@ -98,6 +99,7 @@ export function Storefront(props: {
     try {
       const r = await api<{ messages: Msg[] }>("/api/chat/message", { sessionId, text });
       setMessages(r.messages);
+      await refresh(sessionId); // re-run the pre-payment price check against what was just said
     } catch (e) { setError((e as Error).message); await refresh(sessionId).catch(() => {}); }
     finally { setBusy(false); }
   }
@@ -218,9 +220,20 @@ export function Storefront(props: {
                   {lines.map((p) => <div key={p.id} className="flex justify-between"><dt>{cart[p.id]} × {p.name}</dt><dd className="money">{usd(p.priceMinor * (cart[p.id] ?? 0))}</dd></div>)}
                   {checkout && <>
                     <div className="flex justify-between"><dt>{props.shipping[ship].label} shipping</dt><dd className="money">{usd(checkout.shippingMinor)}</dd></div>
+                    {checkout.guard?.action === "HONOR" && <div className="flex justify-between text-kept"><dt>Price promised in this chat</dt><dd className="money">−{usd(checkout.guard.honorDiscountMinor)}</dd></div>}
                     <div className="flex justify-between rule-t pt-1 font-semibold"><dt>PayPal will be asked to charge</dt><dd className="money">{usd(checkout.totalMinor)}</dd></div>
                   </>}
                 </dl>
+              )}
+              {checkout?.guard?.action === "WARN" && checkout.guard.quotedMinor !== null && (
+                <div role="status" className="mt-3 rounded border border-risk bg-risk-wash p-3 text-sm">
+                  <p className="eyebrow text-risk">Kept · price check before you pay</p>
+                  <p className="mt-1">The assistant told you <span className="quote">&ldquo;{checkout.guard.quote}&rdquo;</span> but checkout is <span className="money font-semibold">{usd(checkout.guard.checkoutMinor)}</span>, which is <span className="money font-semibold">{usd(checkout.guard.gapMinor)}</span> more.</p>
+                  <p className="mt-1 text-ink-soft">If you pay, Kept records the promise and checks it against what PayPal charges; Adaeze Studio is asked to make up the difference.</p>
+                </div>
+              )}
+              {checkout?.guard?.action === "HONOR" && (
+                <p role="status" className="mt-3 text-xs text-kept">Kept checked this chat: Adaeze Studio honours the total its assistant promised (&ldquo;{checkout.guard.quote}&rdquo;) before you pay.</p>
               )}
               {lines.length > 0 && sessionId && (mode === "customer" || verdict?.decision === "PROCEED") && (
                 <div className="mt-4">

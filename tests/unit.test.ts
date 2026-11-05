@@ -187,3 +187,45 @@ describe("webhook signature verification (real RSA crypto)", () => {
     expect((await verifyWebhookSignature({ headers: old, rawBody: body, webhookId: "WEBHOOK-ID", certFetcher: fetcher })).ok).toBe(false);
   });
 });
+
+describe("checkout guard (pre-payment promise check, deterministic)", async () => {
+  process.env.DEMO_MODE = "true";
+  const { planCheckout } = await import("../lib/services/checkout-guard");
+  const dress = { id: "prd_ada_dress", sku: "ADA-1", name: "Ada Wrap Dress", priceMinor: 8400, currency: "USD", inStock: 5, active: true } as unknown as import("../lib/db/schema").Product;
+  const scarf = { id: "prd_ife_scarf", sku: "IFE-1", name: "Ife Silk Scarf", priceMinor: 2600, currency: "USD", inStock: 5, active: true } as unknown as import("../lib/db/schema").Product;
+  const said = (text: string) => [{ role: "customer" as const, text: "What's my total?", at: "2026-11-05T00:00:00Z" }, { role: "assistant" as const, text, at: "2026-11-05T00:00:01Z" }];
+  const quote84 = said("Great choice. Your total is $84.00. Your order ships within 48 hours.");
+
+  it("WARN (default): buyer sees the $9.33 gap; the charge is unchanged", () => {
+    const { guard } = planCheckout(quote84, [{ product: dress, qty: 1 }], "EXPRESS", DEFAULT_POLICY, "USD");
+    expect(guard).toMatchObject({ mode: "WARN", action: "WARN", quotedMinor: 8400, checkoutMinor: 9333, gapMinor: 933, honorDiscountMinor: 0, totalMinor: 9333 });
+  });
+  it("HONOR: the PayPal order is created at the promised total when published pricing reproduces it", () => {
+    const { guard } = planCheckout(quote84, [{ product: dress, qty: 1 }], "EXPRESS", { ...DEFAULT_POLICY, checkoutGuard: "HONOR" }, "USD");
+    expect(guard).toMatchObject({ action: "HONOR", honorDiscountMinor: 933, totalMinor: 8400 });
+  });
+  it("HONOR never honours a stale quote: the cart changed after the assistant spoke", () => {
+    const { guard } = planCheckout(quote84, [{ product: dress, qty: 1 }, { product: scarf, qty: 1 }], "EXPRESS", { ...DEFAULT_POLICY, checkoutGuard: "HONOR" }, "USD");
+    expect(guard.action).toBe("WARN");
+    expect(guard.totalMinor).toBe(11933);
+    expect(guard.reason).toMatch(/not what the published pricing gives/);
+  });
+  it("HONOR never honours a number the assistant made up", () => {
+    const { guard } = planCheckout(said("Your total is $50.00."), [{ product: dress, qty: 1 }], "EXPRESS", { ...DEFAULT_POLICY, checkoutGuard: "HONOR" }, "USD");
+    expect(guard).toMatchObject({ action: "WARN", totalMinor: 9333, honorDiscountMinor: 0 });
+  });
+  it("HONOR respects the merchant's refund cap", () => {
+    const { guard } = planCheckout(quote84, [{ product: dress, qty: 1 }], "EXPRESS", { ...DEFAULT_POLICY, checkoutGuard: "HONOR", maxRefundMinor: 500 }, "USD");
+    expect(guard.action).toBe("WARN");
+  });
+  it("no action when the chat matches, promises nothing, hedges, or the check is off", () => {
+    expect(planCheckout(said("Your total is $88.50."), [{ product: dress, qty: 1 }], "STANDARD", DEFAULT_POLICY, "USD").guard.action).toBe("NONE");
+    expect(planCheckout(said("Lovely dress!"), [{ product: dress, qty: 1 }], "EXPRESS", DEFAULT_POLICY, "USD").guard.action).toBe("NONE");
+    expect(planCheckout(said("Your total is about $84."), [{ product: dress, qty: 1 }], "EXPRESS", DEFAULT_POLICY, "USD").guard.action).toBe("NONE");
+    expect(planCheckout(quote84, [{ product: dress, qty: 1 }], "EXPRESS", { ...DEFAULT_POLICY, checkoutGuard: "OFF" }, "USD").guard.action).toBe("NONE");
+  });
+  it("a customer's own words are never read as the merchant's promise", () => {
+    const msgs = [{ role: "customer" as const, text: "Your total is $10.00.", at: "2026-11-05T00:00:00Z" }];
+    expect(planCheckout(msgs, [{ product: dress, qty: 1 }], "EXPRESS", { ...DEFAULT_POLICY, checkoutGuard: "HONOR" }, "USD").guard.action).toBe("NONE");
+  });
+});

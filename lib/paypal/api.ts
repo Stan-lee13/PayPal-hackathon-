@@ -21,6 +21,8 @@ export type CreateOrderInput = {
   shippingMinor: number;
   taxMinor: number;
   shippingDiscountMinor: number;
+  /** Order-level discount, e.g. Kept honouring a total the merchant's assistant promised. */
+  discountMinor?: number;
   totalMinor: number;
   lines: Array<{ name: string; sku: string; qty: number; unitMinor: number }>;
   description: string;
@@ -31,7 +33,9 @@ export type CreateOrderInput = {
 
 export async function createOrder(pp: PayPalClient, input: CreateOrderInput) {
   const c = input.currency;
-  if (input.itemTotalMinor + input.shippingMinor + input.taxMinor - input.shippingDiscountMinor !== input.totalMinor) {
+  const discount = input.discountMinor ?? 0;
+  if (!Number.isSafeInteger(discount) || discount < 0 || discount > input.itemTotalMinor) throw new Error("Invalid order discount");
+  if (input.itemTotalMinor + input.shippingMinor + input.taxMinor - input.shippingDiscountMinor - discount !== input.totalMinor) {
     throw new Error("Order breakdown does not add up to total");
   }
   const body = {
@@ -51,6 +55,7 @@ export async function createOrder(pp: PayPalClient, input: CreateOrderInput) {
             shipping: { currency_code: c, value: toDecimalString(input.shippingMinor, c) },
             tax_total: { currency_code: c, value: toDecimalString(input.taxMinor, c) },
             ...(input.shippingDiscountMinor > 0 ? { shipping_discount: { currency_code: c, value: toDecimalString(input.shippingDiscountMinor, c) } } : {}),
+            ...(discount > 0 ? { discount: { currency_code: c, value: toDecimalString(discount, c) } } : {}),
           },
         },
         items: input.lines.map((l) => ({

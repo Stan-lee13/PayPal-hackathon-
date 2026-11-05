@@ -36,6 +36,8 @@ export type MerchantPolicy = {
   refundAtRiskDays: number;
   /** Default message tone shown to the merchant when drafting customer messages. */
   supportEmail: string;
+  /** Pre-payment check of the chat's promised total against checkout. Absent = "WARN". */
+  checkoutGuard?: "OFF" | "WARN" | "HONOR";
 };
 
 export const merchants = pgTable("merchants", {

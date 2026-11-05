@@ -23,6 +23,8 @@ await page.getByLabel("Message").fill("What's my total with express shipping?");
 await page.getByRole("button", { name: "Send" }).click();
 await page.getByText("Your total is $84.00.").waitFor({ timeout: 30000 });
 step("assistant promised $84.00 and 48h shipping");
+await page.getByText(/Kept · price check before you pay/i).waitFor({ timeout: 15000 });
+step("pre-payment price check warned: promised $84.00, checkout $93.33");
 await page.screenshot({ path: `${OUT}/01-store-chat.png`, fullPage: true });
 
 await page.getByRole("button", { name: /Pay with simulated PayPal/ }).click();

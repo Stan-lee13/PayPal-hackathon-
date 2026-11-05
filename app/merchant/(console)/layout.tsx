@@ -27,6 +27,7 @@ export default async function ConsoleLayout({ children }: { children: React.Reac
           <nav aria-label="Merchant" className="flex flex-wrap gap-4 text-sm font-semibold">
             <Link href="/merchant">Promises</Link>
             <Link href="/merchant/orders">Orders</Link>
+            <Link href="/merchant/analytics">Analytics</Link>
             <Link href="/merchant/activity">Activity</Link>
             <Link href="/merchant/settings">Settings</Link>
             <Link href="/store" className="text-ink-soft">Store ↗</Link>

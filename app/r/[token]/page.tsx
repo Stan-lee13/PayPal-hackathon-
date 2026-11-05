@@ -119,7 +119,7 @@ export default async function ReceiptPage({ params }: { params: Promise<{ token:
               <li key={i} className="relative pb-3">
                 <span aria-hidden="true" className="absolute -left-[1.32rem] top-1.5 h-2 w-2 rounded-full bg-[var(--ink-soft)]" />
                 <time className="mono text-xs text-ink-soft">{t.at.toISOString().replace("T", " ").slice(0, 16)} UTC</time>
-                <p>{describe(t.action, t.detail as Record<string, unknown>)}</p>
+                <p>{describe(t.action, t.detail as Record<string, unknown>, r.merchantName)}</p>
               </li>
             ))}
           </ol>
@@ -136,10 +136,12 @@ export default async function ReceiptPage({ params }: { params: Promise<{ token:
   );
 }
 
-function describe(action: string, d: Record<string, unknown>): string {
+function describe(action: string, d: Record<string, unknown>, merchantName: string): string {
   switch (action) {
     case "order.created": return "You placed the order.";
     case "paypal.order.created": return "PayPal order created.";
+    case "checkout_guard.honored": return `Before you paid, Kept checked the chat: ${merchantName} honoured the promised ${d.promised} instead of ${d.checkout}.`;
+    case "checkout_guard.warned": return `Before you paid, Kept warned that checkout (${d.checkout}) was more than the promised ${d.promised}.`;
     case "paypal.capture.verified": return d.status === "PARTIALLY_REFUNDED" || d.status === "REFUNDED" ? `PayPal updated the payment status to ${d.status}.` : `PayPal confirmed the payment: ${d.status} ${d.amount ?? ""}.`;
     case "promises.extracted": return "Kept recorded the promises made to you.";
     case "commitment.state_changed": return `A promise is now ${String(d.to).toLowerCase().replace("_", " ")}: ${d.reason}`;

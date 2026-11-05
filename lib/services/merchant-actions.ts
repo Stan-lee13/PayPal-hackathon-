@@ -80,6 +80,7 @@ export const PolicyUpdateSchema = z.object({
   minConfidence: z.number().min(0.5).max(1),
   shipAtRiskHours: z.number().int().min(1).max(240),
   refundAtRiskDays: z.number().int().min(0).max(30),
+  checkoutGuard: z.enum(["OFF", "WARN", "HONOR"]).optional(),
 });
 
 export async function updatePolicy(merchantId: string, input: unknown) {

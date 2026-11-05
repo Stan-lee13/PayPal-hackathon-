@@ -15,10 +15,20 @@ export function PolicyForm({ policy }: { policy: MerchantPolicy }) {
   return (
     <form className="mt-3 space-y-3 text-sm" onSubmit={async (e) => {
       e.preventDefault(); setMsg(null);
-      const res = await fetch("/api/merchant/policy", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ allowedRemedies: p.allowedRemedies, maxRefundMinor: p.maxRefundMinor, reviewThresholdMinor: p.reviewThresholdMinor, minConfidence: p.minConfidence, shipAtRiskHours: p.shipAtRiskHours, refundAtRiskDays: p.refundAtRiskDays }) });
+      const res = await fetch("/api/merchant/policy", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ allowedRemedies: p.allowedRemedies, maxRefundMinor: p.maxRefundMinor, reviewThresholdMinor: p.reviewThresholdMinor, minConfidence: p.minConfidence, shipAtRiskHours: p.shipAtRiskHours, refundAtRiskDays: p.refundAtRiskDays, checkoutGuard: p.checkoutGuard ?? "WARN" }) });
       setMsg(res.ok ? "Saved." : ((await res.json().catch(() => ({}))) as { error?: string }).error ?? "Failed");
       router.refresh();
     }}>
+      <fieldset>
+        <legend className="font-semibold">Before the buyer pays: check the chat&rsquo;s promised total</legend>
+        {([
+          ["WARN", "Warn the buyer", "The buyer sees the difference before paying; you fix it afterwards with an approved refund."],
+          ["HONOR", "Honour the promise", "Kept creates the PayPal order at the promised total — only when it matches your published pricing for that exact cart and is within your maximum single refund."],
+          ["OFF", "Off", "No pre-payment check. Promises are still verified after capture."],
+        ] as const).map(([v, t, d]) => (
+          <label key={v} className="mt-1 flex items-start gap-2"><input type="radio" name="checkoutGuard" className="mt-1" checked={(p.checkoutGuard ?? "WARN") === v} onChange={() => setP({ ...p, checkoutGuard: v })} /><span><span className="font-semibold">{t}</span> <span className="block text-xs text-ink-soft">{d}</span></span></label>
+        ))}
+      </fieldset>
       <fieldset>
         <legend className="font-semibold">Allowed remedies</legend>
         {KINDS.map((k) => (

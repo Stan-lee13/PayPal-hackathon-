@@ -13,7 +13,7 @@ import { serializeTranscript } from "../promises/transcript";
 import { redactEmail } from "../security/redact";
 import { audit } from "./audit";
 import { cartLines } from "./chat";
-import { checkoutPricing } from "./pricing";
+import { planCheckout } from "./checkout-guard";
 import { formatMoney } from "../money";
 
 export class UserFacingError extends Error {
@@ -46,7 +46,7 @@ export async function createOrderFromSession(sessionId: string): Promise<{ keptO
   if (session.mode === "agent" && session.agentVerdict?.decision !== "PROCEED") {
     throw new UserFacingError("Your agent has not cleared this purchase against your mandate.", 409);
   }
-  const price = checkoutPricing(lines, session.shippingOption);
+  const { price, guard } = planCheckout(session.messages, lines, session.shippingOption, merchant.policy, merchant.currency);
   const keptOrderId = newId("ko");
   const transcript = serializeTranscript(session.messages);
 
@@ -61,7 +61,7 @@ export async function createOrderFromSession(sessionId: string): Promise<{ keptO
       itemTotalMinor: price.itemTotalMinor,
       shippingMinor: price.shippingMinor - price.promoMinor,
       taxMinor: price.taxMinor,
-      requestedTotalMinor: price.totalMinor,
+      requestedTotalMinor: guard.totalMinor,
       receiptToken: newReceiptToken(),
     });
     if (transcript.trim()) {
@@ -89,7 +89,12 @@ export async function createOrderFromSession(sessionId: string): Promise<{ keptO
     // Lock the conversation to this order: later messages cannot alter the evidence.
     await tx.update(chatSessions).set({ orderId: keptOrderId, updatedAt: new Date() }).where(eq(chatSessions.id, session.id));
     await audit(tx, { merchantId: merchant.id, orderId: keptOrderId, actor: "customer", action: "order.created", ref: keptOrderId, outcome: "OK",
-      detail: { requestedTotal: formatMoney(price.totalMinor, merchant.currency), lines: lines.length, shipping: session.shippingOption } });
+      detail: { requestedTotal: formatMoney(guard.totalMinor, merchant.currency), lines: lines.length, shipping: session.shippingOption } });
+    if (guard.action !== "NONE") {
+      await audit(tx, { merchantId: merchant.id, orderId: keptOrderId, actor: "system", action: guard.action === "HONOR" ? "checkout_guard.honored" : "checkout_guard.warned", ref: keptOrderId,
+        outcome: guard.action === "HONOR" ? "OK" : "INFO",
+        detail: { promised: formatMoney(guard.quotedMinor!, merchant.currency), checkout: formatMoney(guard.checkoutMinor, merchant.currency), gap: formatMoney(guard.gapMinor, merchant.currency), charged: formatMoney(guard.totalMinor, merchant.currency), quote: guard.quote, reason: guard.reason } });
+    }
   });
 
   try {
@@ -99,8 +104,9 @@ export async function createOrderFromSession(sessionId: string): Promise<{ keptO
       itemTotalMinor: price.itemTotalMinor,
       shippingMinor: price.shippingMinor,
       shippingDiscountMinor: price.promoMinor,
+      discountMinor: guard.honorDiscountMinor,
       taxMinor: price.taxMinor,
-      totalMinor: price.totalMinor,
+      totalMinor: guard.totalMinor,
       lines: lines.map((l) => ({ name: l.product.name, sku: l.product.sku, qty: l.qty, unitMinor: l.product.priceMinor })),
       description: `${merchant.name} order ${keptOrderId}`,
       requestId: `create-${keptOrderId}`,

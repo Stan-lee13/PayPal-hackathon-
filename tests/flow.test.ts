@@ -148,6 +148,34 @@ d("Kept end-to-end (emulated PayPal)", () => {
     expect(run.verdict.decision).toBe("DECLINE");
   });
 
+  it("checkout guard HONOR: the PayPal order is created at the promised $84.00, so the promise is KEPT and no refund is needed", async () => {
+    const db = getDb();
+    const [m] = await db.select().from(schema.merchants);
+    await db.update(schema.merchants).set({ policy: { ...m!.policy, checkoutGuard: "HONOR" } }).where(eq(schema.merchants.id, m!.id));
+    try {
+      const { keptOrderId } = await placeOrder("EXPRESS");
+      const o = (await db.query.orders.findFirst({ where: eq(schema.orders.id, keptOrderId) }))!;
+      expect(o.requestedTotalMinor).toBe(8400);
+      expect(o.captureAmountMinor).toBe(8400); // what PayPal actually captured
+      const cm = await commitmentsOf(keptOrderId);
+      expect(cm.PRICE_AS_QUOTED?.state).toBe("KEPT");
+      expect(await db.select().from(schema.remedies).where(eq(schema.remedies.orderId, keptOrderId))).toHaveLength(0);
+      const trail = await db.select().from(schema.auditLog).where(eq(schema.auditLog.orderId, keptOrderId));
+      expect(trail.some((a) => a.action === "checkout_guard.honored")).toBe(true);
+      const receipt = await views.getReceipt(o.receiptToken);
+      expect(receipt?.timeline.some((t) => t.action === "checkout_guard.honored")).toBe(true);
+    } finally {
+      await db.update(schema.merchants).set({ policy: m!.policy }).where(eq(schema.merchants.id, m!.id));
+    }
+  });
+
+  it("checkout guard WARN (default): the overcharge is recorded before payment and still caught after capture", async () => {
+    const { keptOrderId } = await placeOrder("EXPRESS");
+    const trail = await getDb().select().from(schema.auditLog).where(eq(schema.auditLog.orderId, keptOrderId));
+    expect(trail.find((a) => a.action === "checkout_guard.warned")?.detail).toMatchObject({ promised: "$84.00", checkout: "$93.33", gap: "$9.33" });
+    expect((await commitmentsOf(keptOrderId)).PRICE_AS_QUOTED?.state).toBe("BROKEN");
+  });
+
   it("matching price: standard shipping $88.50 quoted and captured → KEPT, no remedy", async () => {
     const { reply, keptOrderId } = await placeOrder("STANDARD");
     expect(reply.text).toContain("Your total is $88.50.");
