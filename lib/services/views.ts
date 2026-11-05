@@ -71,6 +71,8 @@ export async function getReceipt(token: string) {
   if (!b) return null;
   const now = effectiveNow(b.merchant.demoClockOffsetMs);
   const customerActions = b.audit.filter((a) => CUSTOMER_VISIBLE_ACTIONS.has(a.action));
+  const chained = b.audit.filter((a) => a.hash);
+  const fingerprint = chained.length ? { head: chained.reduce((m, a) => ((a.seq ?? 0) > (m.seq ?? 0) ? a : m)).hash!, entries: chained.length } : null;
   return {
     merchantName: b.merchant.name,
     supportEmail: b.merchant.policy.supportEmail,
@@ -88,6 +90,7 @@ export async function getReceipt(token: string) {
     timeline: customerActions.map((a) => ({ at: a.createdAt, action: a.action, outcome: a.outcome, detail: a.detail })),
     now,
     simulatedClock: b.merchant.demoClockOffsetMs !== 0,
+    fingerprint,
   };
 }
 

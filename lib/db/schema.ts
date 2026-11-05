@@ -290,6 +290,11 @@ export const auditLog = pgTable("audit_log", {
   outcome: text("outcome", { enum: ["OK", "REJECTED", "FAILED", "PENDING", "INFO"] }).notNull(),
   detail: jsonb("detail").$type<Record<string, unknown>>().notNull(),
   createdAt: ts("created_at").notNull().defaultNow(),
+  /** Position in this entry's chain (per order; merchant-level entries form their own chain). */
+  seq: integer("seq"),
+  /** SHA-256 links (lib/ledger/chain.ts). Null only for rows written before chaining existed. */
+  prevHash: text("prev_hash"),
+  hash: text("hash"),
 }, (t) => [index("audit_order").on(t.orderId, t.createdAt), index("audit_merchant").on(t.merchantId, t.createdAt)]);
 
 export const rateLimits = pgTable("rate_limits", {

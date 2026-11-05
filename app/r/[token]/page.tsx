@@ -130,6 +130,14 @@ export default async function ReceiptPage({ params }: { params: Promise<{ token:
           <p className="mt-1 text-sm text-ink-soft">Tell {r.merchantName} directly — mention order <span className="mono">{o.id}</span>. You also keep all your rights with PayPal.</p>
           <a className="btn mt-3" href={`mailto:${r.supportEmail}?subject=${encodeURIComponent(`Order ${o.id}`)}`}>Email {r.merchantName}</a>
         </section>
+        {r.fingerprint && (
+          <section className="mt-6 text-xs text-ink-soft" aria-labelledby="fp-h">
+            <h2 id="fp-h" className="eyebrow">Evidence fingerprint</h2>
+            <p className="mt-1">Every step above is recorded in a tamper-evident chain ({r.fingerprint.entries} entries so far). Its current fingerprint is:</p>
+            <p className="mono mt-1 break-all text-ink">{r.fingerprint.head}</p>
+            <p className="mt-1">Save it. If the record is ever changed or cut short, this fingerprint will no longer match the merchant&rsquo;s evidence pack.</p>
+          </section>
+        )}
         <p className="mt-6 text-xs text-ink-soft">This page is private to you: anyone with the link can see it, so don&rsquo;t share it publicly.</p>
       </main>
     </>

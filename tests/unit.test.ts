@@ -229,3 +229,39 @@ describe("checkout guard (pre-payment promise check, deterministic)", async () =
     expect(planCheckout(msgs, [{ product: dress, qty: 1 }], "EXPRESS", { ...DEFAULT_POLICY, checkoutGuard: "HONOR" }, "USD").guard.action).toBe("NONE");
   });
 });
+
+describe("tamper-evident audit chain (pure)", async () => {
+  const { entryHash, genesisHash, verifyChain } = await import("../lib/ledger/chain");
+  const build = (n: number) => {
+    const out: import("../lib/ledger/chain").ChainEntry[] = [];
+    let prev = genesisHash("m1", "o1");
+    for (let i = 1; i <= n; i++) {
+      const e = { seq: i, merchantId: "m1", orderId: "o1", actor: "system", action: `step.${i}`, ref: null, outcome: "OK", detail: { amount: "$9.33", nested: { b: 2, a: 1 } }, createdAt: new Date(Date.UTC(2026, 10, 5, 0, 0, i)).toISOString(), prevHash: prev };
+      const hash = entryHash(e); out.push({ ...e, hash }); prev = hash;
+    }
+    return out;
+  };
+  it("an untouched chain verifies from genesis, in any input order, and key order in detail does not matter", () => {
+    const c = build(4);
+    expect(verifyChain("m1", "o1", [...c].reverse())).toMatchObject({ ok: true, length: 4, head: c[3]!.hash });
+    const reordered = c.map((e) => ({ ...e, detail: { nested: { a: 1, b: 2 }, amount: "$9.33" } }));
+    expect(verifyChain("m1", "o1", reordered).ok).toBe(true);
+  });
+  it("detects an edited entry", () => {
+    const c = build(4); c[1] = { ...c[1]!, detail: { amount: "$0.00" } };
+    expect(verifyChain("m1", "o1", c)).toMatchObject({ ok: false, brokenAtSeq: 2 });
+  });
+  it("detects a deleted entry, even if the attacker renumbers", () => {
+    const c = build(4);
+    expect(verifyChain("m1", "o1", [c[0]!, c[2]!, c[3]!])).toMatchObject({ ok: false, brokenAtSeq: 3 });
+    const renumbered = [c[0]!, { ...c[2]!, seq: 2 }, { ...c[3]!, seq: 3 }];
+    expect(verifyChain("m1", "o1", renumbered).ok).toBe(false);
+  });
+  it("detects an entry moved from another order's chain, and a recomputed hash without the right link", () => {
+    const c = build(2);
+    expect(verifyChain("m1", "o2", c).ok).toBe(false);
+    const forged = { ...c[1]!, detail: { amount: "$0.00" } }; forged.hash = entryHash({ ...forged });
+    expect(verifyChain("m1", "o1", [c[0]!, forged]).ok).toBe(true); // a self-consistent forgery of the LAST entry is only caught by an external anchor:
+    expect(forged.hash).not.toBe(c[1]!.hash); // …the receipt/PayPal fingerprint no longer matches
+  });
+});

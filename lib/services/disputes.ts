@@ -34,7 +34,10 @@ export async function disputeContext(orderId: string, disputeId: string) {
   const inFlight = refs.filter((r) => r.status === "PENDING").reduce((s, r) => s + r.amountMinor, 0)
     + rems.filter((r) => (r.state === "EXECUTING" || r.state === "APPROVED") && !r.paypalRefundId && r.kind !== "DISPUTE_OFFER").reduce((s, r) => s + (r.amountMinor ?? 0), 0);
   const remaining = Math.max(0, (order.captureAmountMinor ?? 0) - refunded - inFlight);
-  return { order, dispute, cms, trks, refs, rems, merchant, refunded, remaining };
+  const { orderChain } = await import("./evidence");
+  const chain = (await orderChain(order.merchantId, order.id)).verdict;
+  const fingerprint = chain.ok && chain.length > 0 ? chain.head : null;
+  return { order, dispute, cms, trks, refs, rems, merchant, refunded, remaining, fingerprint };
 }
 
 /** Deterministic choice of response + the factual evidence note. */
@@ -56,6 +59,8 @@ export function chooseResponse(ctx: Awaited<ReturnType<typeof disputeContext>>):
   if (order.captureAmountMinor !== null) lines.push(`PayPal capture ${order.paypalCaptureId}: ${formatMoney(order.captureAmountMinor, cur)}.`);
   for (const r of completed) lines.push(`Refund ${r.paypalRefundId} COMPLETED: ${formatMoney(r.amountMinor, cur)}.`);
   if (tracker && notReceived) lines.push(`Tracking ${tracker.carrier} ${tracker.trackingNumber} added to the PayPal order at ${tracker.recordedAt.toISOString().slice(0, 16).replace("T", " ")} UTC (shows shipment, not delivery).`);
+  // Anchors Kept's record at PayPal: a later edit to the audit trail would no longer contain this hash.
+  if (ctx.fingerprint) lines.push(`Kept evidence fingerprint (SHA-256 audit-chain head): ${ctx.fingerprint}.`);
   const evidence = lines.join(" ");
 
   if (dispute.reason === "MERCHANDISE_OR_SERVICE_NOT_RECEIVED") {

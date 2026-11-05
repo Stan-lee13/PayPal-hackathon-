@@ -9,6 +9,7 @@ import { AutoRefresh } from "@/components/auto-refresh";
 import { formatMoney } from "@/lib/money";
 import { paypalMode } from "@/lib/paypal/client";
 import { CommitmentActions, OrderActions, RemedySheet } from "./actions";
+import { orderChain } from "@/lib/services/evidence";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Order ledger" };
@@ -25,6 +26,7 @@ export default async function OrderLedger({ params }: { params: Promise<{ id: st
   const cur = o.captureCurrency ?? o.currency;
   const previews = Object.fromEntries(await Promise.all(b.remedies.map(async (r) => [r.id, await remedyRequestPreview(r)] as const)));
   const simulated = paypalMode() === "simulated";
+  const chain = (await orderChain(o.merchantId, o.id)).verdict;
 
   return (
     <>
@@ -146,7 +148,15 @@ export default async function OrderLedger({ params }: { params: Promise<{ id: st
           ))}
         </section>
         <section aria-labelledby="audit-h">
-          <h2 id="audit-h" className="eyebrow">Audit trail</h2>
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <h2 id="audit-h" className="eyebrow">Audit trail</h2>
+            <a className="text-xs underline" href={`/api/merchant/orders/${o.id}/evidence`} download>Download evidence pack (JSON)</a>
+          </div>
+          <p className={`mt-1 text-xs ${chain.ok ? "text-kept" : "text-broken font-semibold"}`} role="status">
+            {chain.ok
+              ? <>Hash chain intact: {chain.length} entries, each linked to the one before by SHA-256 · head <span className="mono">{chain.head.slice(0, 16)}…</span></>
+              : <>Hash chain BROKEN at entry {chain.brokenAtSeq}: {chain.reason}</>}
+          </p>
           <ol className="mt-2 divide-y divide-[var(--rule)] border-y border-rule text-sm">
             {b.audit.map((a) => (
               <li key={a.id} className="grid grid-cols-[4.5rem_1fr] gap-2 py-2">

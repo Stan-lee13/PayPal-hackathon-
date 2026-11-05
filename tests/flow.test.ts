@@ -11,7 +11,7 @@ const d = enabled ? describe : describe.skip;
 
 const { getDb } = await import("../lib/db");
 const schema = await import("../lib/db/schema");
-const { eq } = await import("drizzle-orm");
+const { eq, sql } = await import("drizzle-orm");
 const { seedDemoMerchant, resetTransactions } = await import("../lib/services/seed");
 const chat = await import("../lib/services/chat");
 const orders = await import("../lib/services/orders");
@@ -176,6 +176,39 @@ d("Kept end-to-end (emulated PayPal)", () => {
     expect((await commitmentsOf(keptOrderId)).PRICE_AS_QUOTED?.state).toBe("BROKEN");
   });
 
+  it("evidence: every order's audit trail is a SHA-256 chain; the pack verifies offline; tampering is detected", async () => {
+    const { keptOrderId } = await placeOrder("EXPRESS");
+    const db = getDb();
+    const ev = await import("../lib/services/evidence");
+    const o = (await db.query.orders.findFirst({ where: eq(schema.orders.id, keptOrderId) }))!;
+    const { verdict } = await ev.orderChain(o.merchantId, keptOrderId);
+    expect(verdict.ok).toBe(true);
+    expect(verdict.length).toBeGreaterThan(5);
+    const pack = (await ev.evidencePack(keptOrderId))!;
+    expect(ev.verifyPack(JSON.parse(JSON.stringify(pack))).ok).toBe(true);
+    expect(pack.sources.some((s) => s.kind === "REFUND_POLICY")).toBe(true); // merchant-level sources behind policy promises are included
+    const receipt = (await views.getReceipt(o.receiptToken))!;
+    expect(receipt.fingerprint?.head).toBe(verdict.ok ? verdict.head : "");
+
+    // someone edits history directly in the database
+    await db.execute(sql`update audit_log set detail = '{"status":"COMPLETED","amount":"$84.00"}' where order_id = ${keptOrderId} and seq = 3`);
+    const after = await ev.orderChain(o.merchantId, keptOrderId);
+    expect(after.verdict).toMatchObject({ ok: false, brokenAtSeq: 3 });
+    // and an exported pack with an altered source fails offline
+    const forged = JSON.parse(JSON.stringify(pack)); forged.sources[0].text += " (edited)";
+    expect(ev.verifyPack(forged).ok).toBe(false);
+  });
+
+  it("evidence: concurrent writers to one order cannot fork its chain", async () => {
+    const { keptOrderId } = await placeOrder("STANDARD");
+    const db = getDb();
+    const o = (await db.query.orders.findFirst({ where: eq(schema.orders.id, keptOrderId) }))!;
+    const { audit } = await import("../lib/services/audit");
+    await Promise.all(Array.from({ length: 25 }, (_, i) => audit(db, { merchantId: o.merchantId, orderId: keptOrderId, actor: "system", action: "test.concurrent", outcome: "INFO", detail: { i } })));
+    const { verdict } = await (await import("../lib/services/evidence")).orderChain(o.merchantId, keptOrderId);
+    expect(verdict.ok).toBe(true);
+  });
+
   it("matching price: standard shipping $88.50 quoted and captured → KEPT, no remedy", async () => {
     const { reply, keptOrderId } = await placeOrder("STANDARD");
     expect(reply.text).toContain("Your total is $88.50.");
@@ -270,6 +303,8 @@ d("Kept end-to-end (emulated PayPal)", () => {
     await sim.deliverSimulatedEvents();
     const [resp] = await db.select().from(schema.remedies).where(eq(schema.remedies.kind, "DISPUTE_OFFER"));
     expect(resp?.disputeAction).toMatchObject({ type: "PROVIDE_EVIDENCE", disputeId, trackingNumber: "DHL7654321" });
+    expect((resp?.disputeAction as { note: string }).note).toMatch(/Kept evidence fingerprint \(SHA-256 audit-chain head\): [0-9a-f]{64}/);
+    expect(resp!.customerMessage).toMatch(/[0-9a-f]{64}/); // survives the 600-character message limit
     expect(resp?.policyChecks.every((c) => c.ok)).toBe(true);
     // nothing is sent to the Disputes API until the merchant approves
     expect(resp?.state).toBe("PROPOSED");
