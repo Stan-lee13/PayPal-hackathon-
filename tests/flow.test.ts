@@ -261,7 +261,7 @@ d("Kept end-to-end (emulated PayPal)", () => {
     expect(ds[0]).toMatchObject({ reason: "MERCHANDISE_OR_SERVICE_NOT_RECEIVED", stage: "INQUIRY" });
   });
 
-  it("dispute shield: 'not received' + tracker recorded before deadline → proof of fulfilment submitted via Disputes API after approval", async () => {
+  it("dispute from the ledger: 'not received' + tracker recorded before deadline → proof of fulfilment submitted via Disputes API after approval", async () => {
     const { keptOrderId } = await placeOrder("EXPRESS");
     await actions.addOrderTracking(keptOrderId, "DHL7654321", "DHL");
     const db = getDb();
@@ -287,7 +287,7 @@ d("Kept end-to-end (emulated PayPal)", () => {
     expect(responses[0]!.state).toBe("COMPLETED");
   });
 
-  it("dispute shield: overcharge dispute → offer exactly the $9.33 difference (supersedes the pending refund proposal)", async () => {
+  it("dispute from the ledger: overcharge dispute → offer exactly the $9.33 difference (supersedes the pending refund proposal)", async () => {
     const { keptOrderId } = await placeOrder("EXPRESS");
     const db = getDb();
     const o = (await db.query.orders.findFirst({ where: eq(schema.orders.id, keptOrderId) }))!;
@@ -303,7 +303,7 @@ d("Kept end-to-end (emulated PayPal)", () => {
     expect(await db.select().from(schema.refunds).where(eq(schema.refunds.orderId, keptOrderId))).toHaveLength(0); // money only moves if the buyer accepts
   });
 
-  it("dispute shield: 'not received' with no tracker → honest refund offer, not a fake defence", async () => {
+  it("dispute from the ledger: 'not received' with no tracker → honest refund offer, not a fake defence", async () => {
     const { keptOrderId } = await placeOrder("STANDARD");
     const db = getDb();
     const o = (await db.query.orders.findFirst({ where: eq(schema.orders.id, keptOrderId) }))!;

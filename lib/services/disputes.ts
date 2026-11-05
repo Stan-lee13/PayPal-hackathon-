@@ -1,5 +1,5 @@
 /**
- * Dispute shield. When PayPal reports a dispute, Kept already holds the evidence:
+ * Disputes answered from the ledger. When PayPal reports a dispute, Kept already holds the evidence:
  * what was promised (verbatim, anchored), and what PayPal recorded (capture,
  * refunds, trackers). It proposes ONE honest response — defend with evidence
  * when the promise was kept, offer the refund when it was broken — and executes

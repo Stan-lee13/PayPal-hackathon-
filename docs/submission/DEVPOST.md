@@ -4,7 +4,7 @@
 
 **Tagline (≤ 60 chars):** Every payment is a promise. Kept makes sure it's kept.
 
-**Short description:** Kept binds every PayPal payment to the promises that justified it, said by a merchant, its AI assistant, or a shopper's own AI agent. It watches PayPal's records and proposes a fix the merchant approves when they disagree.
+**Short description:** Kept checks what a merchant's AI assistant promised against what PayPal charges. It warns or honours the promise before payment, and catches and repairs it after payment, with the merchant approving every cent.
 
 ---
 
@@ -22,26 +22,29 @@ I'm building from Lagos. PayPal reopened incoming payments for Nigerians through
 
 Kept is a promise-verification layer for merchants paid through PayPal.
 
-1. **Captures the promise.** It reads the sales chat (human or AI), the refund policy, and, in agent mode, the shopper's own instructions to their AI agent. It turns verifiable statements into structured commitments bound to the PayPal order through `custom_id`:
+1. **Checks before the buyer pays.** When the bag is ready, Kept compares the total the assistant promised in the chat with what PayPal is about to charge. The merchant's rule decides what happens:
+   - **Warn:** the buyer sees the gap before paying.
+   - **Honour:** the PayPal order is created at the promised total, as a labelled discount. Kept honours a quote only when it exactly matches the merchant's published pricing for that cart; a stale or made-up quote is never honoured automatically.
+2. **Captures the promise.** It reads the sales chat (human or AI), the refund policy, and, in agent mode, the shopper's own instructions to their AI agent. It turns verifiable statements into structured commitments bound to the PayPal order through `custom_id`:
    - *price as quoted*;
    - *ships within N hours*;
    - *refund within N days*;
    - *the shopper's spending and shipping limits*.
-2. **Validates before enforcing.** A promise is enforceable only if:
+3. **Validates before enforcing.** A promise is enforceable only if:
    - its exact words appear verbatim in the source;
    - it was said by the right party;
    - its numbers re-parse from the quote;
    - it has no hedges ("about", "usually", "up to").
 
    Vague promises like "we'll sort you out" are marked unverifiable and never enforced.
-3. **Watches PayPal.** Signed webhooks are verified (CRC32 + RSA-SHA256), deduplicated, and never trusted alone: Kept re-fetches every capture, refund, tracker and dispute with an authoritative GET.
-4. **Evaluates deterministically.** Pure code, integer cents: $84.00 promised vs $93.33 captured is **BROKEN** by $9.33. A shipping promise with a PayPal tracker added before the deadline is **KEPT**.
-5. **Proposes a remedy; a person approves it.**
+4. **Watches PayPal.** Signed webhooks are verified (CRC32 + RSA-SHA256), deduplicated, and never trusted alone: Kept re-fetches every capture, refund, tracker and dispute with an authoritative GET.
+5. **Evaluates deterministically.** Pure code, integer cents: $84.00 promised vs $93.33 captured is **BROKEN** by $9.33. A shipping promise with a PayPal tracker added before the deadline is **KEPT**.
+6. **Proposes a remedy; a person approves it.**
    - An AI agent with read-only tools (or a rules fallback) drafts the remedy.
    - A policy engine independently checks it: the amount must be no more than the computed gap and the remaining refundable amount, and within the merchant's cap.
    - The merchant sees the **exact PayPal request** and clicks once.
    - The refund uses a stored `PayPal-Request-Id` and is confirmed by GET.
-6. **Tells the customer.** A living receipt (mobile-first, 256-bit link) shows what was promised, what PayPal recorded, and where the money is. "Refunded" appears only after PayPal confirms it.
+7. **Tells the customer.** A living receipt (mobile-first, 256-bit link) shows what was promised, what PayPal recorded, and where the money is. "Refunded" appears only after PayPal confirms it.
 
 **Agent-to-agent commerce.**
 
@@ -49,7 +52,14 @@ Kept is a promise-verification layer for merchants paid through PayPal.
 - **A deterministic guard, not the model**, decides whether every hard limit in the shopper's mandate is met by what the merchant committed to in writing. Only then can the shopper approve the payment in PayPal themselves.
 - If PayPal then charges more, Kept attributes the fault (merchant vs agent), and one refund repairs both promises.
 
-**Dispute shield.**
+**Promise analytics.** The merchant's ledgers (promises, orders, the audit trail) are AG Grid tables. An AG Studio report shows:
+- how often the business keeps its word: kept as promised, and kept or made good, over resolved promises;
+- where promises are made;
+- what it cost to make broken ones good.
+
+All of it comes from Kept's own records and PayPal-confirmed amounts, and the merchant can edit the report.
+
+**Disputes, answered from the ledger.**
 
 - When a buyer opens a PayPal dispute, Kept already holds the ledger. Deterministic rules pick an honest response:
   - proof of fulfilment if PayPal has a tracker;
@@ -68,6 +78,7 @@ Kept is a promise-verification layer for merchants paid through PayPal.
   - order tracking (`/v2/checkout/orders/{id}/track`);
   - Disputes API: `GET`, `make-offer`, multipart `provide-evidence`, and `send-message`;
   - webhook registration and local signature verification, with a fallback to `verify-webhook-signature`.
+- **AG Grid and AG Studio:** AG Grid Community for the promises, orders and activity ledgers; an AG Studio report (three related data sources, two ratio measures) for promise analytics.
 - **AI:** Claude, via the official Anthropic SDK with structured outputs (zod schemas) and strict tools. It is used for:
   - the merchant's sales assistant (with a deterministic `get_quote` tool, so the AI never does arithmetic);
   - promise extraction;
@@ -80,6 +91,7 @@ Kept is a promise-verification layer for merchants paid through PayPal.
   | Decision | Decided by |
   |---|---|
   | Is it a real promise? | The validator |
+  | Warn or honour before payment? | The price check, under the merchant's rule |
   | What did PayPal do? | PayPal, re-fetched |
   | How big is the gap? | The evaluator |
   | May the agent pay? | The guard |
@@ -111,7 +123,7 @@ Kept is a promise-verification layer for merchants paid through PayPal.
 ## Accomplishments that we're proud of
 
 - **The whole loop works end to end:** promise → extraction → validation → PayPal binding → verified events → evaluation → remedy → human approval → PayPal execution → confirmation → customer receipt.
-- **89 automated tests**, including concurrent double-approval (exactly one refund), duplicate webhooks, refund failure and pending, lost-webhook recovery, agent-to-agent blame, and three dispute-shield flows.
+- **98 automated tests**, including the price check (stale, made-up and hedged quotes are never honoured), concurrent double-approval (exactly one refund), duplicate webhooks, refund failure and pending, lost-webhook recovery, agent-to-agent blame, and three dispute-shield flows.
 - **Three Playwright browser runs**, one per demo scenario.
 - **A two-sided product, not a dashboard:** a merchant ledger (Said / Seal / Happened), a remedy sheet that shows the exact PayPal request, a shopper-agent mode, and a customer receipt that works on a 360 px phone.
 
@@ -134,7 +146,7 @@ The hard part of AI commerce isn't getting an agent to buy something. It's knowi
 
 ## Built with
 
-`paypal-orders-v2` `paypal-payments` `paypal-disputes-api` `paypal-webhooks` `paypal-js-sdk` `claude` `anthropic-sdk` `next.js` `react` `typescript` `postgresql` `drizzle` `tailwind` `vitest` `playwright` `render` `neon`
+`paypal-orders-v2` `paypal-payments` `paypal-disputes-api` `paypal-webhooks` `paypal-js-sdk` `claude` `anthropic-sdk` `ag-grid` `ag-studio` `next.js` `react` `typescript` `postgresql` `drizzle` `tailwind` `vitest` `playwright` `render` `neon`
 
 ---
 
@@ -142,11 +154,13 @@ The hard part of AI commerce isn't getting an agent to buy something. It's knowi
 
 | Claim | Status at submission |
 |---|---|
-| Full loop in simulated mode (labelled emulator) | Verified by the 89 tests and three Playwright runs |
+| Full loop in simulated mode (labelled emulator) | Verified by the 98 tests and three Playwright runs |
 | PayPal sandbox: OAuth, orders, capture, refund, tracking, webhooks | `[VERIFIED on DATE / NOT YET RUN]` |
 | PayPal Disputes API (`make-offer`, `provide-evidence`) on a real sandbox dispute | `[VERIFIED on DATE / emulator-tested only]` |
 | Live Claude calls (assistant, extractor, shopper agent, remedy agent) | `[VERIFIED: eval:extraction score X/46 / fallbacks only]` |
 | Deployment | `[URL, verified with /api/health on DATE]` |
 | Production readiness | **Not claimed.** MVP with a demo passcode and one demonstration merchant (Adaeze Studio). |
+
+**Sponsor prize to select on Devpost:** AG Grid (AG Grid ledgers and the AG Studio report). The rules allow one sponsor prize alongside a grand prize or honorable mention. `[Confirm on the Devpost prizes page before selecting.]`
 
 **Try it:** `[LIVE URL]/tour` · merchant passcode: `[PASSCODE]` · repo: `[REPO URL]` (MIT)

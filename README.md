@@ -2,13 +2,13 @@
 
 **Every payment is a promise. Kept makes sure it's kept.**
 
-Kept is a promise-verification layer for merchants paid through PayPal.
+Kept is a promise-verification layer for merchants paid through PayPal. Businesses are now answerable for what their AI assistants say (*Moffatt v. Air Canada*, 2024 BCCRT 149), but nothing checks those promises against the payment. Kept does.
 
-- It reads what the merchant (or the merchant's AI sales assistant) promised.
-- It turns the verifiable promises into structured commitments and binds them to the PayPal order.
-- It watches PayPal's authoritative records.
-- When the two disagree, it computes the gap and proposes a remedy.
-- The merchant approves every cent. The customer gets a living receipt.
+- **Before payment:** it compares the total the assistant promised in the chat with what PayPal is about to charge. It warns the buyer, or honours the promise, by the merchant's rule.
+- **After payment:** it turns every verifiable promise into a commitment bound to the PayPal order and watches PayPal's own records.
+- **When they disagree:** code computes the gap, a remedy is proposed, and the merchant approves every cent. The customer's living receipt updates.
+
+The same promise ledger also covers shoppers' AI agents (their spending limits become promises too) and PayPal disputes (answered with what was promised and what PayPal recorded).
 
 ```
 PROMISE → EXTRACTION → VALIDATION → PAYPAL BINDING → EVENT MONITORING → EVALUATION
@@ -17,7 +17,17 @@ PROMISE → EXTRACTION → VALIDATION → PAYPAL BINDING → EVENT MONITORING �
 
 > **MVP, not production banking infrastructure.** The merchant console uses one shared demo passcode. Adaeze Studio is a demonstration merchant. Run with sandbox credentials only. Read [Limitations](#limitations).
 
-Product research and rationale: [`docs/PRODUCT_DISCOVERY.md`](docs/PRODUCT_DISCOVERY.md). Industry research: [`docs/research/`](docs/research/).
+Product research and rationale: [`docs/PRODUCT_DISCOVERY.md`](docs/PRODUCT_DISCOVERY.md). Industry research: [`docs/research/`](docs/research/). **Judges:** start at `/tour` on the running app.
+
+### What has actually run
+
+| Part | Status |
+|---|---|
+| Full loop in simulated mode (labelled local PayPal emulator) | **Ran.** 98 automated tests (`npm test`), plus three Playwright browser runs of the demo: `scripts/e2e-ui.mjs`, `e2e-agent.mjs` and `e2e-dispute.mjs` |
+| PayPal sandbox: OAuth endpoint | **Reached.** It correctly rejected placeholder credentials |
+| PayPal sandbox: orders, capture, refund, tracking, Disputes API, signed webhooks | **Not yet run.** Needs the owner's sandbox credentials. `scripts/sandbox-smoke.ts` is the first step |
+| Claude (assistant, extractor, shopper agent, remedy agent) | **Not yet run live.** Labelled deterministic fallbacks are used. `npm run eval:extraction` measures the real extractor |
+| Deployment | **Not yet deployed** |
 
 ---
 
@@ -28,7 +38,7 @@ Product research and rationale: [`docs/PRODUCT_DISCOVERY.md`](docs/PRODUCT_DISCO
    - *"Your total is $84.00."* This applies the studio's published *free express shipping over $75* promotion.
    - *"Your order ships within 48 hours."*
    - *"We'll sort you out if anything goes wrong."*
-3. The demo checkout does **not** apply chat-advertised promotions. This is a deliberate, labelled `DEMO_MODE` integration gap: the conversation layer and the checkout disagree. PayPal captures **$93.33** ($84.00 + $9.33 express).
+3. The demo checkout does **not** apply chat-advertised promotions. This is a deliberate, labelled `DEMO_MODE` integration gap: the conversation layer and the checkout disagree. Before payment, Kept's price check (default mode **Warn**) shows the buyer the $9.33 difference. If they pay anyway, PayPal captures **$93.33** ($84.00 + $9.33 express). In **Honour** mode, the PayPal order is created at $84.00 instead and the promise is simply KEPT.
 4. Kept receives the signed `PAYMENT.CAPTURE.COMPLETED` webhook. It re-fetches the capture with `GET /v2/payments/captures/{id}`, then extracts and validates the promises:
 
    | Promise | Kept's decision |
@@ -56,6 +66,30 @@ The other scenarios are covered by tests and reachable in the UI:
 
 ---
 
+## Before the buyer pays: the price check
+
+The cheapest broken promise is the one that never happens. When the bag is ready, Kept reads the chat with the same deterministic extractor and validator it uses after capture. No model is involved. It then compares the assistant's promised total with what checkout will ask PayPal to charge. The merchant chooses what happens in **Settings**:
+
+| Mode | What happens |
+|---|---|
+| **Warn** (default) | The buyer sees the difference before paying: *"The assistant told you 'Your total is $84.00.' but checkout is $93.33."* Kept records the warning, and after capture the promise is enforced as usual. |
+| **Honour** | Kept creates the PayPal order at the promised total, with the difference as a labelled order `discount` in the breakdown. Only when the promised total is exactly what the merchant's own published pricing gives for this cart, and within the maximum single refund. A stale quote (the cart changed after the assistant spoke) or a made-up number is never honoured automatically; it falls back to Warn. |
+| **Off** | No pre-payment check. Promises are still verified after capture. |
+
+Either outcome is audited and appears on the customer's receipt. The test suite covers stale quotes, made-up quotes, hedged quotes, the refund cap, customer-written "quotes", and an end-to-end Honour flow ($84.00 captured, promise KEPT, no refund needed).
+
+## Promise analytics (AG Grid + AG Studio)
+
+- **AG Grid ledgers.** The merchant console's promises inbox, orders and activity trail are AG Grid tables (Community, MIT), themed with Kept's design tokens. They support sorting, per-column filters and search across every column. Rows open the order ledger.
+- **AG Studio report.** `/merchant/analytics` is an AG Studio report over Kept's own records: promises, orders and remedies, related by order. It shows:
+  - **kept as promised** and **kept or made good**, both measured over *resolved* promises only;
+  - broken promises still open;
+  - money refunded through PayPal and money honoured before payment;
+  - where promises were made (AI chat, policy, shopper's mandate) and how they ended;
+  - a per-promise table.
+
+  The merchant can switch to **Edit** and build their own widgets from the same data. Colours are deliberately non-semantic, because AG Studio assigns them by category order. Without an `AG_STUDIO` licence key it runs in evaluation mode (watermark).
+
 ## Agent-to-agent commerce: "Send my AI agent"
 
 AI agents are starting to buy on people's behalf. When the shopper's agent talks to the merchant's agent, two sets of promises matter:
@@ -81,7 +115,7 @@ Kept treats both as evidence.
    - **agent**: the agent accepted an over-limit quote.
 5. A mandate has no remedy of its own. It is made good through the merchant promise it depends on. In the demo, the $9.33 refund brings the net back to $84.00, and the mandate shows **Broken · made good**.
 
-## Dispute shield
+## Disputes, answered from the ledger
 
 When PayPal reports a dispute (`CUSTOMER.DISPUTE.CREATED`, re-fetched with `GET /v1/customer/disputes/{id}`), Kept already has the promise ledger. It proposes a response chosen by **deterministic rules**:
 
@@ -223,8 +257,10 @@ lib/ledger/   evaluator.ts   — pure, deterministic state machine (no I/O, no A
 lib/policy/   engine.ts      — deterministic remedy validation
 lib/ai/       assistant.ts (sales chat, quote tool) · remedy-agent.ts (read-only tools → propose_remedy)
               buyer-agent.ts (shopper's agent + deterministic mandate guard)
-lib/services/ orders · ledger · remedies · disputes (dispute shield) · webhooks · pipeline (reconcile)
-              merchant-actions · views · chat
+lib/services/ orders · checkout-guard (pre-payment price check) · ledger · remedies · disputes (answered from the ledger)
+              webhooks · pipeline (reconcile) · merchant-actions · views · analytics · chat
+components/   ledger-grid.tsx (AG Grid) · seal · money · mode-banner
+app/merchant/(console)/analytics   AG Studio promise-health report
 lib/db/       Drizzle schema (Postgres) — drizzle/ holds migrations
 ```
 
@@ -237,6 +273,7 @@ lib/db/       Drizzle schema (Postgres) — drizzle/ holds migrations
 | Discrepancy, deadlines, states | **Deterministic evaluator** (integer minor units) |
 | Remedy wording | AI agent (read-only tools) or rules |
 | Whether a remedy is allowed | **Policy engine** (type allowed, amount ≤ computed discrepancy, ≤ remaining refundable, ≤ policy cap, currency, capture refundable, no other remedy live) — checked at proposal *and* again at approval |
+| Whether checkout warns or honours a promised total | **Deterministic price check** under the merchant's chosen mode |
 | Whether a shopper's agent may proceed to payment | **Deterministic mandate guard**; the shopper still approves in PayPal |
 | Which dispute response to propose | **Deterministic rules** over PayPal records and the ledger |
 | Whether money moves | **The merchant**, with an explicit click, after seeing the exact PayPal request |
@@ -299,7 +336,7 @@ npm test                 # unit + golden set + end-to-end flow (needs TEST_DATAB
 npm run lint             # TypeScript strict type-check
 node scripts/e2e-ui.mjs     # Playwright drive of the full demo against a running instance (BASE_URL, MERCHANT_PASSCODE)
 node scripts/e2e-agent.mjs  # Playwright drive of the agent-to-agent demo (declined mandate, cleared mandate, refund, receipt)
-node scripts/e2e-dispute.mjs # Playwright drive of the dispute shield (tracking → simulated buyer dispute → evidence approved → UNDER_REVIEW)
+node scripts/e2e-dispute.mjs # Playwright drive of a dispute answered from the ledger (tracking → simulated buyer dispute → evidence approved → UNDER_REVIEW)
 npm run eval:extraction  # runs the REAL Claude extractor over the golden set (needs ANTHROPIC_API_KEY)
 ```
 
@@ -335,8 +372,9 @@ npm run eval:extraction  # runs the REAL Claude extractor over the golden set (n
   - custom_id binding;
   - disputes;
   - lost-webhook reconciliation;
+  - price check before payment: Honour creates the PayPal order at $84.00 (promise KEPT, no refund), and Warn is recorded and still caught after capture;
   - agent-to-agent: mandate cleared, then broken by the capture, blamed on the merchant, and made good by the refund; over-limit quote declined before payment; no payment without a PROCEED verdict;
-  - dispute shield: proof of fulfilment submitted after approval; refund offer for a broken price promise; no Disputes API call without approval.
+  - disputes answered from the ledger: proof of fulfilment submitted after approval; refund offer for a broken price promise; no Disputes API call without approval.
 
 ---
 

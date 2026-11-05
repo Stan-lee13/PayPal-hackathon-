@@ -1,4 +1,4 @@
-// UI end-to-end run of the dispute shield against a running Kept instance (simulated PayPal only).
+// UI end-to-end run of a dispute answered from the promise ledger against a running Kept instance (simulated PayPal only).
 // Usage: BASE_URL=http://localhost:3000 MERCHANT_PASSCODE=... node scripts/e2e-dispute.mjs [outDir]
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);

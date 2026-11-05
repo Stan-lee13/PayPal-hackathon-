@@ -20,16 +20,17 @@ export default function Tour() {
 
   const scenarios: Scenario[] = [
     {
-      n: "01", title: "The AI assistant's promise vs PayPal's capture", minutes: "≈ 2 min",
+      n: "01", title: "The AI assistant's promise vs PayPal's charge", minutes: "≈ 2 min",
       why: "In Moffatt v. Air Canada (2024), a tribunal held the airline to what its chatbot told a customer. Merchants are now accountable for what their AI says, and nobody checks it against the payment.",
       steps: [
         { text: <>Open the <Link className="underline" href="/store">store</Link>. Set Ada Wrap Dress to 1, choose <strong>Express</strong>, and ask <em>&ldquo;What&rsquo;s my total with express shipping?&rdquo;</em></> },
-        { text: <>The assistant says <em>&ldquo;Your total is $84.00&rdquo;</em> (it applies the published free-express promo). Pay. {simulated ? "The simulated PayPal approval is labelled." : "Use the sandbox Personal account."}</> },
+        { text: <>The assistant says <em>&ldquo;Your total is $84.00&rdquo;</em> (it applies the published free-express promo). Before you pay, Kept&rsquo;s <strong>price check</strong> warns that checkout is $93.33. Pay anyway. {simulated ? "The simulated PayPal approval is labelled." : "Use the sandbox Personal account."}</> },
         { text: <>Open the <Link className="underline" href="/merchant">merchant console</Link>{demo ? <> (passcode in the README / submission notes)</> : null}. PayPal captured <strong>$93.33</strong>: the promise is <strong>BROKEN</strong> by $9.33, computed by code.</> },
         { text: <>Open the order. Read the exact PayPal refund request, then <strong>Approve &amp; refund $9.33</strong>. Kept confirms it with a GET on the refund.</> },
         { text: <>Click <strong>Customer receipt ↗</strong>: the promise now reads <em>Broken · made good</em>, with PayPal&rsquo;s refund id.</> },
+        { text: <>Optional: in <strong>Settings</strong>, set the price check to <strong>Honour the promise</strong> and repeat. Now the PayPal order is created at $84.00 and the promise is simply <strong>KEPT</strong>. Then open <strong>Analytics</strong> (AG Studio) to see the kept-as-promised and kept-or-made-good rates.</> },
       ],
-      see: "Verbatim-quote validation · integer-money evaluator · policy engine · human approval · idempotent refund · authoritative confirmation.",
+      see: "Prevent (price check before payment) and repair (after capture) · verbatim-quote validation · integer-money evaluator · policy engine · human approval · idempotent refund · authoritative confirmation.",
     },
     {
       n: "02", title: "Agent-to-agent: the shopper sends their own AI", minutes: "≈ 2 min",
@@ -43,7 +44,7 @@ export default function Tour() {
       see: "The model can't say PROCEED; only the guard can · fault attribution · one remedy repairs both promises.",
     },
     {
-      n: "03", title: "Dispute shield: answer PayPal with the ledger", minutes: "≈ 1 min",
+      n: "03", title: "Disputes: answer PayPal from the promise ledger", minutes: "≈ 1 min",
       why: "When a buyer disputes, the merchant usually starts from nothing. Kept already holds what was promised and what PayPal recorded.",
       steps: [
         { text: <>Place an Express order (scenario 01), then on the order page add a tracking number (e.g. DHL, <span className="mono">DHL7654321</span>). It is sent to PayPal&rsquo;s tracking API.</> },
@@ -98,6 +99,8 @@ export default function Tour() {
               ["Is it a real promise?", "The validator. The quote must appear verbatim, come from the right speaker, and have no hedges."],
               ["What did PayPal do?", "PayPal only. Every webhook is signature-checked and the resource is re-fetched with GET."],
               ["How big is the gap?", "The deterministic evaluator, in integer cents."],
+              ["Warn or honour before payment?", "The merchant's rule. Honour only applies when the quote matches published pricing for that exact cart."],
+              ["Where do the analytics come from?", "Only Kept's own records and PayPal-confirmed amounts. Nothing is sampled or invented."],
               ["May the shopper's agent pay?", "A deterministic guard. The shopper still approves in PayPal."],
               ["Is the remedy allowed?", "The policy engine, checked at proposal and again at approval."],
               ["Does money move?", "The merchant, with one explicit click after seeing the exact request."],
