@@ -27,7 +27,7 @@ await page.getByRole("radio", { name: /Express/ }).check();
 await page.waitForTimeout(500);
 await page.getByLabel("Message").fill("What's my total with express shipping?");
 await page.getByRole("button", { name: "Send" }).click();
-await page.getByText("Your total is $84.00.").waitFor({ timeout: 30000 });
+await page.getByText("Your total is $84.00.").first().waitFor({ timeout: 30000 });
 await page.getByRole("button", { name: /Pay with simulated PayPal/ }).click();
 await page.getByRole("button", { name: /Approve & pay/ }).click();
 const receipt = page.getByRole("link", { name: /Open my living receipt/ });
