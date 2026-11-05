@@ -3,7 +3,7 @@
  * (not PayPal). Proves the product logic; real PayPal sandbox verification is a
  * separate manual step documented in the README.
  */
-import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { useTestEnv } from "./helpers";
 
 const enabled = useTestEnv();
@@ -36,6 +36,23 @@ async function placeOrder(shipping: "EXPRESS" | "STANDARD", question = "What's m
   return { sessionId, reply, keptOrderId, paypalOrderId, delivery };
 }
 
+async function setGuard(mode: "BLOCK" | "WARN" | "HONOR" | "OFF") {
+  const db = getDb();
+  const [m] = await db.select().from(schema.merchants);
+  await db.update(schema.merchants).set({ policy: { ...m!.policy, checkoutGuard: mode } }).where(eq(schema.merchants.id, m!.id));
+}
+
+/** Buyer chats, the order is created and APPROVED in PayPal, but not captured. */
+async function approvedOrder(shipping: "EXPRESS" | "STANDARD", question = "What's my total with shipping?") {
+  const sessionId = await chat.createSession();
+  await chat.setCart(sessionId, [{ productId: "prd_ada_dress", qty: 1 }], shipping);
+  await chat.postCustomerMessage(sessionId, question);
+  const { keptOrderId, paypalOrderId } = await orders.createOrderFromSession(sessionId);
+  emu.approveEmulatorOrder(paypalOrderId);
+  return { sessionId, keptOrderId, paypalOrderId };
+}
+const blocked = async (p: Promise<unknown>) => { try { await p; } catch (e) { return e as { status: number; message: string; preflight?: Record<string, unknown> }; } throw new Error("expected the capture to be refused"); };
+
 async function commitmentsOf(orderId: string) {
   const rows = await getDb().select().from(schema.commitments).where(eq(schema.commitments.orderId, orderId));
   return Object.fromEntries(rows.map((r) => [r.type, r]));
@@ -44,6 +61,9 @@ async function commitmentsOf(orderId: string) {
 d("Kept end-to-end (emulated PayPal)", () => {
   beforeAll(async () => {
     await seedDemoMerchant(getDb());
+    // These scenarios are about AFTER payment: run them as a monitor-only checkout (price check = Warn),
+    // so a mismatched capture can happen and be repaired. The capture gate has its own suite below.
+    await setGuard("WARN");
   });
   beforeEach(async () => {
     await resetTransactions(getDb());
@@ -384,5 +404,108 @@ d("Kept end-to-end (emulated PayPal)", () => {
     expect(report.ordersChecked).toBeGreaterThan(0);
     const cm = await commitmentsOf(keptOrderId);
     expect(cm.PRICE_AS_QUOTED?.state).toBe("BROKEN");
+  });
+
+  describe("capture gate: the PayPal order is verified against the promise BEFORE capture", () => {
+    beforeEach(async () => { await setGuard("BLOCK"); });
+    afterAll(async () => { await setGuard("WARN"); });
+    const db = () => getDb();
+    const orderRow = async (id: string) => (await db().query.orders.findFirst({ where: eq(schema.orders.id, id) }))!;
+    const pfs = async (id: string) => db().select().from(schema.preflights).where(eq(schema.preflights.orderId, id));
+
+    it("1. promise matches the PayPal order → READY_TO_CAPTURE, captured", async () => {
+      const { keptOrderId, paypalOrderId } = await approvedOrder("STANDARD"); // $88.50 quoted, $88.50 order
+      const o = await orders.captureKeptOrder(keptOrderId, paypalOrderId);
+      expect(o.captureAmountMinor).toBe(8850);
+      expect((await pfs(keptOrderId))[0]).toMatchObject({ verdict: "READY_TO_CAPTURE", enforced: true, promisedMinor: 8850, orderMinor: 8850 });
+      const trail = (await db().select().from(schema.auditLog).where(eq(schema.auditLog.orderId, keptOrderId))).map((a) => a.action);
+      expect(trail.indexOf("capture.requested")).toBeGreaterThan(-1);
+      expect(trail.indexOf("capture.requested")).toBeLessThan(trail.indexOf("paypal.order.captured")); // write-ahead
+    });
+
+    it("2. $84.00 promised, $93.33 PayPal order → BLOCKED_MISMATCH; provably not captured", async () => {
+      const { keptOrderId, paypalOrderId } = await approvedOrder("EXPRESS");
+      const e = await blocked(orders.captureKeptOrder(keptOrderId, paypalOrderId));
+      expect(e.status).toBe(409);
+      expect(e.preflight).toMatchObject({ verdict: "BLOCKED_MISMATCH", promisedMinor: 8400, orderMinor: 9333, diffMinor: 933, quote: "Your total is $84.00." });
+      const o = await orderRow(keptOrderId);
+      expect(o).toMatchObject({ status: "CAPTURE_BLOCKED", paypalCaptureId: null });
+      expect((await ppApi.getOrder(getPayPal(), paypalOrderId)).status).toBe("APPROVED"); // PayPal: approved, never captured
+    });
+
+    it("3. $84.00 promised, $80.00 order → discrepancy detected (NEEDS_CONFIRMATION); merchant confirms; then captured", async () => {
+      const { keptOrderId, paypalOrderId } = await approvedOrder("EXPRESS");
+      emu.mutateEmulatorOrderAmount(paypalOrderId, "80.00");
+      const e = await blocked(orders.captureKeptOrder(keptOrderId, paypalOrderId));
+      expect(e.preflight).toMatchObject({ verdict: "NEEDS_CONFIRMATION", diffMinor: -400 });
+      await orders.confirmPreflightAmount(keptOrderId, (await orderRow(keptOrderId)).merchantId);
+      expect((await orders.captureKeptOrder(keptOrderId, paypalOrderId)).captureAmountMinor).toBe(8000);
+    });
+
+    it("4. promise in USD, PayPal order in GBP → BLOCKED_MISMATCH (currency)", async () => {
+      const { keptOrderId, paypalOrderId } = await approvedOrder("EXPRESS");
+      emu.mutateEmulatorOrderAmount(paypalOrderId, "84.00", "GBP");
+      const e = await blocked(orders.captureKeptOrder(keptOrderId, paypalOrderId));
+      expect(e.preflight).toMatchObject({ verdict: "BLOCKED_MISMATCH", reasons: expect.arrayContaining(["CURRENCY_MISMATCH"]) });
+    });
+
+    it("8. PayPal GET fails → PRECHECK_FAILED; fails closed; nothing captured", async () => {
+      const { keptOrderId } = await approvedOrder("STANDARD");
+      await db().update(schema.orders).set({ paypalOrderId: "SIM-DOES-NOT-EXIST" }).where(eq(schema.orders.id, keptOrderId));
+      const e = await blocked(orders.captureKeptOrder(keptOrderId, "SIM-DOES-NOT-EXIST"));
+      expect(e.preflight).toMatchObject({ verdict: "PRECHECK_FAILED", reasons: ["PAYPAL_ORDER_UNAVAILABLE"] });
+      expect((await orderRow(keptOrderId)).paypalCaptureId).toBeNull();
+    });
+
+    it("9. the order changes after a READY verdict → capture re-verifies and refuses", async () => {
+      await setGuard("HONOR"); // order created at the promised $84.00
+      const { keptOrderId, paypalOrderId } = await approvedOrder("EXPRESS");
+      const pre = await (await import("../lib/services/preflight")).runPreflight(await orderRow(keptOrderId), { enforced: true });
+      expect(pre.verdict).toBe("READY_TO_CAPTURE");
+      emu.mutateEmulatorOrderAmount(paypalOrderId, "93.33"); // changed by another system after verification
+      const e = await blocked(orders.captureKeptOrder(keptOrderId, paypalOrderId));
+      expect(e.preflight).toMatchObject({ verdict: "BLOCKED_MISMATCH", reasons: expect.arrayContaining(["ORDER_CHANGED_SINCE_LAST_CHECK", "AMOUNT_ABOVE_PROMISE"]) });
+      expect((await orderRow(keptOrderId)).paypalCaptureId).toBeNull();
+    });
+
+    it("10. duplicate concurrent capture requests → exactly one capture", async () => {
+      const { keptOrderId, paypalOrderId } = await approvedOrder("STANDARD");
+      const results = await Promise.allSettled([orders.captureKeptOrder(keptOrderId, paypalOrderId), orders.captureKeptOrder(keptOrderId, paypalOrderId), orders.captureKeptOrder(keptOrderId, paypalOrderId)]);
+      expect(results.filter((r) => r.status === "fulfilled").length).toBeGreaterThanOrEqual(1);
+      const order = await orderRow(keptOrderId);
+      expect(order.paypalCaptureId).toBeTruthy();
+      const requests = (await db().select().from(schema.auditLog).where(eq(schema.auditLog.orderId, keptOrderId))).filter((a) => a.action === "capture.requested");
+      expect(requests).toHaveLength(1);
+    });
+
+    it("11. corrected order: the buyer must approve it; the blocked order is never captured", async () => {
+      const { keptOrderId, paypalOrderId } = await approvedOrder("EXPRESS");
+      await blocked(orders.captureKeptOrder(keptOrderId, paypalOrderId));
+      const merchantId = (await orderRow(keptOrderId)).merchantId;
+      const { paypalOrderId: corrected } = await orders.correctBlockedOrder(keptOrderId, merchantId);
+      const notYet = await blocked(orders.captureKeptOrder(keptOrderId, corrected));          // buyer has not approved the corrected amount
+      expect(notYet.preflight).toMatchObject({ verdict: "PRECHECK_FAILED", reasons: expect.arrayContaining(["NOT_APPROVED_BY_BUYER"]) });
+      const old = await blocked(orders.captureKeptOrder(keptOrderId, paypalOrderId));        // the blocked order can never be captured now
+      expect(old.message).toMatch(/replaced/);
+      emu.approveEmulatorOrder(corrected);
+      const o = await orders.captureKeptOrder(keptOrderId, corrected);
+      expect(o.captureAmountMinor).toBe(8400);
+      expect((await ppApi.getOrder(getPayPal(), paypalOrderId)).status).toBe("APPROVED"); // still uncaptured at PayPal
+      await sim.deliverSimulatedEvents();
+      await pipeline.afterPaymentEvidence(keptOrderId);
+      expect((await commitmentsOf(keptOrderId)).PRICE_AS_QUOTED?.state).toBe("KEPT");
+      const trail = (await db().select().from(schema.auditLog).where(eq(schema.auditLog.orderId, keptOrderId))).map((a) => a.action);
+      expect(trail).toEqual(expect.arrayContaining(["preflight.verdict", "checkout.corrected", "capture.requested"]));
+    });
+
+    it("repair path is separate: an order captured OUTSIDE Kept's checkout is only monitored, then repaired", async () => {
+      const { keptOrderId } = await sim.seedExternalCapturedOrder();
+      const o = await orderRow(keptOrderId);
+      expect(o).toMatchObject({ checkoutChannel: "EXTERNAL", captureAmountMinor: 9333 });
+      expect((await pfs(keptOrderId))[0]).toMatchObject({ verdict: "BLOCKED_MISMATCH", enforced: false }); // recorded, could not stop it
+      expect((await commitmentsOf(keptOrderId)).PRICE_AS_QUOTED?.state).toBe("BROKEN");
+      const [rem] = await db().select().from(schema.remedies).where(eq(schema.remedies.orderId, keptOrderId));
+      expect(rem).toMatchObject({ kind: "PARTIAL_REFUND", amountMinor: 933, state: "PROPOSED" });
+    });
   });
 });

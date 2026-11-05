@@ -1,0 +1,22 @@
+# Graphite → Kept adaptation report
+
+**What Graphite is.** [Graphite](https://github.com/Stan-lee13/graphite) is a deterministic verification gate between a Solana AI agent's declared intent and the transaction it signs. It has a Rust core and a TypeScript agent guard. It is MIT-licensed, copyright 2026 Victor Stanley (the same author as Kept).
+
+**Scope of this review.** The review was time-boxed and read the shallow clone of the default branch. It focused on `ARCHITECTURE.md` § "The Execution Boundary" and `integrations/agent-guard/`.
+
+**What is reused.** No Graphite code is copied into Kept. Graphite's Solana parsing, its Rust core and its file-based state store don't fit PayPal or Kept's Postgres design. Six of its execution-boundary *patterns* do fit, and Kept reimplements them in its own idiom for the pre-capture gate (`lib/services/preflight.ts`). Each is backed by tests.
+
+| Graphite component or pattern | What it actually does | Potential Kept use | Adaptation required | Decision |
+|---|---|---|---|---|
+| `BoundTransaction` and `signApproved(transaction_sha256, …)` (`integrations/agent-guard/artifact.ts`; tests `bound-transaction.test.ts`) | Approval is bound to the SHA-256 of the exact message. Any change after approval (amount, destination, fee payer…) is a different digest and is refused. | Bind a preflight verdict to a digest of the authoritative PayPal order (id, status, intent, `custom_id`, amount, breakdown, payee). Capture only if a fresh GET yields the same digest. | Canonical JSON digest over PayPal order fields instead of Solana message bytes. | **ADAPT** → `orderDigest()` |
+| `ResidualPolicy` (`residual-policy.ts`): "prose is not a decision" | Refuses to execute on a server that reports only prose; it requires machine codes. | Capture is allowed only on the verdict code `READY_TO_CAPTURE` plus reason codes. Explanation text never gates anything. | Enumerated verdicts and reason codes for PayPal and promise checks. | **ADAPT** |
+| `StaleVerdict` (`execution-lifecycle.ts`) | A verdict older than its window must be re-obtained. | Preflights expire after 10 minutes. Capture always re-verifies right before the PayPal call. | A TTL column and a fresh GET at capture. | **ADAPT** |
+| `executeBoundTransaction` lifecycle and `guard-state.ts` write-ahead records | No irreversible step runs unless the step before it is recorded. Unresolved submissions are persisted before sending. | Record `capture.requested` (with the digest) in the hash-chained audit log, in the same transaction that claims the order, *before* calling PayPal capture. If the record fails, Kept doesn't capture. | Postgres transaction plus the chained `audit()` instead of an fsync'd file. | **ADAPT** |
+| `SubmissionOutcomeUnknown` (`execution-lifecycle.ts`) | When the network outcome is unknown, ask the chain; never build and send again. | On a capture error, GET the order to learn what happened. Retries reuse the same `PayPal-Request-Id` per PayPal order. | Already partly present; it now runs under the claim. | **ADAPT** |
+| `execution-boundary-fuzz.test.ts` and `bound-transaction.test.ts` | Mutation tests: every bound field is changed after approval, and each change must be refused. | Mutate each money-relevant PayPal order field after preflight (amount, currency, breakdown, `custom_id`, status, payee). Each must change the digest or the verdict. | New mutation tests in `tests/unit.test.ts` and `tests/flow.test.ts`. | **ADAPT** |
+| `groundTransferIntent` / `assertEcho` (`intent-grounding.ts`) | The AI's parse is checked against values re-derived deterministically from the user's words. | Kept's validator already does this for promises: verbatim quote, numbers re-parsed from the quote. | None. It confirms the existing design. | **REFERENCE ONLY** |
+| Request may tighten, never widen, the operator's floors (swap slippage and price floors) | User-stated limits can only make the policy stricter. | Shopper mandates already only tighten (the guard requires *all* checks). | None. | **REFERENCE ONLY** |
+| Rust core: parsing, state diff, risk engine, manifests (`graphite-core/src/*`) | Solana transaction decoding and simulation. | None for PayPal. | — | **DO NOT USE** |
+| `guard-state.ts` append-only file and lock | A crash-safe local state file. | Kept's durable state is Postgres, with row-level claims and advisory locks. | — | **DO NOT USE** |
+
+**Licence.** Both projects are MIT and have the same copyright holder. No attribution obligation is triggered, because no code was copied.

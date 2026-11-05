@@ -36,8 +36,8 @@ export type MerchantPolicy = {
   refundAtRiskDays: number;
   /** Default message tone shown to the merchant when drafting customer messages. */
   supportEmail: string;
-  /** Pre-payment check of the chat's promised total against checkout. Absent = "WARN". */
-  checkoutGuard?: "OFF" | "WARN" | "HONOR";
+  /** Pre-payment check of the chat's promised total. Absent = "BLOCK" (verify the PayPal order before capture). */
+  checkoutGuard?: "OFF" | "WARN" | "HONOR" | "BLOCK";
 };
 
 export const merchants = pgTable("merchants", {
@@ -118,8 +118,13 @@ export const orders = pgTable("orders", {
   merchantId: text("merchant_id").notNull().references(() => merchants.id),
   chatSessionId: text("chat_session_id").references(() => chatSessions.id),
   status: text("status", {
-    enum: ["DRAFT", "PAYPAL_CREATED", "APPROVED", "CAPTURED", "CAPTURE_PENDING", "CAPTURE_DECLINED", "VOIDED"],
+    enum: ["DRAFT", "PAYPAL_CREATED", "APPROVED", "PREFLIGHT_VALIDATING", "READY_TO_CAPTURE", "CAPTURE_BLOCKED", "NEEDS_CONFIRMATION", "PRECHECK_FAILED",
+      "CAPTURE_REQUESTED", "CAPTURED", "CAPTURE_PENDING", "CAPTURE_DECLINED", "VOIDED"],
   }).notNull().default("DRAFT"),
+  /** KEPT_PROTECTED: Kept controls capture and runs the preflight gate. EXTERNAL: captured elsewhere; Kept only monitors after payment. */
+  checkoutChannel: text("checkout_channel", { enum: ["KEPT_PROTECTED", "EXTERNAL"] }).notNull().default("KEPT_PROTECTED"),
+  /** PayPal orders this Kept order used before a correction (blocked, never captured). */
+  supersededPaypalOrderIds: jsonb("superseded_paypal_order_ids").$type<string[]>().notNull().default([]),
   currency: text("currency").notNull(),
   lines: jsonb("lines").$type<OrderLine[]>().notNull(),
   itemTotalMinor: integer("item_total_minor").notNull(),
@@ -298,6 +303,37 @@ export const auditLog = pgTable("audit_log", {
   prevHash: text("prev_hash"),
   hash: text("hash"),
 }, (t) => [index("audit_order").on(t.orderId, t.createdAt), index("audit_merchant").on(t.merchantId, t.createdAt)]);
+
+/** Pre-capture verdicts: the authoritative PayPal order compared with the promised total. Append-only. */
+export const preflights = pgTable("preflights", {
+  id: text("id").primaryKey(),
+  orderId: text("order_id").notNull().references(() => orders.id),
+  merchantId: text("merchant_id").notNull(),
+  paypalOrderId: text("paypal_order_id").notNull(),
+  verdict: text("verdict", { enum: ["READY_TO_CAPTURE", "BLOCKED_MISMATCH", "NEEDS_CONFIRMATION", "PRECHECK_FAILED"] }).notNull(),
+  reasonCodes: jsonb("reason_codes").$type<string[]>().notNull(),
+  /** true = protected checkout (verdict gates capture); false = recorded only (monitor-only checkout). */
+  enforced: boolean("enforced").notNull(),
+  promisedMinor: integer("promised_minor"),
+  promisedCurrency: text("promised_currency"),
+  orderMinor: integer("order_minor"),
+  orderCurrency: text("order_currency"),
+  diffMinor: integer("diff_minor"),
+  quote: text("quote"),
+  sourceId: text("source_id"),
+  sourceSha256: text("source_sha256"),
+  /** SHA-256 of the money-relevant fields of the PayPal order as fetched (bound verdict). */
+  orderDigest: text("order_digest"),
+  paypalStatus: text("paypal_status"),
+  checkedAt: ts("checked_at").notNull(),
+  expiresAt: ts("expires_at").notNull(),
+  resolution: text("resolution", { enum: ["MERCHANT_CONFIRMED_AMOUNT", "CORRECTED_ORDER"] }),
+  resolvedBy: text("resolved_by"),
+  resolvedAt: ts("resolved_at"),
+  /** Set when this verdict authorised a capture request. */
+  consumedAt: ts("consumed_at"),
+}, (t) => [index("preflights_order").on(t.orderId, t.checkedAt)]);
+export type Preflight = typeof preflights.$inferSelect;
 
 export const rateLimits = pgTable("rate_limits", {
   key: text("key").primaryKey(),

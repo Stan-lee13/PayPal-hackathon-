@@ -19,11 +19,17 @@ import { formatMoney } from "../money";
 import type { SHIPPING } from "./merchant-data";
 import { checkoutPricing, quoteForCustomer, type CartLine, type Pricing } from "./pricing";
 
-export type GuardMode = "OFF" | "WARN" | "HONOR";
-export const GUARD_MODES: readonly GuardMode[] = ["OFF", "WARN", "HONOR"];
+export type GuardMode = "OFF" | "WARN" | "HONOR" | "BLOCK";
+export const GUARD_MODES: readonly GuardMode[] = ["BLOCK", "HONOR", "WARN", "OFF"];
 
+/** BLOCK (default): the buyer is warned now, and Kept verifies the authoritative PayPal order before capture. */
 export function guardMode(policy: MerchantPolicy): GuardMode {
-  return policy.checkoutGuard ?? "WARN";
+  return policy.checkoutGuard ?? "BLOCK";
+}
+
+/** Does Kept's capture gate enforce the preflight verdict in this mode? */
+export function gateEnforced(mode: GuardMode): boolean {
+  return mode === "BLOCK" || mode === "HONOR";
 }
 
 export type GuardResult = {
@@ -64,7 +70,7 @@ export function planCheckout(messages: ChatMessage[], lines: CartLine[], ship: k
   }
   const why = !reproducible
     ? `the promised ${formatMoney(quotedMinor, currency)} is not what the published pricing gives for this cart (${formatMoney(published, currency)}) — the cart may have changed since, so it is not honoured automatically`
-    : mode === "HONOR" ? `the difference is above the merchant's automatic limit` : `the merchant reviews differences after payment`;
+    : mode === "HONOR" ? `the difference is above the merchant's automatic limit` : mode === "BLOCK" ? `Kept verifies the PayPal order before capture and blocks it if it still differs` : `the merchant reviews differences after payment`;
   return { price, guard: { ...base, action: "WARN", gapMinor,
     reason: `The assistant promised ${formatMoney(quotedMinor, currency)}; checkout would charge ${formatMoney(price.totalMinor, currency)}. Not changed before payment because ${why}.` } };
 }

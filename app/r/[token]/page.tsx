@@ -148,6 +148,9 @@ function describe(action: string, d: Record<string, unknown>, merchantName: stri
   switch (action) {
     case "order.created": return "You placed the order.";
     case "paypal.order.created": return "PayPal order created.";
+    case "preflight.verdict": return d.verdict === "READY_TO_CAPTURE" ? `Before capture, Kept checked the PayPal order against the promise: ${d.paypalOrder ?? ""} — verified.` : d.verdict === "BLOCKED_MISMATCH" ? `Before capture, Kept found the PayPal order (${d.paypalOrder}) did not match the promise (${d.promised}) and ${d.enforced ? "stopped the payment. Nothing was charged" : "recorded it; this checkout is not one Kept controls"}.` : d.verdict === "NEEDS_CONFIRMATION" ? "Before capture, Kept asked the shop to confirm the amount." : "Kept could not verify the PayPal order, so it did not capture.";
+    case "checkout.corrected": return `The shop corrected the order to the promised ${d.to}. The earlier PayPal order was never charged.`;
+    case "order.external_checkout": return "This payment was taken outside Kept's checkout, so Kept checks it after payment.";
     case "checkout_guard.honored": return `Before you paid, Kept checked the chat: ${merchantName} honoured the promised ${d.promised} instead of ${d.checkout}.`;
     case "checkout_guard.warned": return `Before you paid, Kept warned that checkout (${d.checkout}) was more than the promised ${d.promised}.`;
     case "paypal.capture.verified": return d.status === "PARTIALLY_REFUNDED" || d.status === "REFUNDED" ? `PayPal updated the payment status to ${d.status}.` : `PayPal confirmed the payment: ${d.status} ${d.amount ?? ""}.`;

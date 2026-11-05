@@ -97,5 +97,5 @@ export async function getReceipt(token: string) {
 const CUSTOMER_VISIBLE_ACTIONS = new Set([
   "order.created", "paypal.order.created", "paypal.capture.verified", "promises.extracted", "commitment.state_changed",
   "remedy.proposed", "remedy.approved", "remedy.rejected", "paypal.refund.requested", "paypal.refund.verified", "paypal.refund.failed",
-  "paypal.tracking.added", "paypal.dispute.verified", "dispute.response_approved", "paypal.dispute_action.accepted", "checkout_guard.honored", "checkout_guard.warned",
+  "paypal.tracking.added", "paypal.dispute.verified", "dispute.response_approved", "paypal.dispute_action.accepted", "checkout_guard.honored", "checkout_guard.warned", "preflight.verdict", "checkout.corrected", "order.external_checkout",
 ]);

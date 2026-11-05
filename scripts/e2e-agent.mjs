@@ -14,6 +14,14 @@ const browser = await chromium.launch();
 const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
 const page = await ctx.newPage();
 const step = (m) => console.log(`• ${m}`);
+// This demo is about AFTER payment (fault attribution): use the monitor-only checkout (price check = Warn).
+const admin = await ctx.newPage();
+await admin.goto(`${BASE}/merchant/login`);
+await admin.getByLabel("Passcode").fill(PASS);
+await admin.getByRole("button", { name: "Sign in" }).click();
+await admin.waitForURL(`${BASE}/merchant`);
+const setGuard = (mode) => admin.evaluate(async (mode) => (await fetch("/api/merchant/policy", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ checkoutGuard: mode }) })).status, mode);
+if ((await setGuard("WARN")) !== 200) throw new Error("could not set the price check to Warn");
 
 // 1. A mandate the merchant cannot meet is declined before any payment exists.
 await page.goto(`${BASE}/store`);
@@ -70,5 +78,6 @@ if (!(await r.getByText(/your instruction to your agent/).count())) throw new Er
 const overflow = await r.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
 step(`receipt shows the mandate (360px horizontal overflow: ${overflow})`);
 await r.screenshot({ path: `${OUT}/A5-agent-receipt-mobile.png`, fullPage: true });
+await setGuard("BLOCK");
 await browser.close();
 if (overflow) process.exit(2);

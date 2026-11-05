@@ -9,7 +9,7 @@ export function json(data: unknown, status = 200) {
 
 /** Map errors to safe responses: user-facing messages pass through, everything else is generic. */
 export function errorResponse(e: unknown) {
-  if (e instanceof UserFacingError) return json({ error: e.message }, e.status);
+  if (e instanceof UserFacingError) return json({ error: e.message, ...("preflight" in e ? { preflight: (e as { preflight: unknown }).preflight } : {}) }, e.status);
   if (e instanceof ZodError) return json({ error: "Invalid request", issues: e.issues.map((i) => i.path.join(".") + ": " + i.message) }, 400);
   console.error("[kept] unhandled", e);
   return json({ error: "Something went wrong. It has been logged." }, 500);

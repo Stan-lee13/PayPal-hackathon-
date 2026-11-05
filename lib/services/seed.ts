@@ -19,7 +19,7 @@ export async function seedDemoMerchant(db: DB) {
 
 /** Wipe all transactional data (orders, promises, events, remedies, audit). Keeps the merchant. */
 export async function resetTransactions(db: DB) {
-  await db.execute(sql`truncate table audit_log, refunds, trackers, disputes, remedies, commitments, paypal_events, rate_limits restart identity cascade`);
+  await db.execute(sql`truncate table audit_log, preflights, refunds, trackers, disputes, remedies, commitments, paypal_events, rate_limits restart identity cascade`);
   await db.execute(sql`delete from sources where order_id is not null`);
   await db.execute(sql`update chat_sessions set order_id = null`);
   await db.execute(sql`delete from orders`);

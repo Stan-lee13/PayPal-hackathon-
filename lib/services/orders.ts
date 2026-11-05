@@ -3,9 +3,9 @@
  * capture, and sync AUTHORITATIVE capture facts (always via GET).
  */
 import { createHash } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { getDb } from "../db";
-import { chatSessions, merchants, orders, sources, type Order } from "../db/schema";
+import { chatSessions, merchants, orders, preflights, sources, type Order, type Preflight } from "../db/schema";
 import { newId, newReceiptToken } from "../ids";
 import { getPayPal } from "../paypal/client";
 import { captureOrder, createOrder, getCapture, getOrder, parseOrderCaptureRef, type CaptureFacts } from "../paypal/api";
@@ -13,7 +13,8 @@ import { serializeTranscript } from "../promises/transcript";
 import { redactEmail } from "../security/redact";
 import { audit } from "./audit";
 import { cartLines } from "./chat";
-import { planCheckout } from "./checkout-guard";
+import { gateEnforced, guardMode, planCheckout } from "./checkout-guard";
+import { explain, latestPreflight, orderStatusAfter, runPreflight } from "./preflight";
 import { formatMoney } from "../money";
 
 export class UserFacingError extends Error {
@@ -124,26 +125,65 @@ export async function createOrderFromSession(sessionId: string): Promise<{ keptO
   }
 }
 
+/** A capture the gate refused. Carries the coded verdict for the UI (HTTP 409). */
+export class CaptureBlockedError extends UserFacingError {
+  constructor(message: string, public readonly preflight: Record<string, unknown>) { super(message, 409); }
+}
+
+const CLAIMABLE: Order["status"][] = ["PAYPAL_CREATED", "APPROVED", "READY_TO_CAPTURE", "CAPTURE_BLOCKED", "NEEDS_CONFIRMATION", "PRECHECK_FAILED"];
+
 /**
- * Step 2: the buyer approved in PayPal; capture. The capture id comes from
- * PayPal's response, then the capture itself is re-fetched with GET before
- * anything is believed.
+ * Step 2: the buyer approved in PayPal; capture — through Kept's gate.
+ *  1. Claim the order atomically (one conditional UPDATE) so concurrent requests cannot both proceed.
+ *  2. Preflight: GET the authoritative PayPal order and compare it with the promised total.
+ *     In the protected checkout (BLOCK/HONOR) only READY_TO_CAPTURE — or a merchant-confirmed
+ *     NEEDS_CONFIRMATION bound to this exact order digest — may capture. Failures fail closed.
+ *  3. Write-ahead: record `capture.requested` (with the order digest) on the audit chain first.
+ *  4. Capture with a PayPal-Request-Id per PayPal order; then re-fetch the capture with GET.
+ * External-channel orders are never gated here: Kept monitors them after payment.
  */
 export async function captureKeptOrder(keptOrderId: string, paypalOrderId: string): Promise<Order> {
   const db = getDb();
   const order = await db.query.orders.findFirst({ where: eq(orders.id, keptOrderId) });
   if (!order) throw new UserFacingError("Unknown order.", 404);
+  if (order.supersededPaypalOrderIds.includes(paypalOrderId)) throw new UserFacingError("This PayPal order was replaced by a corrected one and will not be captured.", 409);
   if (!order.paypalOrderId || order.paypalOrderId !== paypalOrderId) throw new UserFacingError("PayPal order does not belong to this Kept order.", 409);
   if (order.paypalCaptureId) return order; // already captured (idempotent)
+
+  const [claimed] = await db.update(orders).set({ status: "PREFLIGHT_VALIDATING", updatedAt: new Date() })
+    .where(and(eq(orders.id, keptOrderId), eq(orders.paypalOrderId, paypalOrderId), isNull(orders.paypalCaptureId), inArray(orders.status, CLAIMABLE)))
+    .returning();
+  if (!claimed) {
+    const now = (await db.query.orders.findFirst({ where: eq(orders.id, keptOrderId) }))!;
+    if (now.paypalCaptureId) return now;
+    throw new UserFacingError("This payment is already being processed.", 409);
+  }
+  const merchant = (await db.query.merchants.findFirst({ where: eq(merchants.id, order.merchantId) }))!;
+  const enforced = order.checkoutChannel === "KEPT_PROTECTED" && gateEnforced(guardMode(merchant.policy));
+  const pf = await runPreflight(claimed, { enforced, actor: "customer" });
+
+  if (!pf.allowCapture) {
+    await db.update(orders).set({ status: orderStatusAfter(pf.verdict), updatedAt: new Date() }).where(eq(orders.id, keptOrderId));
+    throw new CaptureBlockedError(pf.explanation, preflightView(pf));
+  }
+
+  // Write-ahead: no capture call unless the request is on the audit chain.
+  await db.transaction(async (tx) => {
+    await tx.update(orders).set({ status: "CAPTURE_REQUESTED", updatedAt: new Date() }).where(and(eq(orders.id, keptOrderId), eq(orders.status, "PREFLIGHT_VALIDATING")));
+    await tx.update(preflights).set({ consumedAt: new Date() }).where(eq(preflights.id, pf.id));
+    await audit(tx, { merchantId: order.merchantId, orderId: order.id, actor: "system", action: "capture.requested", ref: paypalOrderId, outcome: "OK",
+      detail: { verdict: pf.verdict, enforced, orderDigest: pf.orderDigest, amount: pf.orderMinor !== null && pf.orderCurrency ? formatMoney(pf.orderMinor, pf.orderCurrency) : null } });
+  });
 
   const pp = getPayPal();
   let ref: ReturnType<typeof parseOrderCaptureRef>;
   try {
-    ref = parseOrderCaptureRef(await captureOrder(pp, paypalOrderId, `capture-${keptOrderId}`));
+    ref = parseOrderCaptureRef(await captureOrder(pp, paypalOrderId, `capture-${paypalOrderId}`));
   } catch (e) {
-    // The capture may have happened even if we lost the response: ask PayPal.
+    // Outcome unknown: ask PayPal rather than capturing again.
     ref = parseOrderCaptureRef(await getOrder(pp, paypalOrderId));
     if (!ref.captureId) {
+      await db.update(orders).set({ status: "APPROVED", updatedAt: new Date() }).where(eq(orders.id, keptOrderId));
       await audit(db, { merchantId: order.merchantId, orderId: order.id, actor: "paypal", action: "paypal.capture.failed", ref: paypalOrderId, outcome: "FAILED", detail: { error: String(e) } });
       throw new UserFacingError("PayPal could not capture the payment.", 502);
     }
@@ -159,7 +199,69 @@ export async function captureKeptOrder(keptOrderId: string, paypalOrderId: strin
   }).where(and(eq(orders.id, keptOrderId), sql`${orders.paypalCaptureId} is null`));
   await audit(db, { merchantId: order.merchantId, orderId: order.id, actor: "paypal", action: "paypal.order.captured", ref: ref.captureId, outcome: "OK", detail: { reportedStatus: ref.captureStatus } });
   const facts = await getCapture(pp, ref.captureId);
+  if (pf.orderMinor !== null && facts.amountMinor !== pf.orderMinor) {
+    await audit(db, { merchantId: order.merchantId, orderId: order.id, actor: "system", action: "capture.amount_differs_from_verified", ref: ref.captureId, outcome: "FAILED",
+      detail: { verified: pf.orderMinor, captured: facts.amountMinor } });
+  }
   return syncCapture(facts, "capture_call");
+}
+
+export function preflightView(p: Preflight & { explanation?: string }) {
+  return {
+    verdict: p.verdict, reasons: p.reasonCodes, enforced: p.enforced, paypalOrderId: p.paypalOrderId, promisedMinor: p.promisedMinor, promisedCurrency: p.promisedCurrency,
+    orderMinor: p.orderMinor, orderCurrency: p.orderCurrency, diffMinor: p.diffMinor, quote: p.quote, checkedAt: p.checkedAt.toISOString(), explanation: p.explanation ?? explain(p),
+  };
+}
+
+/**
+ * Merchant fixes a BLOCKED_MISMATCH: Kept creates a NEW PayPal order at the promised total (the
+ * difference shown as a labelled discount). The buyer must approve it in PayPal; the blocked order
+ * is never captured. There is no override that captures an amount the buyer did not approve.
+ */
+export async function correctBlockedOrder(keptOrderId: string, merchantId: string): Promise<{ paypalOrderId: string }> {
+  const db = getDb();
+  const order = await db.query.orders.findFirst({ where: and(eq(orders.id, keptOrderId), eq(orders.merchantId, merchantId)) });
+  if (!order) throw new UserFacingError("Order not found.", 404);
+  if (order.status !== "CAPTURE_BLOCKED" || order.paypalCaptureId) throw new UserFacingError("Only a checkout blocked by Kept can be corrected.", 409);
+  const pf = await latestPreflight(order.id);
+  if (!pf || pf.verdict !== "BLOCKED_MISMATCH" || pf.paypalOrderId !== order.paypalOrderId) throw new UserFacingError("No blocking verdict for the current PayPal order.", 409);
+  if (pf.promisedMinor === null || pf.promisedCurrency !== order.currency) throw new UserFacingError("The promise is in another currency; correct the price with the customer instead.", 409);
+  const gross = order.itemTotalMinor + order.shippingMinor + order.taxMinor;
+  const discount = gross - pf.promisedMinor;
+  if (discount <= 0 || discount > order.itemTotalMinor) throw new UserFacingError("The promised total cannot be expressed as a discount on this order.", 409);
+  const merchant = (await db.query.merchants.findFirst({ where: eq(merchants.id, merchantId) }))!;
+  const n = order.supersededPaypalOrderIds.length + 1;
+  const created = await createOrder(getPayPal(), {
+    keptOrderId: order.id, currency: order.currency, itemTotalMinor: order.itemTotalMinor, shippingMinor: order.shippingMinor, shippingDiscountMinor: 0,
+    discountMinor: discount, taxMinor: order.taxMinor, totalMinor: pf.promisedMinor,
+    lines: order.lines.map((l) => ({ name: l.name, sku: l.sku, qty: l.qty, unitMinor: l.unitMinor })),
+    description: `${merchant.name} order ${order.id} (corrected to the promised total)`,
+    requestId: `create-${order.id}-c${n}`, returnUrl: `${appBaseUrl()}/store?paid=${order.id}`, cancelUrl: `${appBaseUrl()}/store`,
+  });
+  const old = order.paypalOrderId!;
+  // Prove the blocked order was never captured (authoritative GET).
+  let oldStatus = "UNKNOWN";
+  try { oldStatus = String((await getOrder(getPayPal(), old)).status ?? "UNKNOWN"); } catch { /* recorded as UNKNOWN */ }
+  await db.transaction(async (tx) => {
+    await tx.update(orders).set({ paypalOrderId: created.id, supersededPaypalOrderIds: [...order.supersededPaypalOrderIds, old], requestedTotalMinor: pf.promisedMinor!, status: "PAYPAL_CREATED", updatedAt: new Date() })
+      .where(and(eq(orders.id, order.id), eq(orders.status, "CAPTURE_BLOCKED")));
+    await tx.update(preflights).set({ resolution: "CORRECTED_ORDER", resolvedBy: "merchant", resolvedAt: new Date() }).where(eq(preflights.id, pf.id));
+    await audit(tx, { merchantId, orderId: order.id, actor: "merchant", action: "checkout.corrected", ref: created.id, outcome: "OK",
+      detail: { from: formatMoney(gross, order.currency), to: formatMoney(pf.promisedMinor!, order.currency), discount: formatMoney(discount, order.currency), blockedPaypalOrderId: old, blockedOrderStatusAtPayPal: oldStatus, newPaypalOrderId: created.id } });
+  });
+  return { paypalOrderId: created.id };
+}
+
+/** Merchant confirms the amount the buyer already approved, for a NEEDS_CONFIRMATION verdict (bound to that order digest). */
+export async function confirmPreflightAmount(keptOrderId: string, merchantId: string) {
+  const db = getDb();
+  const order = await db.query.orders.findFirst({ where: and(eq(orders.id, keptOrderId), eq(orders.merchantId, merchantId)) });
+  if (!order) throw new UserFacingError("Order not found.", 404);
+  const pf = await latestPreflight(order.id);
+  if (!pf || pf.verdict !== "NEEDS_CONFIRMATION" || !pf.orderDigest || pf.paypalOrderId !== order.paypalOrderId) throw new UserFacingError("Nothing awaits confirmation for this order.", 409);
+  await db.update(preflights).set({ resolution: "MERCHANT_CONFIRMED_AMOUNT", resolvedBy: "merchant", resolvedAt: new Date() }).where(eq(preflights.id, pf.id));
+  await audit(db, { merchantId, orderId: order.id, actor: "merchant", action: "preflight.amount_confirmed", ref: pf.paypalOrderId, outcome: "OK",
+    detail: { amount: pf.orderMinor !== null && pf.orderCurrency ? formatMoney(pf.orderMinor, pf.orderCurrency) : null, orderDigest: pf.orderDigest, reasons: pf.reasonCodes } });
 }
 
 /**

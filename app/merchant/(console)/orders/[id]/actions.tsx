@@ -166,3 +166,20 @@ export function OrderActions({ orderId, hasCapture, receiptPath, simulated = fal
     </div>
   );
 }
+
+export function GateActions({ orderId, status, promisedLabel, orderLabel }: { orderId: string; status: string; promisedLabel: string; orderLabel: string }) {
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const act = async (url: string, ok: string) => {
+    setBusy(true); setMsg(null);
+    try { await post(url); setMsg(ok); router.refresh(); } catch (e) { setMsg((e as Error).message); } finally { setBusy(false); }
+  };
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-2">
+      {status === "CAPTURE_BLOCKED" && <button className="btn btn-primary min-h-9 px-3 py-1" disabled={busy} onClick={() => act(`/api/merchant/orders/${orderId}/correct`, "Corrected order created — the buyer must approve it in PayPal.")}>Correct the order to the promised {promisedLabel}</button>}
+      {status === "NEEDS_CONFIRMATION" && <button className="btn min-h-9 px-3 py-1" disabled={busy} onClick={() => act(`/api/merchant/orders/${orderId}/confirm-amount`, "Confirmed. The buyer can continue the payment.")}>Confirm {orderLabel} is the right amount</button>}
+      {msg && <span role="status" className="text-xs text-ink-soft">{msg}</span>}
+    </div>
+  );
+}

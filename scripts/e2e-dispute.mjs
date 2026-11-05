@@ -23,11 +23,11 @@ step("tour page renders");
 const page = await ctx.newPage();
 await page.goto(`${BASE}/store`);
 await page.getByLabel("Quantity of Ada Wrap Dress").selectOption("1");
-await page.getByRole("radio", { name: /Express/ }).check();
+await page.getByRole("radio", { name: /Standard/ }).check(); // $88.50 quoted = $88.50 charged: passes the capture gate
 await page.waitForTimeout(500);
-await page.getByLabel("Message").fill("What's my total with express shipping?");
+await page.getByLabel("Message").fill("What's my total with standard shipping?");
 await page.getByRole("button", { name: "Send" }).click();
-await page.getByText("Your total is $84.00.").first().waitFor({ timeout: 30000 });
+await page.getByText("Your total is $88.50.").first().waitFor({ timeout: 30000 });
 await page.getByRole("button", { name: /Pay with simulated PayPal/ }).click();
 await page.getByRole("button", { name: /Approve & pay/ }).click();
 const receipt = page.getByRole("link", { name: /Open my living receipt/ });
@@ -41,11 +41,10 @@ await m.getByLabel("Passcode").fill(PASS);
 await m.getByRole("button", { name: "Sign in" }).click();
 await m.waitForURL(`${BASE}/merchant`);
 for (let i = 0; i < 20; i++) {
-  if (await m.getByText(/Remedy awaiting approval/).count()) break;
+  if (await m.locator('a[href^="/merchant/orders/ko_"]').count()) break;
   await m.waitForTimeout(1000); await m.reload();
 }
 await m.locator('a[href^="/merchant/orders/ko_"]').first().click();
-await m.getByRole("button", { name: /Approve & refund \$9\.33/ }).waitFor({ timeout: 20000 });
 
 await m.getByLabel("Tracking number").fill("DHL7654321");
 await m.getByRole("button", { name: "Add tracking" }).click();

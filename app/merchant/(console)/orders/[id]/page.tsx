@@ -8,7 +8,11 @@ import { Money } from "@/components/money";
 import { AutoRefresh } from "@/components/auto-refresh";
 import { formatMoney } from "@/lib/money";
 import { paypalMode } from "@/lib/paypal/client";
-import { CommitmentActions, OrderActions, RemedySheet } from "./actions";
+import { CommitmentActions, GateActions, OrderActions, RemedySheet } from "./actions";
+import { getDb } from "@/lib/db";
+import { preflights } from "@/lib/db/schema";
+import { desc, eq } from "drizzle-orm";
+import { explain } from "@/lib/services/preflight";
 import { orderChain } from "@/lib/services/evidence";
 
 export const dynamic = "force-dynamic";
@@ -27,6 +31,9 @@ export default async function OrderLedger({ params }: { params: Promise<{ id: st
   const previews = Object.fromEntries(await Promise.all(b.remedies.map(async (r) => [r.id, await remedyRequestPreview(r)] as const)));
   const simulated = paypalMode() === "simulated";
   const chain = (await orderChain(o.merchantId, o.id)).verdict;
+  const checks = await getDb().select().from(preflights).where(eq(preflights.orderId, o.id)).orderBy(desc(preflights.checkedAt));
+  const gate = checks[0];
+  const held = ["CAPTURE_BLOCKED", "NEEDS_CONFIRMATION", "PRECHECK_FAILED"].includes(o.status);
 
   return (
     <>
@@ -48,6 +55,18 @@ export default async function OrderLedger({ params }: { params: Promise<{ id: st
         <div><p className="eyebrow">Refunded (confirmed)</p><p><Money minor={o.refundedMinor} currency={cur} /></p><p className="text-xs text-ink-soft">{o.captureVerifiedAt ? `verified by GET ${o.captureVerifiedAt.toISOString().slice(11, 19)} UTC` : "not yet verified"}</p></div>
       </section>
       {o.extractionNote && <p className="mt-2 text-xs text-ink-soft">{o.extractionNote}</p>}
+      {o.checkoutChannel === "EXTERNAL" && (
+        <p className="mt-4 rounded border border-rule bg-raised p-3 text-sm">This payment was captured <strong>outside Kept&rsquo;s protected checkout</strong>, so no pre-capture check could stop it. Kept monitors it after payment and proposes a fix when a promise breaks.</p>
+      )}
+      {gate && (held || (o.supersededPaypalOrderIds.length > 0 && !o.paypalCaptureId)) && (
+        <section className={`mt-4 rounded-lg border p-4 text-sm ${gate.verdict === "BLOCKED_MISMATCH" ? "border-broken bg-broken-wash" : "border-risk bg-risk-wash"}`} aria-label="Capture held by Kept">
+          <p className={`eyebrow ${gate.verdict === "BLOCKED_MISMATCH" ? "text-broken" : "text-risk"}`}>{o.status === "CAPTURE_BLOCKED" ? "Kept blocked this capture" : o.status === "NEEDS_CONFIRMATION" ? "Capture on hold — needs your confirmation" : o.status === "PRECHECK_FAILED" ? "Pre-capture check failed — nothing captured" : "Corrected order sent — waiting for the buyer"}</p>
+          <p className="mt-1">{explain(gate)}</p>
+          {gate.quote && <p className="mt-1 text-xs">Promise: <span className="quote">&ldquo;{gate.quote}&rdquo;</span> · PayPal order <span className="mono">{gate.paypalOrderId}</span> (verified by GET {gate.checkedAt.toISOString().slice(11, 19)} UTC)</p>}
+          {o.status === "CAPTURE_BLOCKED" && <p className="mt-1 text-xs text-ink-soft">There is no override that captures {gate.orderMinor !== null && gate.orderCurrency ? formatMoney(gate.orderMinor, gate.orderCurrency) : "this amount"} against this promise. Correcting creates a new PayPal order at the promised total; the buyer approves it in PayPal.</p>}
+          {held && <GateActions orderId={o.id} status={o.status} promisedLabel={gate.promisedMinor !== null && gate.promisedCurrency ? formatMoney(gate.promisedMinor, gate.promisedCurrency) : ""} orderLabel={gate.orderMinor !== null && gate.orderCurrency ? formatMoney(gate.orderMinor, gate.orderCurrency) : ""} />}
+        </section>
+      )}
       {b.disputes.map((d) => {
         const resp = b.remedies.find((r) => r.kind === "DISPUTE_OFFER" && r.state !== "SUPERSEDED");
         return (
@@ -141,6 +160,16 @@ export default async function OrderLedger({ params }: { params: Promise<{ id: st
           {b.disputes.length > 0 && <>
             <h3 className="eyebrow mt-6">Disputes</h3>
             <ul className="mt-2 text-sm">{b.disputes.map((d) => <li key={d.paypalDisputeId}><span className="mono">{d.paypalDisputeId}</span> · {d.reason} · {d.stage} · {d.status}</li>)}</ul>
+          </>}
+          {checks.length > 0 && <>
+            <h3 className="eyebrow mt-6">Pre-capture checks (authoritative GET)</h3>
+            <ul className="mt-2 space-y-1 text-xs">{checks.map((c) => (
+              <li key={c.id} className="rule-b pb-1">
+                <span className={`font-semibold ${c.verdict === "READY_TO_CAPTURE" ? "text-kept" : c.verdict === "BLOCKED_MISMATCH" ? "text-broken" : "text-risk"}`}>{c.verdict}</span>{c.enforced ? "" : " (recorded only — not Kept's checkout)"} · <span className="mono">{c.paypalOrderId}</span> · {c.checkedAt.toISOString().slice(11, 19)} UTC
+                <span className="block text-ink-soft">{(c.reasonCodes as string[]).join(", ")}{c.orderDigest ? <> · order digest <span className="mono">{c.orderDigest.slice(0, 12)}…</span></> : null}{c.resolution ? ` · ${c.resolution.toLowerCase().replace(/_/g, " ")}` : ""}</span>
+              </li>))}
+            </ul>
+            {o.supersededPaypalOrderIds.length > 0 && <p className="mt-1 text-xs">Replaced PayPal orders (never captured): {o.supersededPaypalOrderIds.map((x) => <span key={x} className="mono">{x} </span>)}</p>}
           </>}
           <h3 className="eyebrow mt-6">Sources (immutable)</h3>
           {b.orderSources.map((s) => (

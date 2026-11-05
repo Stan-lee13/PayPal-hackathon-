@@ -8,4 +8,5 @@ export const DEFAULT_POLICY: MerchantPolicy = {
   shipAtRiskHours: 12,
   refundAtRiskDays: 1,
   supportEmail: "hello@adaeze.studio.example",
+  checkoutGuard: "BLOCK",
 };

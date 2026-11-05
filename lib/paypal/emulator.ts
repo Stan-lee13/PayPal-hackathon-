@@ -118,6 +118,14 @@ export function approveEmulatorOrder(orderId: string, payer = { given_name: "Tom
 }
 
 /** Open a dispute on a capture (normally done by the buyer in PayPal's Resolution Center). */
+/** Test/demo helper: another system changes an order's amount (as a PATCH would) after Kept verified it. */
+export function mutateEmulatorOrderAmount(paypalOrderId: string, value: string, currency?: string) {
+  const o = state().orders.get(paypalOrderId);
+  if (!o) throw new Error("unknown simulated order");
+  const pu = o.purchase_units[0] as { amount: Amount };
+  pu.amount = { ...pu.amount, value, ...(currency ? { currency_code: currency } : {}) };
+}
+
 export function openEmulatorDispute(captureId: string, reason = "MERCHANDISE_OR_SERVICE_NOT_RECEIVED") {
   const c = state().captures.get(captureId);
   if (!c) throw new Error("unknown simulated capture");

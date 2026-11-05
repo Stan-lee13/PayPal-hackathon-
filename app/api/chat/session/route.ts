@@ -2,7 +2,9 @@ import { z } from "zod";
 import { cartLines, createSession } from "@/lib/services/chat";
 import { planCheckout } from "@/lib/services/checkout-guard";
 import { getDb } from "@/lib/db";
-import { merchants } from "@/lib/db/schema";
+import { merchants, orders } from "@/lib/db/schema";
+import { latestPreflight } from "@/lib/services/preflight";
+import { preflightView } from "@/lib/services/orders";
 import { eq } from "drizzle-orm";
 import { errorResponse, json } from "@/lib/http";
 
@@ -22,7 +24,11 @@ export async function GET(req: Request) {
     const plan = lines.length ? planCheckout(session.messages, lines, session.shippingOption, merchant.policy, merchant.currency) : null;
     const checkout = plan?.price ?? null;
     const g = plan?.guard;
+    const order = session.orderId ? await getDb().query.orders.findFirst({ where: eq(orders.id, session.orderId) }) : null;
+    const pf = order ? await latestPreflight(order.id) : null;
     return json({
+      order: order && { keptOrderId: order.id, status: order.status, paypalOrderId: order.paypalOrderId, totalMinor: order.requestedTotalMinor, captured: Boolean(order.paypalCaptureId),
+        corrected: order.supersededPaypalOrderIds.length > 0, preflight: pf ? preflightView(pf) : null },
       messages: session.messages,
       cart: session.cart,
       shipping: session.shippingOption,
@@ -32,7 +38,7 @@ export async function GET(req: Request) {
       verdict: session.agentVerdict,
       checkout: checkout && g && {
         itemTotalMinor: checkout.itemTotalMinor, shippingMinor: checkout.shippingMinor - checkout.promoMinor, totalMinor: g.totalMinor,
-        guard: { action: g.action, quotedMinor: g.quotedMinor, quote: g.quote, checkoutMinor: g.checkoutMinor, gapMinor: g.gapMinor, honorDiscountMinor: g.honorDiscountMinor },
+        guard: { mode: g.mode, action: g.action, quotedMinor: g.quotedMinor, quote: g.quote, checkoutMinor: g.checkoutMinor, gapMinor: g.gapMinor, honorDiscountMinor: g.honorDiscountMinor },
       },
     });
   } catch (e) { return errorResponse(e); }

@@ -1,6 +1,7 @@
 import { after } from "next/server";
 import { z } from "zod";
-import { captureKeptOrder } from "@/lib/services/orders";
+import { captureKeptOrder, preflightView } from "@/lib/services/orders";
+import { latestPreflight } from "@/lib/services/preflight";
 import { afterPaymentEvidence } from "@/lib/services/pipeline";
 import { deliverSimulatedEvents } from "@/lib/services/simulation";
 import { errorResponse, json } from "@/lib/http";
@@ -19,6 +20,7 @@ export async function POST(req: Request) {
         await afterPaymentEvidence(order.id);
       } catch (e) { console.error("[kept] post-capture pipeline", e); }
     });
-    return json({ ok: true, status: order.status, captureStatus: order.captureStatus, receiptUrl: `/r/${order.receiptToken}` });
+    const pf = await latestPreflight(order.id);
+    return json({ ok: true, status: order.status, captureStatus: order.captureStatus, receiptUrl: `/r/${order.receiptToken}`, preflight: pf ? preflightView(pf) : null });
   } catch (e) { return errorResponse(e); }
 }

@@ -196,9 +196,9 @@ describe("checkout guard (pre-payment promise check, deterministic)", async () =
   const said = (text: string) => [{ role: "customer" as const, text: "What's my total?", at: "2026-11-05T00:00:00Z" }, { role: "assistant" as const, text, at: "2026-11-05T00:00:01Z" }];
   const quote84 = said("Great choice. Your total is $84.00. Your order ships within 48 hours.");
 
-  it("WARN (default): buyer sees the $9.33 gap; the charge is unchanged", () => {
+  it("BLOCK (default): at order creation the buyer sees the $9.33 gap (the capture gate acts later)", () => {
     const { guard } = planCheckout(quote84, [{ product: dress, qty: 1 }], "EXPRESS", DEFAULT_POLICY, "USD");
-    expect(guard).toMatchObject({ mode: "WARN", action: "WARN", quotedMinor: 8400, checkoutMinor: 9333, gapMinor: 933, honorDiscountMinor: 0, totalMinor: 9333 });
+    expect(guard).toMatchObject({ mode: "BLOCK", action: "WARN", quotedMinor: 8400, checkoutMinor: 9333, gapMinor: 933, honorDiscountMinor: 0, totalMinor: 9333 });
   });
   it("HONOR: the PayPal order is created at the promised total when published pricing reproduces it", () => {
     const { guard } = planCheckout(quote84, [{ product: dress, qty: 1 }], "EXPRESS", { ...DEFAULT_POLICY, checkoutGuard: "HONOR" }, "USD");
@@ -219,7 +219,7 @@ describe("checkout guard (pre-payment promise check, deterministic)", async () =
     expect(guard.action).toBe("WARN");
   });
   it("no action when the chat matches, promises nothing, hedges, or the check is off", () => {
-    expect(planCheckout(said("Your total is $88.50."), [{ product: dress, qty: 1 }], "STANDARD", DEFAULT_POLICY, "USD").guard.action).toBe("NONE");
+    expect(planCheckout(said("Your total is $88.50."), [{ product: dress, qty: 1 }], "STANDARD", { ...DEFAULT_POLICY, checkoutGuard: "WARN" }, "USD").guard.action).toBe("NONE");
     expect(planCheckout(said("Lovely dress!"), [{ product: dress, qty: 1 }], "EXPRESS", DEFAULT_POLICY, "USD").guard.action).toBe("NONE");
     expect(planCheckout(said("Your total is about $84."), [{ product: dress, qty: 1 }], "EXPRESS", DEFAULT_POLICY, "USD").guard.action).toBe("NONE");
     expect(planCheckout(quote84, [{ product: dress, qty: 1 }], "EXPRESS", { ...DEFAULT_POLICY, checkoutGuard: "OFF" }, "USD").guard.action).toBe("NONE");
@@ -303,5 +303,33 @@ describe("shopper's 'keeps N% of its promises' rule (deterministic)", async () =
     expect(guard(terms, merchant, "USD", "scripted", "", rec(20, 17)).decision).toBe("DECLINE");
     expect(guard(terms, merchant, "USD", "scripted", "", rec(20, 19)).decision).toBe("PROCEED");
     expect(guard(terms, merchant, "USD", "scripted", "", null).decision).toBe("DECLINE");
+  });
+});
+
+describe("preflight: reading the promised total, and the bound order digest (Graphite A1/A6)", async () => {
+  const { readPricePromise, orderDigest } = await import("../lib/services/preflight");
+  const { chat } = await import("./fixtures/golden-promises");
+  const said = (t: string) => chat([["customer", "Total?"], ["assistant", t]]);
+  it("5–7. approximate, item-price and missing promises are not enforced as exact totals", () => {
+    expect(readPricePromise(said("Your total is $84.00."), "USD")).toMatchObject({ kind: "EXACT", amountMinor: 8400 });
+    expect(readPricePromise(said("Your total is about $84."), "USD")).toMatchObject({ kind: "NONE", code: "PRICE_APPROXIMATE_NOT_ENFORCED" });
+    expect(readPricePromise(said("The dress is $84.00."), "USD")).toMatchObject({ kind: "NONE", code: "PRICE_NOT_A_TOTAL" });
+    expect(readPricePromise(said("Lovely choice!"), "USD")).toMatchObject({ kind: "NONE", code: "NO_PRICE_PROMISE" });
+    expect(readPricePromise(said("Your total is $84.00. Actually your total is $90.00."), "USD")).toMatchObject({ kind: "CONFLICT" });
+    expect(readPricePromise(said("Your total is £84.00."), "USD")).toMatchObject({ kind: "CURRENCY", currency: "GBP", amountMinor: 8400 });
+  });
+  it("every money-relevant field of the PayPal order is bound by the digest; key order is not", () => {
+    const base = { id: "O1", status: "APPROVED", intent: "CAPTURE", purchase_units: [{ custom_id: "ko_1", invoice_id: "ko_1", amount: { currency_code: "USD", value: "84.00", breakdown: { item_total: { currency_code: "USD", value: "84.00" } } }, payee: { merchant_id: "M1" } }] };
+    const d = orderDigest(base);
+    const mut = (f: (o: typeof base) => void) => { const c = JSON.parse(JSON.stringify(base)); f(c); return orderDigest(c); };
+    expect(mut((o) => { o.purchase_units[0]!.amount.value = "93.33"; })).not.toBe(d);
+    expect(mut((o) => { o.purchase_units[0]!.amount.currency_code = "GBP"; })).not.toBe(d);
+    expect(mut((o) => { (o.purchase_units[0]!.amount.breakdown as Record<string, unknown>).discount = { currency_code: "USD", value: "1.00" }; })).not.toBe(d);
+    expect(mut((o) => { o.purchase_units[0]!.custom_id = "ko_2"; })).not.toBe(d);
+    expect(mut((o) => { o.purchase_units[0]!.payee = { merchant_id: "ATTACKER" }; })).not.toBe(d);
+    expect(mut((o) => { o.intent = "AUTHORIZE"; })).not.toBe(d);
+    expect(mut((o) => { o.id = "O2"; })).not.toBe(d);
+    expect(mut((o) => { o.status = "APPROVED"; })).toBe(d);
+    expect(orderDigest({ ...base, purchase_units: [{ payee: base.purchase_units[0]!.payee, amount: base.purchase_units[0]!.amount, invoice_id: "ko_1", custom_id: "ko_1" }] })).toBe(d);
   });
 });
