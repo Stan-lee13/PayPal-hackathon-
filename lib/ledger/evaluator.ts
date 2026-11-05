@@ -123,7 +123,7 @@ function evalShip(input: EvalInput): EvalResult {
   const left = due.getTime() - input.now.getTime();
   if (left < 0) return { state: "BROKEN", reason: `No shipment tracking on the PayPal order and the deadline passed ${hoursBetween(due, input.now)} ago.`, dueAt: due, evaluation };
   if (left <= input.policy.shipAtRiskHours * HOUR) return { state: "AT_RISK", reason: `No tracking yet; ${hoursBetween(input.now, due)} left before the shipping deadline.`, dueAt: due, evaluation };
-  return { state: "PENDING", reason: `Ship by ${due.toISOString()}; ${hoursBetween(input.now, due)} left.`, dueAt: due, evaluation };
+  return { state: "PENDING", reason: `Ship by ${fmt(due)}; ${hoursBetween(input.now, due)} left.`, dueAt: due, evaluation };
 }
 
 function evalRefund(input: EvalInput): EvalResult {
@@ -146,7 +146,11 @@ function evalRefund(input: EvalInput): EvalResult {
   if (left < 0) return { state: "BROKEN", reason: pending ? "A refund is still PENDING at PayPal and the deadline has passed." : "No completed refund and the promised refund deadline has passed.", dueAt: due, evaluation };
   if (pending) return { state: "AT_RISK", reason: "Refund issued but PayPal still reports it as PENDING.", dueAt: due, evaluation };
   if (left <= input.policy.refundAtRiskDays * DAY) return { state: "AT_RISK", reason: `No refund yet; ${hoursBetween(input.now, due)} left.`, dueAt: due, evaluation };
-  return { state: "PENDING", reason: `Refund due by ${due.toISOString()}.`, dueAt: due, evaluation };
+  return { state: "PENDING", reason: `Refund due by ${fmt(due)}.`, dueAt: due, evaluation };
+}
+
+function fmt(d: Date): string {
+  return `${d.toISOString().slice(0, 16).replace("T", " ")} UTC`;
 }
 
 function hoursBetween(a: Date, b: Date): string {

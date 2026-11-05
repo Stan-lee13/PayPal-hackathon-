@@ -1,0 +1,99 @@
+@import "tailwindcss";
+
+/* ---------------------------------------------------------------------------
+   Kept — "The Ledger and the Seal". Tokens first; components read tokens only.
+   --------------------------------------------------------------------------- */
+:root {
+  --paper: #F5F2EA;
+  --paper-raised: #FBF9F3;
+  --ink: #15171A;
+  --ink-soft: #4A4D52;
+  --rule: #D9D3C4;
+  --kept: #0E7A5A;
+  --kept-wash: #E3F1EA;
+  --risk: #B26B00;
+  --risk-wash: #F8EDD9;
+  --broken: #B42318;
+  --broken-wash: #F8E4E1;
+  --unverifiable: #5B6470;
+  --unverifiable-wash: #E8E9EB;
+  --accent: #2B2F8F;
+  --accent-ink: #FFFFFF;
+  --focus: #2B2F8F;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #121314;
+    --paper-raised: #1B1C1E;
+    --ink: #ECE7DA;
+    --ink-soft: #B3AEA2;
+    --rule: #34322D;
+    --kept: #4CC79C;
+    --kept-wash: #12261F;
+    --risk: #F0A93B;
+    --risk-wash: #2A2113;
+    --broken: #FF8A7F;
+    --broken-wash: #2E1715;
+    --unverifiable: #A7AFBA;
+    --unverifiable-wash: #22252A;
+    --accent: #9EA3FF;
+    --accent-ink: #121314;
+    --focus: #9EA3FF;
+    color-scheme: dark;
+  }
+}
+
+@theme inline {
+  --color-paper: var(--paper);
+  --color-raised: var(--paper-raised);
+  --color-ink: var(--ink);
+  --color-ink-soft: var(--ink-soft);
+  --color-rule: var(--rule);
+  --color-kept: var(--kept);
+  --color-kept-wash: var(--kept-wash);
+  --color-risk: var(--risk);
+  --color-risk-wash: var(--risk-wash);
+  --color-broken: var(--broken);
+  --color-broken-wash: var(--broken-wash);
+  --color-unverifiable: var(--unverifiable);
+  --color-unverifiable-wash: var(--unverifiable-wash);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --font-serif: var(--font-newsreader), Georgia, serif;
+  --font-sans: var(--font-plex-sans), system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, monospace;
+}
+
+html { background: var(--paper); color: var(--ink); }
+body { background: var(--paper); color: var(--ink); font-family: var(--font-sans); font-size: 16px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
+
+@layer components {
+.money { font-family: var(--font-mono); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.quote { font-family: var(--font-serif); }
+.rule-b { border-bottom: 1px solid var(--rule); }
+.rule-t { border-top: 1px solid var(--rule); }
+
+:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; border-radius: 2px; }
+
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: .4rem; min-height: 44px; padding: .55rem 1rem; border-radius: 6px; font-weight: 600; border: 1px solid var(--ink); background: transparent; color: var(--ink); cursor: pointer; }
+.btn:hover { background: color-mix(in srgb, var(--ink) 6%, transparent); }
+.btn-primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.btn-primary:hover { background: color-mix(in srgb, var(--accent) 88%, black); }
+.btn-danger { border-color: var(--broken); color: var(--broken); }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+
+.field { width: 100%; min-height: 44px; padding: .5rem .7rem; border: 1px solid var(--rule); border-radius: 6px; background: var(--paper-raised); color: var(--ink); }
+.field:focus { border-color: var(--accent); }
+
+.paper { background: var(--paper-raised); border: 1px solid var(--rule); border-radius: 8px; }
+.eyebrow { font-size: .72rem; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-soft); font-weight: 600; }
+
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .stamp { animation: stamp .35s ease-out; }
+  @keyframes stamp { from { transform: scale(1.25) rotate(-6deg); opacity: 0; } to { transform: none; opacity: 1; } }
+}

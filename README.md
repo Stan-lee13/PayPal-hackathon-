@@ -1,12 +1,305 @@
-# PayPal-hackathon-
+# Kept
 
-**Kept** — *Every payment is a promise. Kept makes sure it's kept.*
+**Every payment is a promise. Kept makes sure it's kept.**
 
-Entry for the PayPal AI Hackathon 2026. Currently in the discovery phase; no product code yet.
+Kept is a promise-verification layer for merchants paid through PayPal.
 
-## Documents
+- It reads what the merchant (or the merchant's AI sales assistant) promised.
+- It turns the verifiable promises into structured commitments and binds them to the PayPal order.
+- It watches PayPal's authoritative records.
+- When the two disagree, it computes the gap and proposes a remedy.
+- The merchant approves every cent. The customer gets a living receipt.
 
-- [Product discovery report](docs/PRODUCT_DISCOVERY.md) — research, evidence, opportunity scoring, the chosen product (Kept), PayPal + AI architecture, demo script and day-by-day roadmap.
-- [The Banking Industry and PayPal, 2023 – Nov 2026](docs/research/BANKING_AND_PAYPAL_2023-2026.md) — deep research investigation: year-by-year chapters, industry themes, dedicated PayPal analysis, timeline, problem inventory, unresolved issues and prioritised opportunities.
-  - [Source directory](docs/research/SOURCE_DIRECTORY.md) and [machine-readable research ledger](docs/research/research-ledger.csv) — 1,214 unique documents from 536 unique websites.
-  - [Detailed research-stream reports](docs/research/slices/) — 13 reports with full citations.
+```
+PROMISE → EXTRACTION → VALIDATION → PAYPAL BINDING → EVENT MONITORING → EVALUATION
+        → REMEDY PROPOSAL → MERCHANT APPROVAL → PAYPAL REFUND → CONFIRMATION → CUSTOMER RECEIPT
+```
+
+> **MVP, not production banking infrastructure.** The merchant console uses one shared demo passcode. Adaeze Studio is a demonstration merchant. Run with sandbox credentials only. Read [Limitations](#limitations).
+
+Product research and rationale: [`docs/PRODUCT_DISCOVERY.md`](docs/PRODUCT_DISCOVERY.md). Industry research: [`docs/research/`](docs/research/).
+
+---
+
+## The demo scenario
+
+1. A customer chats with **Adaeze Studio**'s assistant. The assistant answers only from the merchant's published sources. It gets totals from a deterministic quote tool.
+2. The assistant says:
+   - *"Your total is $84.00."* This applies the studio's published *free express shipping over $75* promotion.
+   - *"Your order ships within 48 hours."*
+   - *"We'll sort you out if anything goes wrong."*
+3. The demo checkout does **not** apply chat-advertised promotions. This is a deliberate, labelled `DEMO_MODE` integration gap: the conversation layer and the checkout disagree. PayPal captures **$93.33** ($84.00 + $9.33 express).
+4. Kept receives the signed `PAYMENT.CAPTURE.COMPLETED` webhook. It re-fetches the capture with `GET /v2/payments/captures/{id}`, then extracts and validates the promises:
+
+   | Promise | Kept's decision |
+   |---|---|
+   | $84 total | **enforceable** |
+   | 48-hour shipping | **enforceable** |
+   | "We'll sort you out" | **unverifiable**, never enforced |
+
+5. The deterministic evaluator computes **$93.33 − $84.00 = $9.33** and marks the price promise **BROKEN**. The AI agent (or the rules fallback) proposes a **$9.33 partial refund**. The policy engine re-checks it independently.
+6. The merchant sees *Said / Seal / Happened*, the computed gap, and the **exact PayPal request**. They approve.
+7. Kept calls `POST /v2/payments/captures/{id}/refund` with a stored `PayPal-Request-Id`. It confirms the result with `GET /v2/payments/refunds/{id}`, then reconciles the `PAYMENT.CAPTURE.REFUNDED` webhook.
+8. The customer's living receipt updates. It only shows the refund as COMPLETED once PayPal confirms it.
+
+The other scenarios are covered by tests and reachable in the UI:
+
+- a matching-price order is KEPT;
+- an ambiguous promise needs confirmation;
+- a shipping deadline goes AT_RISK and then BROKEN (simulated clock);
+- a refund fails (`REFUND_FAILED_INSUFFICIENT_FUNDS`);
+- a refund stays PENDING;
+- a duplicate webhook is ignored;
+- a remedy is rejected;
+- a dispute is ingested;
+- a lost webhook is recovered by reconciliation.
+
+---
+
+## Quick start (local, no credentials needed)
+
+Requirements: Node 20.11+ and PostgreSQL 14+. A throwaway local Postgres 16 helper is included.
+
+```bash
+npm install
+scripts/local-postgres.sh          # or point DATABASE_URL at Neon / your own Postgres
+cp .env.example .env               # then set SESSION_SECRET (32+ random chars) and MERCHANT_PASSCODE
+npm run db:migrate && npm run db:seed
+npm run build && npm start         # http://localhost:3000
+```
+
+With no PayPal credentials, Kept runs in **`PAYPAL_MODE=simulated`**.
+
+- It uses a small in-process PayPal emulator (`lib/paypal/emulator.ts`) that implements the same REST endpoints.
+- **Every simulated thing is labelled.** A banner reads *SIMULATED PAYPAL — no PayPal involved*. Events show as *SIMULATED (unsigned)*. The checkout button reads "Pay with simulated PayPal".
+- Simulated events are refused in sandbox/live mode.
+
+With no `ANTHROPIC_API_KEY`, Kept falls back to clearly labelled deterministic alternatives. The validator and policy engine are the same in both modes:
+
+| Component | Fallback |
+|---|---|
+| Sales assistant | Scripted assistant |
+| Promise extraction | Rule-based extractor |
+| Remedy proposal | Rule-based proposals |
+
+Demo walk-through:
+
+1. Open `/store`. Add the Ada Wrap Dress, choose **Express**, and ask *"What's my total with express shipping?"*. Pay.
+2. Open `/merchant` (passcode from `.env`). You'll see the **BROKEN** promise. Open it and approve the **$9.33** refund.
+3. Open the customer receipt link.
+
+**Demo tools** (merchant header, `DEMO_MODE` only):
+
+- advance the **simulated clock** (shipping-deadline demo);
+- settle pending refunds (simulated mode);
+- reset demo data.
+
+---
+
+## Running against the real PayPal sandbox
+
+1. **Create a sandbox app.** In developer.paypal.com → Apps & Credentials → **Sandbox** → create an app. Copy the Client ID and Secret.
+2. **Create sandbox accounts.** Under Testing Tools → Sandbox Accounts, make sure you have a **Business** account (the merchant) and a **Personal** account (the buyer). The country can be US. Your own country doesn't matter for sandbox accounts.
+3. **Configure the environment.** In `.env`:
+   ```
+   PAYPAL_MODE=sandbox
+   PAYPAL_CLIENT_ID=...
+   PAYPAL_CLIENT_SECRET=...
+   NEXT_PUBLIC_PAYPAL_CLIENT_ID=...   # same client id; it is public by design
+   APP_BASE_URL=https://<your public https host>
+   ```
+4. **Run the smoke test** (no buyer interaction):
+   ```bash
+   npx tsx scripts/sandbox-smoke.ts
+   ```
+   It checks four things:
+   - the OAuth token is acquired;
+   - order creation with `custom_id`;
+   - `PayPal-Request-Id` idempotency (the same id returns the same order);
+   - PayPal refusing capture before buyer approval.
+5. **Register the webhook.** PayPal only delivers to public HTTPS on port 443. Deploy (below) or use a tunnel, then:
+   ```bash
+   npm run paypal:webhook:register     # prints PAYPAL_WEBHOOK_ID=WH-...
+   ```
+   Set `PAYPAL_WEBHOOK_ID` and restart. Subscribed events:
+
+   | Group | Events |
+   |---|---|
+   | Checkout | `CHECKOUT.ORDER.APPROVED` |
+   | Capture | `PAYMENT.CAPTURE.COMPLETED`, `PAYMENT.CAPTURE.PENDING`, `PAYMENT.CAPTURE.DENIED`, `PAYMENT.CAPTURE.DECLINED`, `PAYMENT.CAPTURE.REFUNDED`, `PAYMENT.CAPTURE.REVERSED` |
+   | Refund | `PAYMENT.REFUND.PENDING`, `PAYMENT.REFUND.FAILED` |
+   | Dispute | `CUSTOMER.DISPUTE.CREATED`, `CUSTOMER.DISPUTE.UPDATED`, `CUSTOMER.DISPUTE.RESOLVED` |
+
+   Webhook-simulator events from the PayPal dashboard **cannot be signature-verified** (PayPal limitation). Use real sandbox transactions.
+6. **Run the loop.** Pay at `/store` with the **sandbox Personal** account in the PayPal popup, then approve the remedy in `/merchant`.
+7. **Negative tests.** The remedy sheet can send `PayPal-Mock-Response: REFUND_FAILED_INSUFFICIENT_FUNDS` (sandbox only).
+8. **Disputes.** Log into sandbox.paypal.com as the Personal buyer → Resolution Center → open a dispute on the payment. Kept ingests `CUSTOMER.DISPUTE.CREATED` with an authoritative `GET /v1/customer/disputes/{id}`.
+
+**Reconciliation.**
+
+- Schedule `POST /api/cron/reconcile` with `Authorization: Bearer $CRON_SECRET` every few minutes (Render Cron Job or any scheduler). The merchant header's **Check PayPal now** button does the same.
+- It covers:
+  - orders with no capture;
+  - PENDING captures and refunds;
+  - failed events;
+  - remedies stuck in EXECUTING. These are retried with the **same** `PayPal-Request-Id`, never a new refund.
+  - time-based promises.
+
+---
+
+## Deploying (Render + Neon, free tiers)
+
+1. **Neon.** Create a project and copy the connection string (`...?sslmode=require`). Neon's free tier does not expire. Render's free Postgres expires after 30 days.
+2. **Render.** New → **Blueprint** → this repo (uses `render.yaml`). Fill in the `sync: false` variables:
+   - `DATABASE_URL`
+   - `APP_BASE_URL`
+   - the PayPal variables
+   - `MERCHANT_PASSCODE`
+   - optionally `ANTHROPIC_API_KEY`
+3. **Migrate and seed.** The `preDeployCommand` runs `db:migrate && db:seed`.
+4. **Webhook.** After the first deploy, run `npm run paypal:webhook:register` locally with `APP_BASE_URL` set to the Render URL. Put the id into `PAYPAL_WEBHOOK_ID` on Render.
+5. **Health.** `GET /api/health` reports DB status, PayPal mode, whether a webhook id is configured, and the AI model.
+
+Render free instances sleep when idle. PayPal retries webhooks for up to 3 days, and reconciliation covers any gaps.
+
+---
+
+## Architecture
+
+```
+app/(store)/store          storefront + AI sales chat + PayPal JS SDK buttons
+app/merchant/(console)     promises inbox · order ledger (Said | Seal | Happened) · remedy sheet · settings · activity
+app/r/[token]              customer living receipt (256-bit random token, mobile-first)
+app/api/...                route handlers (chat, orders, capture, webhooks, merchant actions, cron)
+
+lib/paypal/   client.ts (OAuth cache, retries, PayPal-Request-Id) · api.ts (Orders v2, captures, refunds,
+              tracking, disputes + strict parsers) · webhook-verify.ts · emulator.ts (labelled, simulated mode only)
+lib/promises/ transcript.ts · rules-extractor.ts · llm-extractor.ts (Claude, structured outputs) · validator.ts
+lib/ledger/   evaluator.ts   — pure, deterministic state machine (no I/O, no AI, integer money)
+lib/policy/   engine.ts      — deterministic remedy validation
+lib/ai/       assistant.ts (sales chat, quote tool) · remedy-agent.ts (read-only tools → propose_remedy)
+lib/services/ orders · ledger · remedies · webhooks · pipeline (reconcile) · merchant-actions · views · chat
+lib/db/       Drizzle schema (Postgres) — drizzle/ holds migrations
+```
+
+**Who decides what**
+
+| Concern | Decided by |
+|---|---|
+| Whether a promise exists and its wording | Extractor (Claude or rules) proposes; **the validator decides** |
+| Payment, refund, tracker and dispute state | **PayPal only**, always re-fetched with GET; webhook bodies are never trusted |
+| Discrepancy, deadlines, states | **Deterministic evaluator** (integer minor units) |
+| Remedy wording | AI agent (read-only tools) or rules |
+| Whether a remedy is allowed | **Policy engine** (type allowed, amount ≤ computed discrepancy, ≤ remaining refundable, ≤ policy cap, currency, capture refundable, no other remedy live) — checked at proposal *and* again at approval |
+| Whether money moves | **The merchant**, with an explicit click, after seeing the exact PayPal request |
+
+**Promise validation.** An extracted promise is enforceable only if **all** of the following hold. Otherwise it is *needs confirmation*, *unverifiable* (OTHER), or *rejected* (not anchored to a real source; never stored).
+
+1. The source exists and belongs to the order or merchant.
+2. The quote appears **verbatim** in the source. Spans are re-derived by the validator, never trusted from the extractor.
+3. In a chat, the quote was said by the **assistant**. Transcript lines are role-tagged by Kept, so customer text cannot forge an assistant line.
+4. The numbers are re-parsed from the quote. The extractor's own numbers are only hints.
+5. The currency matches the order.
+6. There is no hedging ("about", "up to", "usually"…). For prices, there is explicit **total** semantics and no exclusions. Business-day, relative-weekday and numeric-date deadlines are not enforced.
+7. Extractor confidence meets the merchant threshold.
+8. It does not conflict with another promise of the same type.
+
+**Refund execution.**
+
+- **Atomic claim.** `PROPOSED → EXECUTING` is a single conditional `UPDATE`, so two clicks or two tabs cannot both execute. A partial unique index allows only one live remedy per commitment.
+- **Idempotent at PayPal.** `PayPal-Request-Id` is generated once at proposal time and reused on any retry.
+- **POST is not trusted.** The POST result is never trusted alone; a `GET /v2/payments/refunds/{id}` confirms it, and the webhook reconciles again.
+- **Honest states.** `PENDING` is shown as pending. A 4xx is `FAILED` with PayPal's issue code. A network error or 5xx stays `EXECUTING` and is retried with the same request id.
+
+**Webhook processing.** Steps 1–4 happen before the response; steps 5–6 run after it.
+
+1. Read the raw body.
+2. Verify the signature locally: CRC32 + RSA-SHA256 over `transmissionId|time|webhookId|crc32(body)`, using a certificate fetched **only** from `*.paypal.com`. If the certificate can't be fetched, fall back to `POST /v1/notifications/verify-webhook-signature`. Stale transmissions are refused.
+3. Reject an invalid signature with 400. Nothing is written.
+4. `INSERT … ON CONFLICT (paypal_event_id) DO NOTHING`, then return 200.
+5. Re-fetch the resource and process it idempotently.
+6. Evaluate, propose and audit.
+
+---
+
+## Security decisions
+
+- **Secrets.** PayPal and Anthropic secrets are used only server-side. The browser receives only the PayPal **client id**. The client bundles were checked for secret names.
+- **Merchant access.**
+  - It is gated by an HMAC-signed, HttpOnly, `SameSite=Strict` cookie. Every state-changing merchant route also checks the request's origin and that the merchant owns the record.
+  - **Demo-grade only**: one shared passcode.
+- **Rate limits.** Chat, checkout and login are rate-limited using a Postgres fixed window, which works across instances.
+- **Customer data.**
+  - Buyer email is stored only redacted (`j***@domain`).
+  - Email addresses and phone numbers are scrubbed from chat text before it reaches the AI provider.
+- **Model safety.**
+  - Model outputs are schema-validated (zod / structured outputs).
+  - The remedy agent has **no** money-moving tool.
+  - Customer messages are treated as data. Prompt-injection cases are in the golden set.
+- **Money handling.**
+  - Money is always integer minor units.
+  - Amounts are parsed from PayPal decimal strings without float conversion.
+- **Receipts.** Receipts use 256-bit random tokens, are marked `noindex`, and expose no merchant internals.
+- **HTTP headers.** `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy`, and no `X-Powered-By`.
+
+---
+
+## Tests
+
+```bash
+npm test                 # unit + golden set + end-to-end flow (needs TEST_DATABASE_URL; uses the emulator)
+npm run lint             # TypeScript strict type-check
+node scripts/e2e-ui.mjs  # Playwright drive of the full demo against a running instance (BASE_URL, MERCHANT_PASSCODE)
+npm run eval:extraction  # runs the REAL Claude extractor over the golden set (needs ANTHROPIC_API_KEY)
+```
+
+- **Golden set** (`tests/fixtures/golden-promises.ts`): 33 adversarial cases (39 assertions). Covers:
+  - "about/up to/usually";
+  - item price vs total;
+  - £ vs a USD order;
+  - two currencies;
+  - "plus shipping";
+  - business days;
+  - "by Friday" and "by 11/12";
+  - conditional refunds;
+  - fabricated and paraphrased quotes;
+  - customer-said "promises";
+  - prompt injection inside a customer message;
+  - extractor/quote number mismatches;
+  - conflicting totals;
+  - low confidence;
+  - foreign-order sources;
+  - wrong spans.
+
+  The bar: ≥90% correct and **zero** false or fabricated enforceable promises.
+- **End-to-end flow** (`tests/flow.test.ts`, real Postgres + emulator):
+  - the $84/$93.33/$9.33 loop;
+  - concurrent double approval → exactly one refund;
+  - duplicate webhooks;
+  - refund failure;
+  - pending refund;
+  - rejection;
+  - shipping deadline AT_RISK → KEPT;
+  - invalid signature;
+  - custom_id binding;
+  - disputes;
+  - lost-webhook reconciliation.
+
+---
+
+## Limitations
+
+- **The PayPal sandbox loop has not been run end-to-end by the author.** This repository was built without sandbox credentials.
+  - The PayPal client, request shapes and parsers follow PayPal's OpenAPI specs.
+  - Real-API connectivity is verified: the real sandbox OAuth endpoint correctly rejects fake credentials.
+  - Run `scripts/sandbox-smoke.ts` and one store purchase with your credentials before relying on it.
+- **Tracking.** A PayPal tracker proves the merchant *reported* a shipment, not delivery. Kept says so wherever it is shown. Carrier delivery data is out of scope.
+- **Refund promises.** REFUND_BY needs the merchant to record the trigger (e.g. "return received"). Kept does not observe returns.
+- **The golden set was written alongside the validator.** It is a regression and adversarial suite, not an independent benchmark. `eval:extraction` measures the real LLM extractor.
+- **Single-merchant demo.** There is no production authentication, multi-tenancy, email sending, or chargeback representment.
+- **Simulated mode.** The emulator's PayPal fee figures are illustrative. Simulated events are unsigned and only accepted in simulated mode.
+- **AI choice.** Claude is called through the official Anthropic SDK (not the Vercel AI SDK suggested in the original spec), so structured outputs and refusal fallbacks are first-class. Default model: `claude-opus-5-5`. Set `KEPT_AI_MODEL=claude-haiku-5-5` for a lower cost per call.
+
+## Licence
+
+[MIT](LICENSE)
