@@ -209,6 +209,27 @@ d("Kept end-to-end (emulated PayPal)", () => {
     expect(verdict.ok).toBe(true);
   });
 
+  it("promise record: public aggregate over PayPal-verified outcomes, served over MCP, consulted by the shopper's agent", async () => {
+    const { promiseRecord } = await import("../lib/services/promise-record");
+    const { handleMcp } = await import("../lib/services/mcp");
+    const { keptOrderId } = await placeOrder("EXPRESS"); // $84 promised, $93.33 captured → BROKEN
+    const [rem] = await getDb().select().from(schema.remedies).where(eq(schema.remedies.orderId, keptOrderId));
+    await remedies.approveRemedy(rem!.id);                    // made good
+    await placeOrder("STANDARD");                             // $88.50 → KEPT
+    const r = (await promiseRecord("adaeze-studio"))!;
+    expect(r).toMatchObject({ data: "SIMULATED", keptAsPromised: 1, brokenThenMadeGood: 1, brokenStillOpen: 0, keptAsPromisedRate: 0.5, keptOrMadeGoodRate: 1, auditChains: { intact: true } });
+    expect(r.caveats.join(" ")).toMatch(/Small sample/);
+    expect(JSON.stringify(r)).not.toMatch(/Tom|ko_|chat_|@/); // aggregates only: no customer, order or chat data
+    const call = await handleMcp({ jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "get_promise_record", arguments: { merchant: "adaeze-studio" } } });
+    expect((call?.result as { structuredContent: { resolved: number } }).structuredContent.resolved).toBe(2);
+    // the shopper's agent reads it, and a "keeps 90%" rule declines on too little history
+    const s = await chat.createSession();
+    const out = await chat.runBuyerAgent(s, "Buy me the Ada wrap dress. Keep the total under $90 and it must ship within 2 days. Only buy from a shop that keeps at least 90% of its promises.");
+    expect(out.verdict.record).toMatch(/kept 1 of 2 resolved promises/);
+    expect(out.verdict.decision).toBe("DECLINE");
+    expect(out.verdict.checks.find((c) => c.check === "merchant_record_meets_your_bar")?.detail).toMatch(/not enough history/);
+  });
+
   it("matching price: standard shipping $88.50 quoted and captured → KEPT, no remedy", async () => {
     const { reply, keptOrderId } = await placeOrder("STANDARD");
     expect(reply.text).toContain("Your total is $88.50.");

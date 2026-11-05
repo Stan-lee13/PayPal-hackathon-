@@ -265,3 +265,43 @@ describe("tamper-evident audit chain (pure)", async () => {
     expect(forged.hash).not.toBe(c[1]!.hash); // …the receipt/PayPal fingerprint no longer matches
   });
 });
+
+describe("MCP promise-record server (protocol handling)", async () => {
+  const { handleMcp, MCP_TOOLS } = await import("../lib/services/mcp");
+  it("negotiates a protocol version, lists one read-only tool, ignores notifications", async () => {
+    expect(await handleMcp({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26" } })).toMatchObject({ id: 1, result: { protocolVersion: "2025-03-26", capabilities: { tools: {} } } });
+    expect(await handleMcp({ jsonrpc: "2.0", id: 2, method: "initialize", params: { protocolVersion: "1999-01-01" } })).toMatchObject({ result: { protocolVersion: "2025-06-18" } });
+    expect(await handleMcp({ jsonrpc: "2.0", method: "notifications/initialized" })).toBeNull();
+    const list = await handleMcp({ jsonrpc: "2.0", id: 3, method: "tools/list" });
+    expect((list?.result as { tools: Array<{ name: string; annotations: { readOnlyHint: boolean } }> }).tools.map((t) => [t.name, t.annotations.readOnlyHint])).toEqual([["get_promise_record", true]]);
+    expect(MCP_TOOLS[0].inputSchema.required).toEqual(["merchant"]);
+  });
+  it("rejects bad requests and unknown methods/tools per JSON-RPC", async () => {
+    expect((await handleMcp({ id: 4, method: "tools/list" }))?.error?.code).toBe(-32600);
+    expect((await handleMcp({ jsonrpc: "2.0", id: 5, method: "resources/list" }))?.error?.code).toBe(-32601);
+    expect((await handleMcp({ jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: "create_refund", arguments: {} } }))?.error?.code).toBe(-32602);
+    expect(await handleMcp({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "get_promise_record", arguments: { merchant: "../etc" } } })).toMatchObject({ result: { isError: true } });
+  });
+});
+
+describe("shopper's 'keeps N% of its promises' rule (deterministic)", async () => {
+  const { readRecordRule, readMandate, guard, MIN_RECORD_HISTORY } = await import("../lib/ai/buyer-agent");
+  type Rec = import("../lib/services/promise-record").PromiseRecord;
+  const rec = (resolved: number, kept: number, intact = true) => ({ format: "kept-promise-record/1", merchant: { slug: "s", name: "Shop" }, asOf: "", data: "SIMULATED", resolved, keptAsPromised: kept, brokenThenMadeGood: resolved - kept, brokenStillOpen: 0, watching: 0, keptAsPromisedRate: resolved ? kept / resolved : null, keptOrMadeGoodRate: 1, byType: [], orders: resolved, auditChains: { verified: resolved, intact }, caveats: [], method: "" }) as Rec;
+  const merchant = { quotedMinor: 8400, quotedQuote: "Your total is $84.00.", shipHours: 48, shipQuote: "Your order ships within 48 hours." };
+  it("parses firm rules and refuses hedged ones", () => {
+    expect(readRecordRule("Only buy from a shop that keeps at least 90% of its promises.").minKeptRate).toBe(0.9);
+    expect(readRecordRule("Must have a 95% promise record.").minKeptRate).toBe(0.95);
+    expect(readRecordRule("Ideally a shop that keeps 90% of its promises.")).toMatchObject({ minKeptRate: null });
+    expect(readRecordRule("Under $90 please.").minKeptRate).toBeNull();
+  });
+  it("declines without enough history, with a broken audit chain, or below the bar; proceeds above it", () => {
+    const terms = readMandate("Buy the Ada wrap dress. Keep the total under $90. Only from a shop that keeps at least 90% of its promises.", "USD");
+    expect(terms.minKeptRate).toBe(0.9);
+    expect(guard(terms, merchant, "USD", "scripted", "", rec(2, 2)).decision).toBe("DECLINE");
+    expect(guard(terms, merchant, "USD", "scripted", "", rec(MIN_RECORD_HISTORY, MIN_RECORD_HISTORY, false)).decision).toBe("DECLINE");
+    expect(guard(terms, merchant, "USD", "scripted", "", rec(20, 17)).decision).toBe("DECLINE");
+    expect(guard(terms, merchant, "USD", "scripted", "", rec(20, 19)).decision).toBe("PROCEED");
+    expect(guard(terms, merchant, "USD", "scripted", "", null).decision).toBe("DECLINE");
+  });
+});

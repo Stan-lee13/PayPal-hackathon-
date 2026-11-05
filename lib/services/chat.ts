@@ -101,8 +101,11 @@ export async function runBuyerAgent(sessionId: string, mandate: string) {
   const terms = readMandate(clean, DEMO_MERCHANT.currency);
   await db.update(chatSessions).set({ mode: "agent", mandate: clean, messages: [], cart: [], agentVerdict: null, updatedAt: new Date() }).where(eq(chatSessions.id, sessionId));
   const prods = await activeProducts(s.merchantId);
+  const { promiseRecord } = await import("./promise-record");
+  let record: Awaited<ReturnType<typeof promiseRecord>> = null;
   const io = {
     products: prods,
+    getPromiseRecord: async () => (record ??= await promiseRecord(DEMO_MERCHANT.slug)),
     setCart: async (productId: string, qty: number, shipping: "STANDARD" | "EXPRESS") => { await setCart(sessionId, [{ productId, qty }], shipping); },
     askMerchant: async (message: string) => (await postCustomerMessage(sessionId, message, "agent")).reply.text,
   };
@@ -118,7 +121,7 @@ export async function runBuyerAgent(sessionId: string, mandate: string) {
     narrative = await runScriptedAgent(clean, terms, io);
   }
   const after = (await getSession(sessionId))!;
-  const verdict = guard(terms, merchantTerms(after.messages, DEMO_MERCHANT.currency), DEMO_MERCHANT.currency, by, narrative);
+  const verdict = guard(terms, merchantTerms(after.messages, DEMO_MERCHANT.currency), DEMO_MERCHANT.currency, by, narrative, record ?? await io.getPromiseRecord());
   const closing: ChatMessage = { role: "agent", text: verdict.decision === "PROCEED" ? "Thank you — that meets my user's limits. My user will approve the payment in PayPal." : "Thank you — that does not meet my user's limits, so I won't proceed.", at: new Date().toISOString(), generatedBy: by };
   await db.update(chatSessions).set({ agentVerdict: verdict, messages: [...after.messages, closing], updatedAt: new Date() }).where(eq(chatSessions.id, sessionId));
   return { verdict, terms, messages: [...after.messages, closing] };

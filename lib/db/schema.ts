@@ -85,6 +85,8 @@ export type AgentVerdict = {
   decision: "PROCEED" | "DECLINE";
   checks: Array<{ check: string; ok: boolean; detail: string }>;
   summary: string;
+  /** One-line summary of the merchant's Kept promise record, as the agent saw it. */
+  record?: string;
   by: "ai" | "scripted";
 };
 

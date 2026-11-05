@@ -7,7 +7,7 @@ import { PayPalButtons, PayPalScriptProvider } from "@paypal/react-paypal-js";
 type Product = { id: string; name: string; description: string; priceMinor: number; currency: string; swatch: string; imageAlt: string; inStock: number };
 type Ship = "STANDARD" | "EXPRESS";
 type Msg = { role: "customer" | "assistant" | "agent"; text: string; at: string; generatedBy?: "ai" | "scripted" };
-type Verdict = { decision: "PROCEED" | "DECLINE"; checks: Array<{ check: string; ok: boolean; detail: string }>; summary: string; by: "ai" | "scripted" } | null;
+type Verdict = { decision: "PROCEED" | "DECLINE"; checks: Array<{ check: string; ok: boolean; detail: string }>; summary: string; by: "ai" | "scripted"; record?: string } | null;
 const DEFAULT_MANDATE = "Buy me the Ada wrap dress. Keep the total under $90 and it must ship within 2 days.";
 type Guard = { action: "NONE" | "WARN" | "HONOR"; quotedMinor: number | null; quote: string | null; checkoutMinor: number; gapMinor: number; honorDiscountMinor: number };
 type Checkout = { itemTotalMinor: number; shippingMinor: number; totalMinor: number; guard?: Guard } | null;
@@ -285,6 +285,7 @@ export function Storefront(props: {
                 <p className={`eyebrow ${verdict.decision === "PROCEED" ? "text-kept" : "text-broken"}`}>Mandate check (deterministic) · {verdict.decision === "PROCEED" ? "cleared" : "declined"}</p>
                 <ul className="mt-1 space-y-0.5">{verdict.checks.map((c, i) => <li key={i}><span aria-hidden="true">{c.ok ? "✓" : "✕"}</span><span className="sr-only">{c.ok ? "passed" : "failed"}</span> {c.detail}</li>)}</ul>
                 <p className="mt-2">{verdict.summary}</p>
+                {verdict.record && <p className="mt-2 text-xs text-ink-soft"><span className="eyebrow">Merchant&rsquo;s promise record on Kept · </span>{verdict.record}</p>}
               </div>
             )}
             <form className={`rule-t flex gap-2 p-3 ${mode === "agent" ? "hidden" : ""}`} onSubmit={(e) => { e.preventDefault(); void send(draft); }}>
