@@ -13,6 +13,7 @@ import type { ChatMessage, Product } from "../db/schema";
 import type { Pricing } from "../services/pricing";
 import { SHIPPING } from "../services/merchant-data";
 import { aiModel, FALLBACK_BETA, getAnthropic, supportsServerFallback } from "./client";
+import { guarded } from "./budget";
 
 export type AssistantContext = {
   merchantName: string;
@@ -81,7 +82,7 @@ export async function replyWithClaude(ctx: AssistantContext): Promise<string> {
     { role: "user", content: ctx.message },
   ];
   for (let round = 0; round < 3; round++) {
-    const res = await getAnthropic().beta.messages.create({
+    const res = await guarded("assistant", model, () => getAnthropic().beta.messages.create({
       model,
       max_tokens: 2000,
       system: systemPrompt(ctx),
@@ -89,7 +90,7 @@ export async function replyWithClaude(ctx: AssistantContext): Promise<string> {
       output_config: { effort: "low" },
       ...(supportsServerFallback(model) ? { betas: [FALLBACK_BETA], fallbacks: "default" as const } : {}),
       messages,
-    });
+    }));
     if (res.stop_reason === "refusal") throw new Error("assistant model declined");
     const toolUses = res.content.filter((b): b is Anthropic.Beta.BetaToolUseBlock => b.type === "tool_use");
     if (res.stop_reason !== "tool_use" || toolUses.length === 0) {
