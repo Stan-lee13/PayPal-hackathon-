@@ -1,0 +1,289 @@
+import { sql } from "drizzle-orm";
+import {
+  bigserial,
+  boolean,
+  index,
+  integer,
+  jsonb,
+  pgTable,
+  real,
+  text,
+  timestamp,
+  uniqueIndex,
+} from "drizzle-orm/pg-core";
+
+/**
+ * Kept data model.
+ *
+ * Money is ALWAYS stored as integer minor units (e.g. cents) together with an
+ * ISO-4217 currency code. Nothing in this schema stores floating-point money.
+ */
+
+const ts = (name: string) => timestamp(name, { withTimezone: true, mode: "date" });
+
+export type MerchantPolicy = {
+  /** Remedy kinds the merchant allows Kept to propose. */
+  allowedRemedies: Array<"PARTIAL_REFUND" | "FULL_REFUND" | "ADD_TRACKING_REMINDER" | "MESSAGE_ONLY" | "DISPUTE_OFFER">;
+  /** Hard cap on any single refund remedy, minor units. */
+  maxRefundMinor: number;
+  /** Partial refunds above this need an explicit "large refund" acknowledgement in the UI. */
+  reviewThresholdMinor: number;
+  /** Minimum extractor confidence required before a commitment can be enforceable. */
+  minConfidence: number;
+  /** Hours before a SHIP_BY deadline at which the commitment becomes AT_RISK. */
+  shipAtRiskHours: number;
+  /** Days before a REFUND_BY deadline at which the commitment becomes AT_RISK. */
+  refundAtRiskDays: number;
+  /** Default message tone shown to the merchant when drafting customer messages. */
+  supportEmail: string;
+};
+
+export const merchants = pgTable("merchants", {
+  id: text("id").primaryKey(),
+  slug: text("slug").notNull().unique(),
+  name: text("name").notNull(),
+  currency: text("currency").notNull(),
+  policy: jsonb("policy").$type<MerchantPolicy>().notNull(),
+  /** Demo-only simulated clock offset (ms). Ignored unless DEMO_MODE=true. */
+  demoClockOffsetMs: integer("demo_clock_offset_ms").notNull().default(0),
+  createdAt: ts("created_at").notNull().defaultNow(),
+});
+
+export const products = pgTable("products", {
+  id: text("id").primaryKey(),
+  merchantId: text("merchant_id").notNull().references(() => merchants.id),
+  sku: text("sku").notNull(),
+  name: text("name").notNull(),
+  description: text("description").notNull(),
+  priceMinor: integer("price_minor").notNull(),
+  currency: text("currency").notNull(),
+  imageAlt: text("image_alt").notNull(),
+  swatch: text("swatch").notNull(),
+  inStock: integer("in_stock").notNull(),
+  active: boolean("active").notNull().default(true),
+}, (t) => [uniqueIndex("products_merchant_sku").on(t.merchantId, t.sku)]);
+
+/**
+ * Immutable source documents. Promises are only enforceable if their quote is
+ * found verbatim in one of these. Chat transcripts are snapshotted into a source
+ * at checkout so a later edit to the conversation cannot change the evidence.
+ */
+export const sources = pgTable("sources", {
+  id: text("id").primaryKey(),
+  merchantId: text("merchant_id").notNull().references(() => merchants.id),
+  orderId: text("order_id"),
+  kind: text("kind", { enum: ["CHAT_TRANSCRIPT", "REFUND_POLICY", "SHIPPING_POLICY", "PRODUCT_PAGE"] }).notNull(),
+  title: text("title").notNull(),
+  text: text("text").notNull(),
+  sha256: text("sha256").notNull(),
+  createdAt: ts("created_at").notNull().defaultNow(),
+}, (t) => [index("sources_order").on(t.orderId), index("sources_merchant").on(t.merchantId)]);
+
+export type ChatMessage = { role: "customer" | "assistant"; text: string; at: string; generatedBy?: "ai" | "scripted" };
+
+export const chatSessions = pgTable("chat_sessions", {
+  id: text("id").primaryKey(),
+  merchantId: text("merchant_id").notNull().references(() => merchants.id),
+  messages: jsonb("messages").$type<ChatMessage[]>().notNull().default(sql`'[]'::jsonb`),
+  /** The basket under discussion, set by the storefront (product ids + qty). */
+  cart: jsonb("cart").$type<Array<{ productId: string; qty: number }>>().notNull().default(sql`'[]'::jsonb`),
+  shippingOption: text("shipping_option", { enum: ["STANDARD", "EXPRESS"] }).notNull().default("STANDARD"),
+  orderId: text("order_id"),
+  createdAt: ts("created_at").notNull().defaultNow(),
+  updatedAt: ts("updated_at").notNull().defaultNow(),
+});
+
+export type OrderLine = { productId: string; sku: string; name: string; qty: number; unitMinor: number };
+
+export const orders = pgTable("orders", {
+  /** Kept's internal id. Sent to PayPal as purchase_units[0].custom_id. */
+  id: text("id").primaryKey(),
+  merchantId: text("merchant_id").notNull().references(() => merchants.id),
+  chatSessionId: text("chat_session_id").references(() => chatSessions.id),
+  status: text("status", {
+    enum: ["DRAFT", "PAYPAL_CREATED", "APPROVED", "CAPTURED", "CAPTURE_PENDING", "CAPTURE_DECLINED", "VOIDED"],
+  }).notNull().default("DRAFT"),
+  currency: text("currency").notNull(),
+  lines: jsonb("lines").$type<OrderLine[]>().notNull(),
+  itemTotalMinor: integer("item_total_minor").notNull(),
+  shippingMinor: integer("shipping_minor").notNull(),
+  taxMinor: integer("tax_minor").notNull().default(0),
+  /** Amount Kept asked PayPal to charge. Not authoritative — the capture is. */
+  requestedTotalMinor: integer("requested_total_minor").notNull(),
+  paypalOrderId: text("paypal_order_id").unique(),
+  paypalCaptureId: text("paypal_capture_id").unique(),
+  /** Authoritative capture facts, only ever written from a PayPal GET. */
+  captureStatus: text("capture_status"),
+  captureStatusReason: text("capture_status_reason"),
+  captureAmountMinor: integer("capture_amount_minor"),
+  captureCurrency: text("capture_currency"),
+  paypalFeeMinor: integer("paypal_fee_minor"),
+  netAmountMinor: integer("net_amount_minor"),
+  capturedAt: ts("captured_at"),
+  captureVerifiedAt: ts("capture_verified_at"),
+  /** Sum of COMPLETED refunds as confirmed by PayPal. */
+  refundedMinor: integer("refunded_minor").notNull().default(0),
+  buyerFirstName: text("buyer_first_name"),
+  /** Redacted (j***@example.com). The raw address is never stored. */
+  buyerEmailRedacted: text("buyer_email_redacted"),
+  /** 128-bit+ random token for the customer's living receipt. */
+  receiptToken: text("receipt_token").notNull().unique(),
+  extractionStatus: text("extraction_status", { enum: ["NOT_STARTED", "COMPLETED", "FAILED"] }).notNull().default("NOT_STARTED"),
+  extractionNote: text("extraction_note"),
+  createdAt: ts("created_at").notNull().defaultNow(),
+  updatedAt: ts("updated_at").notNull().defaultNow(),
+}, (t) => [index("orders_merchant").on(t.merchantId, t.createdAt)]);
+
+export const COMMITMENT_TYPES = ["PRICE_AS_QUOTED", "SHIP_BY", "REFUND_BY", "OTHER"] as const;
+export type CommitmentType = (typeof COMMITMENT_TYPES)[number];
+export const COMMITMENT_STATES = ["PENDING", "KEPT", "AT_RISK", "BROKEN", "UNVERIFIABLE", "NEEDS_CONFIRMATION", "WAIVED"] as const;
+export type CommitmentState = (typeof COMMITMENT_STATES)[number];
+
+export const commitments = pgTable("commitments", {
+  id: text("id").primaryKey(),
+  orderId: text("order_id").notNull().references(() => orders.id),
+  merchantId: text("merchant_id").notNull().references(() => merchants.id),
+  type: text("type", { enum: COMMITMENT_TYPES }).notNull(),
+  params: jsonb("params").$type<Record<string, unknown>>().notNull(),
+  quote: text("quote").notNull(),
+  sourceId: text("source_id").notNull().references(() => sources.id),
+  spanStart: integer("span_start").notNull(),
+  spanEnd: integer("span_end").notNull(),
+  confidence: real("confidence").notNull(),
+  /** True only if every deterministic validation check passed. */
+  enforceable: boolean("enforceable").notNull(),
+  validation: jsonb("validation").$type<Array<{ check: string; ok: boolean; detail: string }>>().notNull(),
+  extractor: text("extractor", { enum: ["llm", "rules"] }).notNull(),
+  state: text("state", { enum: COMMITMENT_STATES }).notNull(),
+  stateReason: text("state_reason").notNull(),
+  dueAt: ts("due_at"),
+  /** Deterministic evaluator output: discrepancy etc. */
+  evaluation: jsonb("evaluation").$type<Record<string, unknown>>(),
+  createdAt: ts("created_at").notNull().defaultNow(),
+  updatedAt: ts("updated_at").notNull().defaultNow(),
+}, (t) => [index("commitments_order").on(t.orderId), index("commitments_merchant_state").on(t.merchantId, t.state)]);
+
+export const paypalEvents = pgTable("paypal_events", {
+  id: text("id").primaryKey(),
+  /** PayPal's event id. Unique => duplicate deliveries are ignored. */
+  paypalEventId: text("paypal_event_id").notNull().unique(),
+  eventType: text("event_type").notNull(),
+  resourceType: text("resource_type"),
+  resourceId: text("resource_id"),
+  summary: text("summary"),
+  verification: text("verification", { enum: ["SUCCESS", "SIMULATED"] }).notNull(),
+  payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),
+  orderId: text("order_id"),
+  processingStatus: text("processing_status", { enum: ["RECEIVED", "PROCESSED", "FAILED", "IGNORED"] }).notNull().default("RECEIVED"),
+  processingError: text("processing_error"),
+  attempts: integer("attempts").notNull().default(0),
+  receivedAt: ts("received_at").notNull().defaultNow(),
+  processedAt: ts("processed_at"),
+}, (t) => [index("paypal_events_order").on(t.orderId), index("paypal_events_status").on(t.processingStatus)]);
+
+export const REMEDY_KINDS = ["PARTIAL_REFUND", "FULL_REFUND", "ADD_TRACKING_REMINDER", "MESSAGE_ONLY", "DISPUTE_OFFER"] as const;
+export type RemedyKind = (typeof REMEDY_KINDS)[number];
+export const REMEDY_STATES = ["PROPOSED", "APPROVED", "EXECUTING", "PENDING", "COMPLETED", "FAILED", "REJECTED", "SUPERSEDED"] as const;
+export type RemedyState = (typeof REMEDY_STATES)[number];
+
+export const remedies = pgTable("remedies", {
+  id: text("id").primaryKey(),
+  commitmentId: text("commitment_id").notNull().references(() => commitments.id),
+  orderId: text("order_id").notNull().references(() => orders.id),
+  merchantId: text("merchant_id").notNull().references(() => merchants.id),
+  kind: text("kind", { enum: REMEDY_KINDS }).notNull(),
+  amountMinor: integer("amount_minor"),
+  currency: text("currency"),
+  customerMessage: text("customer_message").notNull(),
+  rationale: text("rationale").notNull(),
+  citations: jsonb("citations").$type<string[]>().notNull(),
+  proposedBy: text("proposed_by", { enum: ["ai", "rules"] }).notNull(),
+  policyChecks: jsonb("policy_checks").$type<Array<{ check: string; ok: boolean; detail: string }>>().notNull(),
+  state: text("state", { enum: REMEDY_STATES }).notNull(),
+  /** Idempotency key sent as PayPal-Request-Id. Generated once, reused on retry. */
+  paypalRequestId: text("paypal_request_id").notNull().unique(),
+  paypalRefundId: text("paypal_refund_id").unique(),
+  paypalRefundStatus: text("paypal_refund_status"),
+  errorCode: text("error_code"),
+  errorDetail: text("error_detail"),
+  decidedBy: text("decided_by"),
+  decidedAt: ts("decided_at"),
+  executedAt: ts("executed_at"),
+  completedAt: ts("completed_at"),
+  createdAt: ts("created_at").notNull().defaultNow(),
+  updatedAt: ts("updated_at").notNull().defaultNow(),
+}, (t) => [
+  index("remedies_order").on(t.orderId),
+  // At most one live remedy per commitment: prevents double proposals/refunds.
+  uniqueIndex("remedies_one_active_per_commitment")
+    .on(t.commitmentId)
+    .where(sql`state in ('PROPOSED','APPROVED','EXECUTING','PENDING')`),
+]);
+
+/** Every refund PayPal knows about for a capture — whether Kept issued it or not. */
+export const refunds = pgTable("refunds", {
+  paypalRefundId: text("paypal_refund_id").primaryKey(),
+  orderId: text("order_id").notNull().references(() => orders.id),
+  remedyId: text("remedy_id"),
+  amountMinor: integer("amount_minor").notNull(),
+  currency: text("currency").notNull(),
+  status: text("status").notNull(),
+  statusReason: text("status_reason"),
+  paypalCreatedAt: ts("paypal_created_at"),
+  verifiedAt: ts("verified_at").notNull(),
+}, (t) => [index("refunds_order").on(t.orderId)]);
+
+export const trackers = pgTable("trackers", {
+  id: text("id").primaryKey(),
+  orderId: text("order_id").notNull().references(() => orders.id),
+  paypalTrackerId: text("paypal_tracker_id"),
+  trackingNumber: text("tracking_number").notNull(),
+  carrier: text("carrier").notNull(),
+  status: text("status").notNull(),
+  /** Time PayPal accepted the tracker (or Kept received PayPal's confirmation). */
+  recordedAt: ts("recorded_at").notNull(),
+}, (t) => [index("trackers_order").on(t.orderId), uniqueIndex("trackers_order_number").on(t.orderId, t.trackingNumber)]);
+
+export const disputes = pgTable("disputes", {
+  paypalDisputeId: text("paypal_dispute_id").primaryKey(),
+  orderId: text("order_id"),
+  reason: text("reason"),
+  status: text("status"),
+  stage: text("stage"),
+  amountMinor: integer("amount_minor"),
+  currency: text("currency"),
+  paypalCreatedAt: ts("paypal_created_at"),
+  verifiedAt: ts("verified_at").notNull(),
+  raw: jsonb("raw").$type<Record<string, unknown>>().notNull(),
+});
+
+export const auditLog = pgTable("audit_log", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  merchantId: text("merchant_id").notNull(),
+  orderId: text("order_id"),
+  actor: text("actor", { enum: ["ai", "merchant", "system", "paypal", "customer"] }).notNull(),
+  action: text("action").notNull(),
+  ref: text("ref"),
+  outcome: text("outcome", { enum: ["OK", "REJECTED", "FAILED", "PENDING", "INFO"] }).notNull(),
+  detail: jsonb("detail").$type<Record<string, unknown>>().notNull(),
+  createdAt: ts("created_at").notNull().defaultNow(),
+}, (t) => [index("audit_order").on(t.orderId, t.createdAt), index("audit_merchant").on(t.merchantId, t.createdAt)]);
+
+export const rateLimits = pgTable("rate_limits", {
+  key: text("key").primaryKey(),
+  windowStart: ts("window_start").notNull(),
+  count: integer("count").notNull(),
+});
+
+export type Merchant = typeof merchants.$inferSelect;
+export type Product = typeof products.$inferSelect;
+export type Source = typeof sources.$inferSelect;
+export type Order = typeof orders.$inferSelect;
+export type Commitment = typeof commitments.$inferSelect;
+export type Remedy = typeof remedies.$inferSelect;
+export type Refund = typeof refunds.$inferSelect;
+export type Tracker = typeof trackers.$inferSelect;
+export type PaypalEvent = typeof paypalEvents.$inferSelect;
+export type Dispute = typeof disputes.$inferSelect;
+export type AuditEntry = typeof auditLog.$inferSelect;
+export type ChatSession = typeof chatSessions.$inferSelect;
