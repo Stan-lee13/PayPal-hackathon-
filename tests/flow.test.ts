@@ -252,6 +252,11 @@ d("Kept end-to-end (emulated PayPal)", () => {
     expect(done.state).toBe("COMPLETED");
     const d = (await db.query.disputes.findFirst({ where: eq(schema.disputes.paypalDisputeId, disputeId) }))!;
     expect(d.status).toBe("UNDER_REVIEW");
+    // PayPal follows up with CUSTOMER.DISPUTE.UPDATED; that must not produce a second response
+    await sim.deliverSimulatedEvents();
+    const responses = await db.select().from(schema.remedies).where(eq(schema.remedies.kind, "DISPUTE_OFFER"));
+    expect(responses).toHaveLength(1);
+    expect(responses[0]!.state).toBe("COMPLETED");
   });
 
   it("dispute shield: overcharge dispute → offer exactly the $9.33 difference (supersedes the pending refund proposal)", async () => {

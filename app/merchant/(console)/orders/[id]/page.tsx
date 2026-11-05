@@ -35,7 +35,7 @@ export default async function OrderLedger({ params }: { params: Promise<{ id: st
           <h1 className="quote text-3xl">Order {o.buyerFirstName ? `for ${o.buyerFirstName}` : ""}</h1>
           <p className="mono text-xs text-ink-soft">{o.id} · created {o.createdAt.toISOString().slice(0, 16).replace("T", " ")} UTC</p>
         </div>
-        <OrderActions orderId={o.id} hasCapture={Boolean(o.paypalCaptureId)} receiptPath={`/r/${o.receiptToken}`} />
+        <OrderActions orderId={o.id} hasCapture={Boolean(o.paypalCaptureId)} receiptPath={`/r/${o.receiptToken}`} simulated={simulated} hasDispute={b.disputes.length > 0} />
       </div>
 
       {/* Payment header: authoritative PayPal facts */}
@@ -46,6 +46,17 @@ export default async function OrderLedger({ params }: { params: Promise<{ id: st
         <div><p className="eyebrow">Refunded (confirmed)</p><p><Money minor={o.refundedMinor} currency={cur} /></p><p className="text-xs text-ink-soft">{o.captureVerifiedAt ? `verified by GET ${o.captureVerifiedAt.toISOString().slice(11, 19)} UTC` : "not yet verified"}</p></div>
       </section>
       {o.extractionNote && <p className="mt-2 text-xs text-ink-soft">{o.extractionNote}</p>}
+      {b.disputes.map((d) => {
+        const resp = b.remedies.find((r) => r.kind === "DISPUTE_OFFER" && r.state !== "SUPERSEDED");
+        return (
+          <section key={d.paypalDisputeId} className="mt-4 rounded-lg border border-broken bg-broken-wash p-4 text-sm" aria-label="PayPal dispute">
+            <p className="eyebrow text-broken">PayPal dispute · {d.stage} · {d.status}</p>
+            <p className="mt-1">The buyer opened dispute <span className="mono">{d.paypalDisputeId}</span> ({(d.reason ?? "").toLowerCase().replace(/_/g, " ")}). {resp
+              ? resp.state === "PROPOSED" ? "Kept has prepared a response from the promise ledger below. Nothing is sent to PayPal until you approve it." : `Your response was ${resp.state === "COMPLETED" ? "accepted by PayPal" : resp.state.toLowerCase()}.`
+              : "Kept found nothing it could honestly propose."}</p>
+          </section>
+        );
+      })}
 
       {/* SAID | SEAL | HAPPENED */}
       <section className="mt-8" aria-labelledby="said-h">

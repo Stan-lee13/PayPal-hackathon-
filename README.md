@@ -94,6 +94,8 @@ When PayPal reports a dispute (`CUSTOMER.DISPUTE.CREATED`, re-fetched with `GET 
 
 - **Every response is a remedy.** It is policy-checked, shown with the exact Disputes API request, editable, and sent **only after the merchant approves it**.
 - **An offer moves no money by itself.** Money moves only if the buyer accepts it in PayPal. Kept then reports the refund PayPal records.
+- **Scoped, truthful evidence.** The note contains only verbatim promises and PayPal records relevant to the dispute's reason.
+- **Try it.** In simulated mode, the order page has **Play the buyer: open a dispute**. In the sandbox, open the dispute as the buyer in PayPal's Resolution Center.
 - **Supersession.** A dispute response supersedes any still-PROPOSED remedy on the same promise, so the buyer is never paid twice.
 
 ---
@@ -124,7 +126,7 @@ With no `ANTHROPIC_API_KEY`, Kept falls back to clearly labelled deterministic a
 | Promise extraction | Rule-based extractor |
 | Remedy proposal | Rule-based proposals |
 
-Demo walk-through:
+Demo walk-through (the in-app version, with all three scenarios, is at **`/tour`**):
 
 1. Open `/store`. Add the Ada Wrap Dress, choose **Express**, and ask *"What's my total with express shipping?"*. Pay.
 2. Open `/merchant` (passcode from `.env`). You'll see the **BROKEN** promise. Open it and approve the **$9.33** refund.
@@ -297,6 +299,7 @@ npm test                 # unit + golden set + end-to-end flow (needs TEST_DATAB
 npm run lint             # TypeScript strict type-check
 node scripts/e2e-ui.mjs     # Playwright drive of the full demo against a running instance (BASE_URL, MERCHANT_PASSCODE)
 node scripts/e2e-agent.mjs  # Playwright drive of the agent-to-agent demo (declined mandate, cleared mandate, refund, receipt)
+node scripts/e2e-dispute.mjs # Playwright drive of the dispute shield (tracking → simulated buyer dispute → evidence approved → UNDER_REVIEW)
 npm run eval:extraction  # runs the REAL Claude extractor over the golden set (needs ANTHROPIC_API_KEY)
 ```
 

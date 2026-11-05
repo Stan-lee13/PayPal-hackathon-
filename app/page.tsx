@@ -30,7 +30,8 @@ export default function Home() {
         </div>
 
         <div className="mt-10 flex flex-wrap gap-3">
-          <Link className="btn btn-primary" href="/store">Shop at Adaeze Studio (customer)</Link>
+          <Link className="btn btn-primary" href="/tour">Judge&rsquo;s 5-minute tour</Link>
+          <Link className="btn" href="/store">Shop at Adaeze Studio (customer)</Link>
           <Link className="btn" href="/merchant">Open the merchant console</Link>
         </div>
         <p className="mt-4 text-sm text-ink-soft">Adaeze Studio is a demonstration merchant. Kept is an MVP: not production banking infrastructure.</p>

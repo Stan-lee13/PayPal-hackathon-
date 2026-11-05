@@ -47,12 +47,15 @@ export function chooseResponse(ctx: Awaited<ReturnType<typeof disputeContext>>):
   const completed = refs.filter((r) => r.status === "COMPLETED");
   const anchor = (price ?? ship ?? cms[0])?.id;
   if (!anchor) return null;
+  // Evidence is truthful and scoped to the dispute's subject: a "not received" claim gets the
+  // shipping facts; an amount claim gets the price facts. Every line comes from PayPal records or a verbatim promise.
+  const notReceived = dispute.reason === "MERCHANDISE_OR_SERVICE_NOT_RECEIVED";
   const lines: string[] = [];
-  if (price) lines.push(`Promised in writing: "${price.quote}" — status ${price.state}.`);
-  if (ship) lines.push(`Shipping promise: "${ship.quote}" — status ${ship.state}.`);
+  if (price && !notReceived) lines.push(`Promised in writing: "${price.quote}" — status ${price.state}.`);
+  if (ship && (notReceived || !price)) lines.push(`Shipping promise: "${ship.quote}" — status ${ship.state}.`);
   if (order.captureAmountMinor !== null) lines.push(`PayPal capture ${order.paypalCaptureId}: ${formatMoney(order.captureAmountMinor, cur)}.`);
   for (const r of completed) lines.push(`Refund ${r.paypalRefundId} COMPLETED: ${formatMoney(r.amountMinor, cur)}.`);
-  if (tracker) lines.push(`Tracking ${tracker.carrier} ${tracker.trackingNumber} added to the PayPal order at ${tracker.recordedAt.toISOString().slice(0, 16).replace("T", " ")} UTC (shows shipment, not delivery).`);
+  if (tracker && notReceived) lines.push(`Tracking ${tracker.carrier} ${tracker.trackingNumber} added to the PayPal order at ${tracker.recordedAt.toISOString().slice(0, 16).replace("T", " ")} UTC (shows shipment, not delivery).`);
   const evidence = lines.join(" ");
 
   if (dispute.reason === "MERCHANDISE_OR_SERVICE_NOT_RECEIVED") {
@@ -104,6 +107,9 @@ export async function proposeDisputeResponse(orderId: string, disputeId: string)
   const live = forDispute.find((r) => (LIVE as readonly string[]).includes(r.state));
   if (live) return live;
   if (forDispute.some((r) => r.state === "REJECTED")) return null;
+  // Already answered: PayPal's follow-up CUSTOMER.DISPUTE.UPDATED must not trigger a second response.
+  // Propose again only when PayPal is explicitly asking the seller for something new.
+  if (forDispute.some((r) => r.state === "COMPLETED") && ctx.dispute.status !== "WAITING_FOR_SELLER_RESPONSE") return null;
   const choice = chooseResponse(ctx);
   if (!choice) return null;
   // One live remedy per commitment: a still-PROPOSED remedy is superseded by the dispute response.
