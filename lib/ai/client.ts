@@ -1,21 +1,21 @@
 import Anthropic from "@anthropic-ai/sdk";
 
 /**
- * Claude access. Default model: claude-opus-5-5 (override with KEPT_AI_MODEL,
- * e.g. claude-haiku-5-5 for lower cost). Kept treats every model output as
- * untrusted: extraction goes through the deterministic validator and remedies
- * through the policy engine; the model never sees or produces payment state.
+ * Claude access. Default model: claude-opus-5-5 (override with MERGEPAY_AI_MODEL,
+ * e.g. claude-haiku-5-5 for lower cost). MergePay treats every model output as
+ * untrusted: it writes invoice descriptions and a scope check, which a validator
+ * checks against GitHub; it never sets an amount, sends an invoice or merges.
  *
  * Server-side refusal fallback is enabled (betas server-side-fallback-2026-07-01,
  * fallbacks: "default"); a final `stop_reason: "refusal"` is treated as failure
- * and Kept falls back to its deterministic path.
+ * and MergePay falls back to its deterministic path.
  */
 export function aiConfigured(): boolean {
   return Boolean(process.env.ANTHROPIC_API_KEY);
 }
 
 export function aiModel(): string {
-  return process.env.KEPT_AI_MODEL || "claude-opus-5-5";
+  return process.env.MERGEPAY_AI_MODEL || process.env.KEPT_AI_MODEL || "claude-opus-5-5";
 }
 
 let client: Anthropic | null = null;

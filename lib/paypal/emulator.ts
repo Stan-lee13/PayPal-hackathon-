@@ -1,279 +1,182 @@
 /**
- * LOCAL PAYPAL EMULATOR — NOT PAYPAL.
+ * Simulated PayPal (PAYPAL_MODE=simulated): the Invoicing v2 routes MergePay calls, over one plain
+ * JSON state object (lib/sim/store.ts). It is only reachable when no PayPal credentials are set,
+ * every page shows a SIMULATED banner, and no money moves. Its "payer page" lives at /sim/pay/{id}.
  *
- * A faithful-but-tiny in-process imitation of the PayPal REST endpoints Kept
- * uses, so the whole loop can be run and tested without sandbox credentials.
- * It is only reachable when PAYPAL_MODE=simulated, every record it produces is
- * labelled SIMULATED in the UI, and its "webhooks" carry no PayPal signature and
- * are rejected outright in sandbox/live mode.
- *
- * Behaviour mirrors the documented API where Kept depends on it:
- *  - PayPal-Request-Id idempotency on create/capture/refund
- *  - capture amount = order amount; custom_id echoed on captures and refunds
- *  - refunds cannot exceed the remaining captured amount
- *  - PayPal-Mock-Response style negative testing via `mockResponse`
+ * Paying an invoice here queues an INVOICING.INVOICE.PAID event in an outbox, which the app
+ * delivers to its own webhook handler (unsigned, accepted only in simulated mode).
  */
-import { randomBytes } from "node:crypto";
+import { randomUUID } from "node:crypto";
+import { appBaseUrl } from "../base-url";
+import { simState, withSimState } from "../sim/store";
 import { toDecimalString, toMinor } from "../money";
-import type { FetchLike } from "./client";
-import { withEmulatorState } from "./emulator-store";
 
-type Amount = { currency_code: string; value: string };
-type EmOrder = { id: string; status: string; purchase_units: Array<Record<string, unknown>>; captureId?: string; trackers: Array<Record<string, unknown>> };
-type EmCapture = { id: string; orderId: string; status: string; amountMinor: number; currency: string; customId: string; refundedMinor: number; createdAt: string };
-type EmRefund = { id: string; captureId: string; status: string; amountMinor: number; currency: string; customId: string; createdAt: string; statusReason?: string };
-export type EmEvent = { id: string; event_type: string; resource_type: string; resource: Record<string, unknown>; create_time: string; summary: string };
-
-type State = {
-  orders: Map<string, EmOrder>;
-  captures: Map<string, EmCapture>;
-  refunds: Map<string, EmRefund>;
-  idem: Map<string, { status: number; body: unknown }>;
-  outbox: EmEvent[];
-  /** Refunds created in "pending" mock mode, completed by `settlePendingRefunds`. */
+type SimItem = { name: string; description?: string; quantity: string; unit_amount: { currency_code: string; value: string }; unit_of_measure?: string };
+type SimInvoice = {
+  id: string;
+  status: string;
+  detail: { invoice_number: string; reference?: string; currency_code: string; note?: string; memo?: string; terms_and_conditions?: string; invoice_date: string; metadata: { recipient_view_url: string; create_time: string } };
+  invoicer?: { business_name?: string };
+  primary_recipients: Array<{ billing_info: { email_address: string; name?: { given_name?: string; surname?: string } } }>;
+  items: SimItem[];
+  amount: { currency_code: string; value: string };
+  due_amount: { currency_code: string; value: string };
+  payments?: { paid_amount: { currency_code: string; value: string }; transactions: Array<{ payment_id: string; method: string; type: string; payment_date: string; amount: { currency_code: string; value: string } }> };
+};
+type PayPalSim = {
+  invoices: Record<string, SimInvoice>;
+  /** PayPal-Request-Id → invoice id (create is idempotent, like PayPal). */
+  requestIds: Record<string, string>;
+  nextNumber: number;
+  outbox: Array<Record<string, unknown>>;
+  webhooks: Array<{ id: string; url: string }>;
 };
 
-declare global {
-  // eslint-disable-next-line no-var
-  var __keptPayPalEmulator: State | undefined;
+function state(): PayPalSim {
+  return simState<PayPalSim>("paypal", () => ({ invoices: {}, requestIds: {}, nextNumber: 1, outbox: [], webhooks: [] }));
 }
 
-function state(): State {
-  if (!globalThis.__keptPayPalEmulator) {
-    globalThis.__keptPayPalEmulator = { orders: new Map(), captures: new Map(), refunds: new Map(), idem: new Map(), outbox: [] };
+const reply = (status: number, body: unknown) => new Response(status === 204 ? null : JSON.stringify(body), { status, headers: { "content-type": "application/json", "paypal-debug-id": "sim-" + randomUUID().slice(0, 8) } });
+const err = (status: number, name: string, issue: string, description: string) => reply(status, { name, message: description, debug_id: "sim", details: [{ issue, description }] });
+
+function itemsTotalMinor(items: SimItem[], currency: string): number {
+  let total = 0;
+  for (const i of items) {
+    const qtyHundredths = toMinor(i.quantity, "USD"); // quantity as hundredths, exact
+    const unit = toMinor(i.unit_amount.value, currency);
+    total += Math.round((unit * qtyHundredths) / 100);
   }
-  return globalThis.__keptPayPalEmulator;
+  return total;
 }
 
-export function resetEmulator() {
-  globalThis.__keptPayPalEmulator = undefined;
+function queueEvent(eventType: string, inv: SimInvoice, summary: string) {
+  state().outbox.push({
+    id: `WH-SIM-${randomUUID()}`,
+    event_version: "1.0",
+    create_time: new Date().toISOString(),
+    resource_type: "invoices",
+    event_type: eventType,
+    summary,
+    resource: { invoice: structuredClone(inv) },
+  });
 }
 
-const pid = (prefix: string) => `${prefix}${randomBytes(8).toString("hex").toUpperCase()}`;
-const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "paypal-debug-id": "SIMULATED" } });
-const err = (status: number, name: string, issue: string, description: string) => json(status, { name, message: description, debug_id: "SIMULATED", details: [{ issue, description }] });
+// ---------------------------------------------------------------------------
+// Simulated payer actions (called by the /sim/pay page and tests)
+// ---------------------------------------------------------------------------
 
-function captureResource(c: EmCapture) {
-  const fee = Math.round(c.amountMinor * 0.0349) + 49; // illustrative fee, labelled simulated
-  return {
-    id: c.id,
-    status: c.status,
-    amount: { currency_code: c.currency, value: toDecimalString(c.amountMinor, c.currency) },
-    custom_id: c.customId,
-    invoice_id: c.customId,
-    seller_receivable_breakdown: {
-      gross_amount: { currency_code: c.currency, value: toDecimalString(c.amountMinor, c.currency) },
-      paypal_fee: { currency_code: c.currency, value: toDecimalString(fee, c.currency) },
-      net_amount: { currency_code: c.currency, value: toDecimalString(c.amountMinor - fee, c.currency) },
-    },
-    supplementary_data: { related_ids: { order_id: c.orderId } },
-    create_time: c.createdAt,
-    update_time: new Date().toISOString(),
-  };
+export async function simPayInvoice(id: string): Promise<{ ok: boolean; message: string }> {
+  return withSimState(() => {
+    const inv = state().invoices[id];
+    if (!inv) return { ok: false, message: "No such invoice." };
+    if (inv.status === "PAID") return { ok: false, message: "This invoice is already paid." };
+    if (inv.status !== "SENT" && inv.status !== "UNPAID") return { ok: false, message: `This invoice can't be paid (status ${inv.status}).` };
+    const c = inv.detail.currency_code;
+    inv.status = "PAID";
+    inv.payments = { paid_amount: { ...inv.amount }, transactions: [{ payment_id: `SIMPAY-${randomUUID().slice(0, 12).toUpperCase()}`, method: "PAYPAL", type: "PAYPAL", payment_date: new Date().toISOString().slice(0, 10), amount: { ...inv.amount } }] };
+    inv.due_amount = { currency_code: c, value: toDecimalString(0, c) };
+    queueEvent("INVOICING.INVOICE.PAID", inv, `An invoice was paid (simulated). Invoice ${inv.detail.invoice_number}`);
+    return { ok: true, message: "Paid (simulated — no money moved)." };
+  });
 }
 
-function refundResource(r: EmRefund) {
-  return {
-    id: r.id,
-    status: r.status,
-    ...(r.statusReason ? { status_details: { reason: r.statusReason } } : {}),
-    amount: { currency_code: r.currency, value: toDecimalString(r.amountMinor, r.currency) },
-    custom_id: r.customId,
-    create_time: r.createdAt,
-    links: [{ rel: "up", href: `https://emulator.invalid/v2/payments/captures/${r.captureId}` }],
-  };
+export async function simInvoiceSnapshot(id: string): Promise<SimInvoice | null> {
+  return withSimState(() => structuredClone(state().invoices[id] ?? null));
 }
 
-function emit(event_type: string, resource_type: string, resource: Record<string, unknown>, summary: string) {
-  state().outbox.push({ id: `WH-SIM-${randomBytes(8).toString("hex").toUpperCase()}`, event_type, resource_type, resource, create_time: new Date().toISOString(), summary });
+/** Take queued webhook events (the caller delivers them to the app's own handler). */
+export async function takeSimOutbox(): Promise<Array<Record<string, unknown>>> {
+  return withSimState(() => state().outbox.splice(0));
 }
 
-/** Drain queued simulated webhook events (the app delivers them to its own ingest path). */
-export function drainEmulatorEvents(): EmEvent[] {
-  const s = state();
-  const out = s.outbox;
-  s.outbox = [];
-  return out;
+// ---------------------------------------------------------------------------
+// REST routes
+// ---------------------------------------------------------------------------
+
+export function emulatorFetch(input: string, init: RequestInit): Promise<Response> {
+  return withSimState(() => route(input, init));
 }
 
-/** Complete refunds that were created as PENDING (simulates PayPal settling later). */
-export function settlePendingRefunds() {
-  for (const r of state().refunds.values()) {
-    if (r.status === "PENDING") {
-      r.status = "COMPLETED";
-      delete r.statusReason;
-      emit("PAYMENT.CAPTURE.REFUNDED", "refund", refundResource(r), `A ${r.currency} ${toDecimalString(r.amountMinor, r.currency)} capture payment was refunded`);
-    }
-  }
-}
-
-/** Buyer approval happens in PayPal's UI; the emulator's checkout page calls this. */
-export function approveEmulatorOrder(orderId: string, payer = { given_name: "Tom", email: "tom.buyer@example.com" }) {
-  const o = state().orders.get(orderId);
-  if (!o) throw new Error("unknown simulated order");
-  if (o.status === "CREATED" || o.status === "PAYER_ACTION_REQUIRED") {
-    o.status = "APPROVED";
-    (o as unknown as Record<string, unknown>).payer = { name: { given_name: payer.given_name }, email_address: payer.email };
-    emit("CHECKOUT.ORDER.APPROVED", "checkout-order", { id: o.id, status: o.status, purchase_units: o.purchase_units }, `An order has been approved by buyer`);
-  }
-}
-
-/** Open a dispute on a capture (normally done by the buyer in PayPal's Resolution Center). */
-/** Test/demo helper: another system changes an order's amount (as a PATCH would) after Kept verified it. */
-export function mutateEmulatorOrderAmount(paypalOrderId: string, value: string, currency?: string) {
-  const o = state().orders.get(paypalOrderId);
-  if (!o) throw new Error("unknown simulated order");
-  const pu = o.purchase_units[0] as { amount: Amount };
-  pu.amount = { ...pu.amount, value, ...(currency ? { currency_code: currency } : {}) };
-}
-
-export function openEmulatorDispute(captureId: string, reason = "MERCHANDISE_OR_SERVICE_NOT_RECEIVED") {
-  const c = state().captures.get(captureId);
-  if (!c) throw new Error("unknown simulated capture");
-  const d = { dispute_id: pid("PP-D-SIM-"), reason, status: "OPEN", dispute_life_cycle_stage: "INQUIRY", dispute_amount: { currency_code: c.currency, value: toDecimalString(c.amountMinor, c.currency) }, create_time: new Date().toISOString(), disputed_transactions: [{ seller_transaction_id: c.id }] };
-  (state() as unknown as { disputes?: Map<string, unknown> }).disputes ??= new Map();
-  (state() as unknown as { disputes: Map<string, unknown> }).disputes.set(d.dispute_id, d);
-  emit("CUSTOMER.DISPUTE.CREATED", "dispute", d, "A new dispute opened");
-  return d.dispute_id;
-}
-
-/** Loaded from / saved to Postgres around each call when KEPT_EMULATOR_PERSIST=1. */
-export const emulatorFetch: FetchLike = (input, init) => withEmulatorState(() => emulatorFetchInner(input, init));
-
-const emulatorFetchInner: FetchLike = async (input, init) => {
+function route(input: string, init: RequestInit): Response {
   const url = new URL(input);
   const method = (init.method ?? "GET").toUpperCase();
-  const path = url.pathname;
   const headers = new Headers(init.headers);
+  let body: Record<string, any> = {}; // eslint-disable-line @typescript-eslint/no-explicit-any
+  if (typeof init.body === "string" && init.body && (headers.get("content-type") ?? "").includes("json")) {
+    try { body = JSON.parse(init.body); } catch { return err(400, "MALFORMED_REQUEST_JSON", "MALFORMED_REQUEST_JSON", "The request JSON is not well formed."); }
+  }
+  const p = url.pathname;
   const s = state();
-  if (path === "/v1/oauth2/token") return json(200, { access_token: "SIMULATED-TOKEN", expires_in: 32400, token_type: "Bearer" });
-  let body: Record<string, unknown> & { [k: string]: any } = {};
-  if (init.body instanceof FormData) {
-    const part = init.body.get("input");
-    body = part ? JSON.parse(typeof part === "string" ? part : await (part as Blob).text()) : {};
-  } else if (init.body) body = JSON.parse(String(init.body));
-  const requestId = headers.get("PayPal-Request-Id");
-  const mock = headers.get("PayPal-Mock-Response");
 
-  const idemKey = requestId ? `${method} ${path} ${requestId}` : null;
-  if (idemKey && s.idem.has(idemKey)) {
-    const prev = s.idem.get(idemKey)!;
-    return json(prev.status, prev.body);
-  }
-  const remember = (status: number, b: unknown) => {
-    if (idemKey && status < 500) s.idem.set(idemKey, { status, body: b });
-    return json(status, b);
-  };
+  if (p === "/v1/oauth2/token" && method === "POST") return reply(200, { access_token: "SIMULATED-TOKEN", token_type: "Bearer", expires_in: 32400 });
 
-  if (mock) {
-    const code = (JSON.parse(mock) as { mock_application_codes?: string }).mock_application_codes ?? "INTERNAL_SERVER_ERROR";
-    if (code === "INTERNAL_SERVER_ERROR") return err(500, "INTERNAL_SERVER_ERROR", code, "Simulated PayPal outage");
-    if (code !== "REFUND_PENDING") return remember(422, { name: "UNPROCESSABLE_ENTITY", message: "Simulated failure", debug_id: "SIMULATED", details: [{ issue: code, description: `Simulated ${code}` }] });
+  if (p === "/v2/invoicing/generate-next-invoice-number" && method === "POST") {
+    return reply(200, { invoice_number: `MP-${String(s.nextNumber).padStart(4, "0")}` });
   }
 
-  // ---- Orders
-  if (method === "POST" && path === "/v2/checkout/orders") {
-    const id = pid("SIM");
-    const o: EmOrder = { id, status: "PAYER_ACTION_REQUIRED", purchase_units: body.purchase_units, trackers: [] };
-    s.orders.set(id, o);
-    return remember(201, { id, status: o.status, purchase_units: o.purchase_units, links: [{ rel: "payer-action", href: `/emulator/checkout/${id}` }] });
-  }
-  let m = path.match(/^\/v2\/checkout\/orders\/([^/]+)$/);
-  if (m && method === "GET") {
-    const o = s.orders.get(m[1]!);
-    if (!o) return err(404, "RESOURCE_NOT_FOUND", "INVALID_RESOURCE_ID", "Order not found");
-    return json(200, orderView(o));
-  }
-  m = path.match(/^\/v2\/checkout\/orders\/([^/]+)\/capture$/);
-  if (m && method === "POST") {
-    const o = s.orders.get(m[1]!);
-    if (!o) return err(404, "RESOURCE_NOT_FOUND", "INVALID_RESOURCE_ID", "Order not found");
-    if (o.status === "COMPLETED") return remember(422, { name: "UNPROCESSABLE_ENTITY", debug_id: "SIMULATED", details: [{ issue: "ORDER_ALREADY_CAPTURED", description: "Order already captured" }] });
-    if (o.status !== "APPROVED") return remember(422, { name: "UNPROCESSABLE_ENTITY", debug_id: "SIMULATED", details: [{ issue: "ORDER_NOT_APPROVED", description: "Payer has not approved the order" }] });
-    const pu = o.purchase_units[0] as { amount: Amount; custom_id: string };
-    const cap: EmCapture = { id: pid("SIMCAP"), orderId: o.id, status: "COMPLETED", amountMinor: toMinor(pu.amount.value, pu.amount.currency_code), currency: pu.amount.currency_code, customId: pu.custom_id, refundedMinor: 0, createdAt: new Date().toISOString() };
-    s.captures.set(cap.id, cap);
-    o.status = "COMPLETED";
-    o.captureId = cap.id;
-    emit("PAYMENT.CAPTURE.COMPLETED", "capture", captureResource(cap), `Payment completed for ${cap.currency} ${toDecimalString(cap.amountMinor, cap.currency)}`);
-    return remember(201, orderView(o));
-  }
-  m = path.match(/^\/v2\/checkout\/orders\/([^/]+)\/track$/);
-  if (m && method === "POST") {
-    const o = s.orders.get(m[1]!);
-    if (!o || !o.captureId) return err(422, "UNPROCESSABLE_ENTITY", "CAPTURE_NOT_FOUND", "No capture on order");
-    if (body.capture_id !== o.captureId) return err(422, "UNPROCESSABLE_ENTITY", "INVALID_CAPTURE_ID", "Capture does not belong to order");
-    o.trackers.push({ id: `${o.captureId}-${body.tracking_number}`, status: "SHIPPED", create_time: new Date().toISOString() });
-    return remember(201, orderView(o));
-  }
-
-  // ---- Captures & refunds
-  m = path.match(/^\/v2\/payments\/captures\/([^/]+)$/);
-  if (m && method === "GET") {
-    const c = s.captures.get(m[1]!);
-    return c ? json(200, captureResource(c)) : err(404, "RESOURCE_NOT_FOUND", "INVALID_RESOURCE_ID", "Capture not found");
-  }
-  m = path.match(/^\/v2\/payments\/captures\/([^/]+)\/refund$/);
-  if (m && method === "POST") {
-    const c = s.captures.get(m[1]!);
-    if (!c) return err(404, "RESOURCE_NOT_FOUND", "INVALID_RESOURCE_ID", "Capture not found");
-    const amt = body.amount ? toMinor(body.amount.value, body.amount.currency_code) : c.amountMinor - c.refundedMinor;
-    if (body.amount && body.amount.currency_code !== c.currency) return remember(422, { name: "UNPROCESSABLE_ENTITY", debug_id: "SIMULATED", details: [{ issue: "REFUND_CAPTURE_CURRENCY_MISMATCH", description: "Currency mismatch" }] });
-    if (c.refundedMinor >= c.amountMinor) return remember(422, { name: "UNPROCESSABLE_ENTITY", debug_id: "SIMULATED", details: [{ issue: "CAPTURE_FULLY_REFUNDED", description: "Capture already fully refunded" }] });
-    if (amt > c.amountMinor - c.refundedMinor) return remember(422, { name: "UNPROCESSABLE_ENTITY", debug_id: "SIMULATED", details: [{ issue: "REFUND_AMOUNT_EXCEEDED", description: "Refund exceeds captured amount" }] });
-    const pending = mock && JSON.parse(mock).mock_application_codes === "REFUND_PENDING";
-    const r: EmRefund = { id: pid("SIMREF"), captureId: c.id, status: pending ? "PENDING" : "COMPLETED", amountMinor: amt, currency: c.currency, customId: body.custom_id ?? c.customId, createdAt: new Date().toISOString(), ...(pending ? { statusReason: "ECHECK" } : {}) };
-    s.refunds.set(r.id, r);
-    c.refundedMinor += amt;
-    c.status = c.refundedMinor >= c.amountMinor ? "REFUNDED" : "PARTIALLY_REFUNDED";
-    if (r.status === "COMPLETED") emit("PAYMENT.CAPTURE.REFUNDED", "refund", refundResource(r), `A ${r.currency} ${toDecimalString(amt, r.currency)} capture payment was refunded`);
-    else emit("PAYMENT.REFUND.PENDING", "refund", refundResource(r), "A refund is pending");
-    return remember(201, refundResource(r));
-  }
-  m = path.match(/^\/v2\/payments\/refunds\/([^/]+)$/);
-  if (m && method === "GET") {
-    const r = s.refunds.get(m[1]!);
-    return r ? json(200, refundResource(r)) : err(404, "RESOURCE_NOT_FOUND", "INVALID_RESOURCE_ID", "Refund not found");
-  }
-
-  // ---- Disputes
-  m = path.match(/^\/v1\/customer\/disputes\/([^/]+)\/(make-offer|provide-evidence|send-message)$/);
-  if (m && method === "POST") {
-    const ds = (state() as unknown as { disputes?: Map<string, Record<string, unknown>> }).disputes;
-    const d = ds?.get(m[1]!);
-    if (!d) return err(404, "RESOURCE_NOT_FOUND", "INVALID_RESOURCE_ID", "Dispute not found");
-    if (m[2] === "make-offer") {
-      if (d.dispute_life_cycle_stage !== "INQUIRY") return remember(422, { name: "UNPROCESSABLE_ENTITY", debug_id: "SIMULATED", details: [{ issue: "INVALID_STAGE", description: "Offers are only allowed in the INQUIRY stage" }] });
-      d.status = "WAITING_FOR_BUYER_RESPONSE";
-      d.offer = body.offer_amount;
-    } else if (m[2] === "provide-evidence") {
-      d.status = "UNDER_REVIEW";
-      d.evidences = body.evidences;
-    } else {
-      (d.messages as unknown[] | undefined)?.push(body.message) ?? (d.messages = [body.message]);
+  if (p === "/v2/invoicing/invoices" && method === "POST") {
+    const rid = headers.get("PayPal-Request-Id");
+    if (rid && s.requestIds[rid]) return reply(200, s.invoices[s.requestIds[rid]!]);
+    const c = body?.detail?.currency_code;
+    const items: SimItem[] = Array.isArray(body?.items) ? body.items : [];
+    const email = body?.primary_recipients?.[0]?.billing_info?.email_address;
+    if (!c) return err(422, "UNPROCESSABLE_ENTITY", "MISSING_CURRENCY_CODE", "detail.currency_code is required.");
+    if (items.length === 0) return err(422, "UNPROCESSABLE_ENTITY", "ITEMS_REQUIRED", "At least one item is required.");
+    if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return err(422, "UNPROCESSABLE_ENTITY", "INVALID_EMAIL", "Recipient email is invalid.");
+    for (const i of items) {
+      if (!i.name || !i.quantity || i.unit_amount?.currency_code !== c) return err(422, "UNPROCESSABLE_ENTITY", "INVALID_ITEM", "Every item needs a name, a quantity and a unit amount in the invoice currency.");
     }
-    emit("CUSTOMER.DISPUTE.UPDATED", "dispute", d, "A dispute was updated");
-    return remember(200, { links: [{ rel: "self", href: `/v1/customer/disputes/${d.dispute_id}` }] });
-  }
-  m = path.match(/^\/v1\/customer\/disputes\/([^/]+)$/);
-  if (m && method === "GET") {
-    const d = (state() as unknown as { disputes?: Map<string, unknown> }).disputes?.get(m[1]!);
-    return d ? json(200, d) : err(404, "RESOURCE_NOT_FOUND", "INVALID_RESOURCE_ID", "Dispute not found");
+    const number = body.detail.invoice_number ?? `MP-${String(s.nextNumber).padStart(4, "0")}`;
+    if (Object.values(s.invoices).some((x) => x.detail.invoice_number === number)) return err(422, "UNPROCESSABLE_ENTITY", "DUPLICATE_INVOICE_NUMBER", "Invoice number already exists.");
+    s.nextNumber++;
+    const id = `INV2-SIM-${randomUUID().replace(/-/g, "").slice(0, 16).toUpperCase()}`;
+    const total = toDecimalString(itemsTotalMinor(items, c), c);
+    const inv: SimInvoice = {
+      id,
+      status: "DRAFT",
+      detail: { ...body.detail, invoice_number: number, invoice_date: new Date().toISOString().slice(0, 10), metadata: { recipient_view_url: `${appBaseUrl()}/sim/pay/${id}`, create_time: new Date().toISOString() } },
+      invoicer: body.invoicer,
+      primary_recipients: body.primary_recipients,
+      items,
+      amount: { currency_code: c, value: total },
+      due_amount: { currency_code: c, value: total },
+    };
+    s.invoices[id] = inv;
+    if (rid) s.requestIds[rid] = id;
+    return reply(201, inv);
   }
 
-  return err(404, "NOT_SUPPORTED_BY_EMULATOR", "NOT_FOUND", `${method} ${path} is not emulated`);
-};
+  let m: RegExpMatchArray | null;
+  if ((m = p.match(/^\/v2\/invoicing\/invoices\/([^/]+)$/)) && method === "GET") {
+    const inv = s.invoices[decodeURIComponent(m[1]!)];
+    return inv ? reply(200, inv) : err(404, "RESOURCE_NOT_FOUND", "INVALID_RESOURCE_ID", "Invoice not found.");
+  }
+  if ((m = p.match(/^\/v2\/invoicing\/invoices\/([^/]+)\/(send|remind|cancel)$/)) && method === "POST") {
+    const inv = s.invoices[decodeURIComponent(m[1]!)];
+    if (!inv) return err(404, "RESOURCE_NOT_FOUND", "INVALID_RESOURCE_ID", "Invoice not found.");
+    const action = m[2]!;
+    if (action === "send") {
+      if (inv.status === "SENT") return reply(200, { rel: "payer-view", href: inv.detail.metadata.recipient_view_url, method: "GET" }); // idempotent resend
+      if (inv.status !== "DRAFT") return err(422, "UNPROCESSABLE_ENTITY", "CANT_SEND_INVOICE", `Invoice in status ${inv.status} can't be sent.`);
+      inv.status = "SENT";
+      return reply(200, { rel: "payer-view", href: inv.detail.metadata.recipient_view_url, method: "GET" });
+    }
+    if (action === "remind") {
+      if (inv.status !== "SENT" && inv.status !== "UNPAID") return err(422, "UNPROCESSABLE_ENTITY", "CANT_REMIND", "Only unpaid sent invoices can be reminded.");
+      return reply(204, null);
+    }
+    if (inv.status === "PAID" || inv.status === "CANCELLED") return err(422, "UNPROCESSABLE_ENTITY", "CANT_CANCEL", `Invoice in status ${inv.status} can't be cancelled.`);
+    inv.status = "CANCELLED";
+    queueEvent("INVOICING.INVOICE.CANCELLED", inv, `An invoice was cancelled (simulated). Invoice ${inv.detail.invoice_number}`);
+    return reply(204, null);
+  }
 
-function orderView(o: EmOrder) {
-  const cap = o.captureId ? state().captures.get(o.captureId) : undefined;
-  return {
-    id: o.id,
-    status: o.status,
-    payer: (o as unknown as Record<string, unknown>).payer,
-    purchase_units: o.purchase_units.map((pu) => ({
-      ...pu,
-      ...(cap ? { payments: { captures: [captureResource(cap)] } } : {}),
-      ...(o.trackers.length ? { shipping: { trackers: o.trackers } } : {}),
-    })),
-  };
+  if (p === "/v1/notifications/webhooks" && method === "POST") {
+    const w = { id: `WH-SIM-${s.webhooks.length + 1}`, url: String(body.url) };
+    s.webhooks.push(w);
+    return reply(201, w);
+  }
+  if (p === "/v1/notifications/webhooks" && method === "GET") return reply(200, { webhooks: s.webhooks });
+
+  return err(404, "NOT_FOUND", "UNSUPPORTED_ROUTE", `The simulator does not implement ${method} ${p}.`);
 }

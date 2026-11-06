@@ -1,19 +1,8 @@
 /**
  * Minimal, dependency-free PayPal REST client (server-side only).
  *
- * Endpoints used (PayPal REST, verified against paypal/paypal-rest-api-specifications):
- *   POST /v1/oauth2/token                              OAuth client-credentials
- *   POST /v2/checkout/orders                           Orders v2 create (custom_id = Kept order id)
- *   GET  /v2/checkout/orders/{id}
- *   POST /v2/checkout/orders/{id}/capture
- *   POST /v2/checkout/orders/{id}/track                Add shipment tracker
- *   GET  /v2/payments/captures/{id}                    Authoritative capture
- *   POST /v2/payments/captures/{id}/refund             Partial/full refund (PayPal-Request-Id)
- *   GET  /v2/payments/refunds/{id}
- *   GET  /v1/customer/disputes?disputed_transaction_id=
- *   GET  /v1/customer/disputes/{id}
- *   POST /v1/notifications/verify-webhook-signature
- *   POST /v1/notifications/webhooks / GET list
+ * Endpoints used: OAuth client-credentials (POST /v1/oauth2/token), the Invoicing v2 calls in
+ * ./invoicing.ts, and webhook signature verification / registration (./webhook-verify.ts).
  *
  * Secrets never leave the server. Every mutating call takes an explicit
  * PayPal-Request-Id so retries are idempotent on PayPal's side.

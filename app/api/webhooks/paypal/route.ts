@@ -16,12 +16,12 @@ export async function POST(req: Request) {
     if (res.internalId) {
       const id = res.internalId;
       after(async () => {
-        try { await processEvent(id); } catch (e) { console.error("[kept] webhook processing failed; will be retried by reconcile", e); }
+        try { await processEvent(id); } catch (e) { console.error("[mergepay] webhook processing failed; it will be retried", e); }
       });
     }
     return json(res.body, res.status);
   } catch (e) {
-    console.error("[kept] webhook ingest error", e);
+    console.error("[mergepay] webhook ingest error", e);
     return json({ ok: false }, 500); // PayPal will retry
   }
 }

@@ -5,43 +5,8 @@
     {
       "idx": 0,
       "version": "7",
-      "when": 1793840576373,
+      "when": 1793989526865,
       "tag": "0000_init",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "7",
-      "when": 1793864412307,
-      "tag": "0001_agent_mandates_disputes",
-      "breakpoints": true
-    },
-    {
-      "idx": 2,
-      "version": "7",
-      "when": 1793880000000,
-      "tag": "0002_audit_hash_chain",
-      "breakpoints": true
-    },
-    {
-      "idx": 3,
-      "version": "7",
-      "when": 1793890000000,
-      "tag": "0003_preflight_gate",
-      "breakpoints": true
-    },
-    {
-      "idx": 4,
-      "version": "7",
-      "when": 1793900000000,
-      "tag": "0004_ai_budget_cache",
-      "breakpoints": true
-    },
-    {
-      "idx": 5,
-      "version": "7",
-      "when": 1793910000000,
-      "tag": "0005_emulator_state",
       "breakpoints": true
     }
   ]
