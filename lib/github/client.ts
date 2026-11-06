@@ -9,7 +9,7 @@
  *   POST /repos/{repo}/issues/{n}/comments   status notes on the PR
  *   GET  /repos/{repo}/deployments?sha=      the preview the client checks before paying
  *
- * GITHUB_MODE=live uses api.github.com with GITHUB_TOKEN (a fine-grained token scoped to the
+ * GITHUB_MODE=live uses api.github.com with MERGEPAY_GITHUB_TOKEN (a fine-grained token scoped to the
  * demo repository). GITHUB_MODE=simulated uses lib/github/emulator.ts. Unset: live when a token exists.
  */
 export type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
@@ -44,7 +44,7 @@ export type GitHubMode = "live" | "simulated";
 export function githubMode(): GitHubMode {
   const m = process.env.GITHUB_MODE;
   if (m === "live" || m === "simulated") return m;
-  return process.env.GITHUB_TOKEN ? "live" : "simulated";
+  return process.env.MERGEPAY_GITHUB_TOKEN ? "live" : "simulated";
 }
 
 const REPO_RE = /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/;
@@ -145,8 +145,8 @@ export function getGitHub(): GitHubClient {
     if (githubMode() === "simulated") {
       shared = new GitHubClient("SIMULATED", (i, init) => import("./emulator").then((m) => m.githubEmulatorFetch(i, init)), "https://github.sim");
     } else {
-      const token = process.env.GITHUB_TOKEN;
-      if (!token) throw new Error("GitHub is not configured: set GITHUB_TOKEN (or GITHUB_MODE=simulated).");
+      const token = process.env.MERGEPAY_GITHUB_TOKEN;
+      if (!token) throw new Error("GitHub is not configured: set MERGEPAY_GITHUB_TOKEN (or GITHUB_MODE=simulated).");
       shared = new GitHubClient(token);
     }
   }

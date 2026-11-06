@@ -13,6 +13,7 @@ import { DEMO_FREELANCER_ID } from "../security/session";
 import { DEMO_REPO as SIM_REPO } from "../github/emulator";
 import { githubMode } from "../github/client";
 import { newReceiptToken } from "../ids";
+import { resetSimMemory } from "../sim/store";
 
 export const DEMO_CLIENT_ID = "cl_demo";
 export const DEMO_CONTRACT_ID = "ct_demo";
@@ -38,6 +39,7 @@ export async function seedDemo(db: DB) {
 export async function resetDemo(db: DB) {
   await db.execute(sql`truncate table audit_log, paypal_events, invoices, rate_limits restart identity cascade`);
   await db.execute(sql`delete from emulator_state`);
-  await db.execute(sql`update contracts set client_accepted_at = null`);
+  resetSimMemory(); // the simulated repo and PayPal start over too
+  await db.execute(sql`update contracts set client_accepted_at = null, issue_prices = '{"12": 45000, "14": 8000}'::jsonb`);
   await seedDemo(db);
 }

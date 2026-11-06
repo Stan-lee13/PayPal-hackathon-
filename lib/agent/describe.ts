@@ -127,27 +127,29 @@ const SYNONYMS: Record<string, string[]> = {
 };
 const SUPPORT = /(^|\/)(package(-lock)?\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?|requirements\.txt|poetry\.lock|go\.(mod|sum)|Cargo\.(toml|lock))$/;
 
-function tokens(s: string): Set<string> {
+function tokens(s: string, expand = true): Set<string> {
   const out = new Set<string>();
   for (const raw of s.replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9]+/)) {
     const t = raw.replace(/(es|s)$/, (m) => (raw.length > 4 ? "" : m));
     if (t.length < 3 || STOP.has(t) || STOP.has(raw)) continue;
     out.add(t);
-    for (const syn of SYNONYMS[t] ?? []) out.add(syn);
+    if (expand) for (const syn of SYNONYMS[t] ?? []) out.add(syn);
   }
   return out;
 }
 
 export function rulesDescribe(input: DescribeInput): Omit<DescribeOutput, "aiNote"> {
-  const issueTokens = input.issues.map((i) => ({ issue: i, toks: tokens(`${i.title} ${i.body}`) }));
+  // Each file goes to the issue it matches best (title words count double), never to every issue it brushes against.
+  const issueTokens = input.issues.map((i) => ({ issue: i, title: tokens(i.title), body: tokens(i.body) }));
   const matched = new Map<string, string[]>(); // issue → files
   const unmatched: string[] = [];
   for (const f of input.files) {
     if (SUPPORT.test(f.filename)) continue;
-    const ft = tokens(f.filename);
-    const hits = issueTokens.filter((x) => [...ft].some((t) => x.toks.has(t)));
-    if (hits.length === 0) unmatched.push(f.filename);
-    for (const h of hits) matched.set(String(h.issue.number), [...(matched.get(String(h.issue.number)) ?? []), f.filename]);
+    const ft = [...tokens(f.filename, false)];
+    const scored = issueTokens.map((x) => ({ x, score: ft.reduce((s, t) => s + (x.title.has(t) ? 2 : x.body.has(t) ? 1 : 0), 0) }));
+    const best = Math.max(0, ...scored.map((s) => s.score));
+    if (best === 0) { unmatched.push(f.filename); continue; }
+    for (const h of scored.filter((s) => s.score === best)) matched.set(String(h.x.issue.number), [...(matched.get(String(h.x.issue.number)) ?? []), f.filename]);
   }
   const adds = input.files.reduce((s, f) => s + f.additions, 0);
   const dels = input.files.reduce((s, f) => s + f.deletions, 0);
@@ -187,8 +189,8 @@ function groupByArea(files: string[]): Array<{ area: string; files: string[] }> 
 }
 
 function commitHint(commits: PrCommit[], files: string[]): string {
-  const toks = new Set(files.flatMap((f) => [...tokens(f)]));
-  const c = commits.find((c) => [...tokens(c.message)].some((t) => toks.has(t)));
+  const toks = new Set(files.flatMap((f) => [...tokens(f, false)]));
+  const c = commits.find((c) => [...tokens(c.message, false)].some((t) => toks.has(t)));
   return c ? ` (commit: "${c.message.split("\n")[0]!.slice(0, 80)}")` : "";
 }
 

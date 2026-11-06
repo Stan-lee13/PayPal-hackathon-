@@ -83,6 +83,10 @@ describe("scope check", () => {
     expect(r.scope.outOfScope.flatMap((o) => o.files)).toEqual(["lib/analytics.ts"]);
     expect(r.scope.outOfScope[0]!.summary).toMatch(/analytics/);
     expect(r.scope.inScope.map((x) => x.issue).sort()).toEqual(["12", "14"]);
+    const files = Object.fromEntries(r.scope.inScope.map((x) => [x.issue, x.evidence]));
+    expect(files["14"]).toMatch(/site-nav/);
+    expect(files["14"]).not.toMatch(/checkout|cart\/page/); // "cart icon" in #14 must not pull the checkout files in
+    expect(files["12"]).toMatch(/paypal-button/);
     expect(r.items.every((i) => i.description.length > 0)).toBe(true);
   });
   it("validator: drops invented files, issues the PR doesn't close, and any text with an amount in it", () => {

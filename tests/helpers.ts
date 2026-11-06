@@ -11,7 +11,7 @@ export function useTestEnv() {
   process.env.PAYPAL_WEBHOOK_ID = "WH-TEST";
   process.env.MERGEPAY_MCP_TOKEN = "test-token-0123456789abcdef";
   delete process.env.ANTHROPIC_API_KEY; // deterministic paths in tests
-  delete process.env.GITHUB_TOKEN;
+  delete process.env.MERGEPAY_GITHUB_TOKEN;
   delete process.env.DEMO_REPO;
   delete process.env.MERGEPAY_SIM_PERSIST;
   delete process.env.KEPT_EMULATOR_PERSIST;
