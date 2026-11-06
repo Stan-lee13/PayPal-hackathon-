@@ -5,6 +5,7 @@
 import { createHash } from "node:crypto";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { getDb } from "../db";
+import { appBaseUrl } from "../base-url";
 import { chatSessions, merchants, orders, preflights, sources, type Order, type Preflight } from "../db/schema";
 import { newId, newReceiptToken } from "../ids";
 import { getPayPal } from "../paypal/client";
@@ -23,9 +24,6 @@ export class UserFacingError extends Error {
   }
 }
 
-function appBaseUrl() {
-  return (process.env.APP_BASE_URL ?? "http://localhost:3000").replace(/\/$/, "");
-}
 
 /**
  * Step 1 of checkout. Prices are recomputed server-side from DB prices; the chat

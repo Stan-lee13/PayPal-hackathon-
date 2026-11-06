@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { ModeBanner } from "@/components/mode-banner";
 import { promiseRecord } from "@/lib/services/promise-record";
+import { appBaseUrl } from "@/lib/base-url";
 
 export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "Promise record" };
@@ -13,7 +14,7 @@ export default async function RecordPage({ params }: { params: Promise<{ slug: s
   if (!/^[a-z0-9-]{2,64}$/.test(slug)) notFound();
   const r = await promiseRecord(slug);
   if (!r) notFound();
-  const base = process.env.APP_BASE_URL?.replace(/\/$/, "") ?? "";
+  const base = appBaseUrl();
   return (
     <>
       <ModeBanner />
