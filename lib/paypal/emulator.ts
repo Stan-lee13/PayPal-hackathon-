@@ -16,6 +16,7 @@
 import { randomBytes } from "node:crypto";
 import { toDecimalString, toMinor } from "../money";
 import type { FetchLike } from "./client";
+import { withEmulatorState } from "./emulator-store";
 
 type Amount = { currency_code: string; value: string };
 type EmOrder = { id: string; status: string; purchase_units: Array<Record<string, unknown>>; captureId?: string; trackers: Array<Record<string, unknown>> };
@@ -136,7 +137,10 @@ export function openEmulatorDispute(captureId: string, reason = "MERCHANDISE_OR_
   return d.dispute_id;
 }
 
-export const emulatorFetch: FetchLike = async (input, init) => {
+/** Loaded from / saved to Postgres around each call when KEPT_EMULATOR_PERSIST=1. */
+export const emulatorFetch: FetchLike = (input, init) => withEmulatorState(() => emulatorFetchInner(input, init));
+
+const emulatorFetchInner: FetchLike = async (input, init) => {
   const url = new URL(input);
   const method = (init.method ?? "GET").toUpperCase();
   const path = url.pathname;

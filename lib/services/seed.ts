@@ -23,6 +23,7 @@ export async function resetTransactions(db: DB) {
   await db.execute(sql`delete from sources where order_id is not null`);
   await db.execute(sql`update chat_sessions set order_id = null`);
   await db.execute(sql`delete from orders`);
+  await db.execute(sql`delete from emulator_state`);
   await db.execute(sql`delete from chat_sessions`);
   await db.execute(sql`update merchants set demo_clock_offset_ms = 0`);
 }

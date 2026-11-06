@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  bigint,
   bigserial,
   boolean,
   index,
@@ -334,6 +335,33 @@ export const preflights = pgTable("preflights", {
   consumedAt: ts("consumed_at"),
 }, (t) => [index("preflights_order").on(t.orderId, t.checkedAt)]);
 export type Preflight = typeof preflights.$inferSelect;
+
+/** Every Claude call: tokens and cost (micro-USD), for the daily spend cap. */
+export const aiUsage = pgTable("ai_usage", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  purpose: text("purpose").notNull(),
+  model: text("model").notNull(),
+  inputTokens: integer("input_tokens").notNull(),
+  outputTokens: integer("output_tokens").notNull(),
+  cacheReadTokens: integer("cache_read_tokens").notNull().default(0),
+  costMicroUsd: bigint("cost_micro_usd", { mode: "number" }).notNull(),
+  createdAt: ts("created_at").notNull().defaultNow(),
+}, (t) => [index("ai_usage_created").on(t.createdAt)]);
+
+/** Memoised AI results keyed by a hash of their exact inputs. */
+export const aiCache = pgTable("ai_cache", {
+  key: text("key").primaryKey(),
+  purpose: text("purpose").notNull(),
+  value: jsonb("value").$type<Record<string, unknown>>().notNull(),
+  createdAt: ts("created_at").notNull().defaultNow(),
+});
+
+/** Simulated PayPal state, persisted only when KEPT_EMULATOR_PERSIST=1 (serverless hosts). */
+export const emulatorState = pgTable("emulator_state", {
+  id: text("id").primaryKey(),
+  state: jsonb("state").$type<Record<string, unknown>>().notNull(),
+  updatedAt: ts("updated_at").notNull().defaultNow(),
+});
 
 export const rateLimits = pgTable("rate_limits", {
   key: text("key").primaryKey(),

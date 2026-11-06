@@ -8,6 +8,7 @@ import type Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
 import { REMEDY_KINDS } from "../db/schema";
 import { aiModel, FALLBACK_BETA, getAnthropic, supportsServerFallback } from "./client";
+import { guarded } from "./budget";
 
 export const ProposalSchema = z.object({
   kind: z.enum(REMEDY_KINDS),
@@ -74,7 +75,7 @@ export async function proposeWithAgent(tools: AgentTools): Promise<AgentProposal
   const model = aiModel();
   const messages: Anthropic.Beta.BetaMessageParam[] = [{ role: "user", content: "Investigate this case and submit a remedy proposal." }];
   for (let round = 0; round < 6; round++) {
-    const res = await getAnthropic().beta.messages.create({
+    const res = await guarded("remedy_agent", model, () => getAnthropic().beta.messages.create({
       model,
       max_tokens: 4000,
       system: SYSTEM,
@@ -82,7 +83,7 @@ export async function proposeWithAgent(tools: AgentTools): Promise<AgentProposal
       output_config: { effort: "medium" },
       ...(supportsServerFallback(model) ? { betas: [FALLBACK_BETA], fallbacks: "default" as const } : {}),
       messages,
-    });
+    }));
     if (res.stop_reason === "refusal") throw new Error("remedy agent model declined");
     const uses = res.content.filter((b): b is Anthropic.Beta.BetaToolUseBlock => b.type === "tool_use");
     const proposal = uses.find((u) => u.name === "propose_remedy");

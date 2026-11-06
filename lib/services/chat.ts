@@ -2,7 +2,8 @@ import { and, asc, eq, inArray } from "drizzle-orm";
 import { getDb } from "../db";
 import { chatSessions, products, sources, type ChatMessage, type Product } from "../db/schema";
 import { newId } from "../ids";
-import { aiConfigured } from "../ai/client";
+import { aiConfigured, aiModel } from "../ai/client";
+import { cachedAi } from "../ai/budget";
 import { replyScripted, replyWithClaude, type AssistantContext } from "../ai/assistant";
 import { scrubPii } from "../security/redact";
 import { quoteForCustomer } from "./pricing";
@@ -70,7 +71,10 @@ export async function postCustomerMessage(sessionId: string, text: string, role:
   let generatedBy: "ai" | "scripted" = "scripted";
   if (aiConfigured()) {
     try {
-      replyText = await replyWithClaude(ctx);
+      // A repeated demo conversation (same cart, same words) reuses the reply: no new cost.
+      const key = { model: aiModel(), cart: ctx.cart.map((l) => [l.product.id, l.qty]), shipping: ctx.shipping, products: ctx.products.map((p) => [p.id, p.priceMinor, p.inStock]),
+        sources: ctx.sources.map((s) => s.text), history: ctx.history.map((m) => [m.role, m.text]), message: ctx.message };
+      replyText = (await cachedAi("assistant_reply", key, () => replyWithClaude(ctx))).value;
       generatedBy = "ai";
     } catch (e) {
       replyText = replyScripted(ctx);

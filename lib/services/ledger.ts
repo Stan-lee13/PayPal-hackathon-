@@ -5,7 +5,7 @@ import { and, eq, inArray, isNull, or } from "drizzle-orm";
 import { getDb } from "../db";
 import { commitments, merchants, orders, refunds, remedies, sources, trackers, type Commitment, type CommitmentState, type Order } from "../db/schema";
 import { newId } from "../ids";
-import { aiConfigured } from "../ai/client";
+import { aiConfigured, aiModel } from "../ai/client";
 import { extractWithLlm } from "../promises/llm-extractor";
 import { extractWithRules } from "../promises/rules-extractor";
 import { validateAll } from "../promises/validator";
@@ -14,6 +14,8 @@ import { evaluate, type CaptureEvidence } from "../ledger/evaluator";
 import { effectiveNow } from "../clock";
 import { formatMoney } from "../money";
 import { audit } from "./audit";
+import { uncoveredByRules } from "../promises/routing";
+import { AiBudgetExceeded, cachedAi } from "../ai/budget";
 
 /** Which sources can carry per-order promises (catalogue/promo/shipping policy copy are context only). */
 const PROMISE_SOURCE_KINDS = ["CHAT_TRANSCRIPT", "REFUND_POLICY", "USER_MANDATE"] as const;
@@ -41,11 +43,19 @@ export async function runExtraction(orderId: string): Promise<{ stored: number; 
   let candidates = extractWithRules(docs, order.currency);
   let note = aiConfigured() ? null : "AI provider not configured — rule-based extractor used.";
   if (aiConfigured()) {
-    try {
-      candidates = await extractWithLlm(docs, { orderCurrency: order.currency, orderCreatedAt: order.createdAt.toISOString(), orderSummary: `${order.lines.length} line(s)` });
-      extractor = "llm";
-    } catch (e) {
-      note = `AI extraction failed (${String(e).slice(0, 120)}) — rule-based extractor used.`;
+    // Rules first; Claude only for promise-like sentences the rules could not settle.
+    const gaps = uncoveredByRules(docs, candidates);
+    if (gaps.length === 0) note = "The rules settled every promise-like sentence, so Claude was not needed.";
+    else {
+      try {
+        const { value, hit } = await cachedAi("extraction", { model: aiModel(), currency: order.currency, docs: docs.map((d) => ({ id: d.id, kind: d.kind, text: d.text })) },
+          () => extractWithLlm(docs, { orderCurrency: order.currency, orderCreatedAt: order.createdAt.toISOString(), orderSummary: `${order.lines.length} line(s)` }));
+        candidates = value;
+        extractor = "llm";
+        note = `Claude read this order because ${gaps.length} promise-like sentence${gaps.length === 1 ? "" : "s"} were beyond the rules${hit ? " (cached result, no new cost)" : ""}.`;
+      } catch (e) {
+        note = e instanceof AiBudgetExceeded ? `${e.message} Rule-based extractor used.` : `AI extraction failed (${String(e).slice(0, 120)}) — rule-based extractor used.`;
+      }
     }
   }
   const validated = validateAll(candidates, { sources: docs, merchantId: order.merchantId, orderId: order.id, orderCurrency: order.currency, minConfidence: merchant.policy.minConfidence });

@@ -5,9 +5,14 @@
  */
 import { paypalMode } from "../paypal/client";
 import { ingestSimulatedEvent, processEvent } from "./webhooks";
+import { withEmulatorState } from "../paypal/emulator-store";
 
 export async function deliverSimulatedEvents(opts: { duplicateFirst?: boolean } = {}) {
   if (paypalMode() !== "simulated") return { delivered: 0, duplicates: 0 };
+  return withEmulatorState(() => deliverInner(opts));
+}
+
+async function deliverInner(opts: { duplicateFirst?: boolean }) {
   const { drainEmulatorEvents } = await import("../paypal/emulator");
   const events = drainEmulatorEvents();
   let delivered = 0;
@@ -33,6 +38,10 @@ export async function deliverSimulatedEvents(opts: { duplicateFirst?: boolean } 
  */
 export async function seedExternalCapturedOrder() {
   if (paypalMode() !== "simulated") throw new Error("simulated mode only");
+  return withEmulatorState(seedExternalInner);
+}
+
+async function seedExternalInner() {
   const { getDb } = await import("../db");
   const { orders } = await import("../db/schema");
   const { eq } = await import("drizzle-orm");

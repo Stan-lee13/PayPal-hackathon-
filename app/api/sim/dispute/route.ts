@@ -23,7 +23,8 @@ export async function POST(req: Request) {
     const existing = await getDb().query.disputes.findFirst({ where: eq(disputes.orderId, o.id) });
     if (existing) throw new UserFacingError("This order already has a dispute.", 409);
     const { openEmulatorDispute } = await import("@/lib/paypal/emulator");
-    try { openEmulatorDispute(o.paypalCaptureId, b.reason); }
+    const { withEmulatorState } = await import("@/lib/paypal/emulator-store");
+    try { await withEmulatorState(() => openEmulatorDispute(o.paypalCaptureId!, b.reason)); }
     catch { throw new UserFacingError("The simulated PayPal no longer has this capture (the server restarted). Place a new order.", 409); }
     return json(await deliverSimulatedEvents());
   } catch (e) { return errorResponse(e); }

@@ -19,7 +19,7 @@ export function databaseUrl(): string {
 export function getDb(): DB {
   if (!globalThis.__keptDb) {
     const url = databaseUrl();
-    const needsSsl = /sslmode=require|neon\.tech/.test(url);
+    const needsSsl = /sslmode=require|neon\.tech|supabase\.(co|com)/.test(url);
     const sql = postgres(url, { max: Number(process.env.DB_POOL_MAX ?? 5), ssl: needsSsl ? "require" : undefined, prepare: false });
     globalThis.__keptDb = { db: drizzle(sql, { schema }), sql };
   }

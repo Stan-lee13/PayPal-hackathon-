@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { ZodError } from "zod";
 import { UserFacingError } from "./services/orders";
 import { currentMerchant } from "./security/session";
+import { appBaseUrl } from "./base-url";
 
 export function json(data: unknown, status = 200) {
   return NextResponse.json(data, { status, headers: { "Cache-Control": "no-store" } });
@@ -20,7 +21,7 @@ export function sameOrigin(req: Request): boolean {
   const origin = req.headers.get("origin");
   if (!origin) return true; // non-browser clients (curl, cron) carry no Origin; auth still applies
   try {
-    return new URL(origin).host === new URL(req.url).host || origin === (process.env.APP_BASE_URL ?? "").replace(/\/$/, "");
+    return new URL(origin).host === new URL(req.url).host || origin === appBaseUrl();
   } catch {
     return false;
   }

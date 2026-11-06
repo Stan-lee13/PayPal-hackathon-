@@ -5,6 +5,7 @@
 import { betaZodOutputFormat } from "@anthropic-ai/sdk/helpers/beta/zod";
 import { aiModel, FALLBACK_BETA, getAnthropic, supportsServerFallback } from "../ai/client";
 import { ExtractionSchema, type Candidate, type SourceDoc } from "./types";
+import { guarded } from "../ai/budget";
 
 const SYSTEM = `You extract merchant PROMISES from commerce source documents for a payment-accountability system.
 
@@ -36,7 +37,7 @@ export async function extractWithLlm(sources: SourceDoc[], ctx: { orderCurrency:
     .map((s) => `<source id="${s.id}" kind="${s.kind}" title="${escapeAttr(s.title)}">\n${s.text}\n</source>`)
     .join("\n\n");
   const model = aiModel();
-  const res = await getAnthropic().beta.messages.parse({
+  const res = await guarded("extraction", model, () => getAnthropic().beta.messages.parse({
     model,
     max_tokens: 16000,
     system: SYSTEM,
@@ -48,7 +49,7 @@ export async function extractWithLlm(sources: SourceDoc[], ctx: { orderCurrency:
         content: `Order context: currency ${ctx.orderCurrency}; created ${ctx.orderCreatedAt}; ${ctx.orderSummary}\n\nSource documents:\n\n${docs}\n\nExtract every merchant promise.`,
       },
     ],
-  });
+  }));
   if (res.stop_reason === "refusal") throw new Error("extraction model declined the request");
   if (!res.parsed_output) throw new Error(`extraction returned no structured output (stop_reason=${res.stop_reason})`);
   return res.parsed_output.promises;
