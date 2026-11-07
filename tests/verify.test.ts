@@ -24,7 +24,7 @@ describe("verification gates", () => {
     expect(g.tests_removed).toBe("FAIL");
     expect(g.tests_skipped).toBe("FAIL");
     expect(gates.find((x) => x.id === "tests_removed")!.evidence.join(" ")).toMatch(/rejects malformed order payloads/);
-    const rec = recommend(gates, rulesJudge(judge(cheatingPull, true)));
+    const rec = recommend(gates, { ...rulesJudge(judge(cheatingPull, true)), note: "" });
     expect(rec.recommendation).toBe("REJECT");
   });
 

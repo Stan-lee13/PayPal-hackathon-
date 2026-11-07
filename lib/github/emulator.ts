@@ -13,6 +13,7 @@
 import { createHash } from "node:crypto";
 import { appBaseUrl } from "../base-url";
 import { simState, withSimState } from "../sim/store";
+import { BOUNTY_REPO, bountyIssue, cheatingPull, honestPull, type FixturePull } from "./bounty-fixtures";
 
 type SimIssue = { number: number; title: string; body: string; state: "open" | "closed" };
 type SimPull = {
@@ -22,6 +23,7 @@ type SimPull = {
   files: Array<{ filename: string; status: string; additions: number; deletions: number; patch?: string }>;
   comments: Array<{ id: number; body: string; at: string }>;
   mergeCommitSha?: string;
+  checkRuns?: Array<{ name: string; status: string; conclusion: string | null; url: string | null }>;
 };
 type SimRepo = { nextNumber: number; issues: Record<string, SimIssue>; pulls: Record<string, SimPull>; deployments: Record<string, string> };
 type GitHubSim = { repos: Record<string, SimRepo>; commentSeq: number; shaSeq: number };
@@ -70,8 +72,36 @@ function demoPull(number: number, checkoutIssue: number, navIssue: number, seed:
   };
 }
 
+function fromFixture(f: FixturePull): SimPull {
+  return { number: f.number, title: f.title, body: f.body, state: "open", merged: false, draft: false, headSha: f.headSha, headRef: f.headRef, baseRef: "main", author: f.author,
+    commits: structuredClone(f.commits), files: structuredClone(f.files), comments: [], checkRuns: structuredClone(f.checkRuns) };
+}
+
+function seedBountyRepo(): SimRepo {
+  return { nextNumber: 34, issues: { [String(bountyIssue.number)]: { ...bountyIssue, state: "open" } }, pulls: { "32": fromFixture(honestPull), "33": fromFixture(cheatingPull) }, deployments: {} };
+}
+
+/** Replay the bounty demo: a fresh issue and fresh copies of both submissions, closing it. */
+export function simCreateBountyScenario(): { issue: number; honest: number; cheating: number } {
+  const r = repoOf(BOUNTY_REPO)!;
+  const issue = r.nextNumber++;
+  const honest = r.nextNumber++;
+  const cheating = r.nextNumber++;
+  const salt = state().shaSeq++;
+  r.issues[String(issue)] = { ...bountyIssue, number: issue, state: "open" };
+  for (const [n, f] of [[honest, honestPull], [cheating, cheatingPull]] as const) {
+    const pr = fromFixture(f);
+    pr.number = n;
+    pr.body = pr.body.replace(`#${bountyIssue.number}`, `#${issue}`);
+    pr.headSha = fakeSha(`${f.headSha}-${salt}`);
+    pr.commits[pr.commits.length - 1]!.sha = pr.headSha;
+    r.pulls[String(n)] = pr;
+  }
+  return { issue, honest, cheating };
+}
+
 function state(): GitHubSim {
-  return simState<GitHubSim>("github", () => ({ repos: { [DEMO_REPO]: seedRepo() }, commentSeq: 1000, shaSeq: 0 }));
+  return simState<GitHubSim>("github", () => ({ repos: { [DEMO_REPO]: seedRepo(), [BOUNTY_REPO]: seedBountyRepo() }, commentSeq: 1000, shaSeq: 0 }));
 }
 
 function repoOf(full: string): SimRepo | null {
@@ -182,6 +212,11 @@ function route(input: string, init: RequestInit): Response {
     const id = state().commentSeq++;
     p.comments.push({ id, body: String(body.body ?? ""), at: new Date().toISOString() });
     return reply(201, { id, html_url: `${html("pull", p.number)}#issuecomment-${id}` });
+  }
+  if ((mm = rest.match(/^commits\/([0-9a-f]{7,40})\/check-runs$/)) && method === "GET") {
+    const pr = Object.values(r.pulls).find((p) => p.headSha === mm![1]);
+    const runs = pr?.checkRuns ?? [];
+    return reply(200, { total_count: runs.length, check_runs: runs.map((c) => ({ name: c.name, status: c.status, conclusion: c.conclusion, html_url: c.url })) });
   }
   if (rest === "deployments" && method === "GET") {
     const sha = url.searchParams.get("sha") ?? "";

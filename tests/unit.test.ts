@@ -121,7 +121,7 @@ describe("PayPal invoice facts", () => {
 describe("audit chain", () => {
   it("detects an edited entry", () => {
     const mk = (seq: number, prevHash: string): ChainEntry => {
-      const e = { seq, freelancerId: "fl", invoiceId: "inv", actor: "system", action: "a", ref: null, outcome: "OK", detail: { n: seq }, createdAt: "2026-11-06T00:00:00.000Z", prevHash };
+      const e = { seq, freelancerId: "fl", subjectId: "inv", actor: "system", action: "a", ref: null, outcome: "OK", detail: { n: seq }, createdAt: "2026-11-06T00:00:00.000Z", prevHash };
       return { ...e, hash: entryHash(e) };
     };
     const a = mk(1, genesisHash("fl", "inv"));

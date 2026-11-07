@@ -28,7 +28,7 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
   const { id } = await params;
   const inv = await getDb().query.invoices.findFirst({ where: and(eq(invoices.id, id), eq(invoices.freelancerId, fl)) });
   if (!inv) notFound();
-  const trail = await getDb().select().from(auditLog).where(eq(auditLog.invoiceId, inv.id)).orderBy(asc(auditLog.seq));
+  const trail = await getDb().select().from(auditLog).where(eq(auditLog.subjectId, inv.id)).orderBy(asc(auditLog.seq));
   const verdict = verifyChain(fl, inv.id, trail.map((t) => ({ ...t, createdAt: t.createdAt.toISOString() })) as ChainEntry[]);
   const v = invoiceView(inv);
   return (

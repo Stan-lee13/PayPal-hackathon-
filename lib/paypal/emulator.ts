@@ -10,6 +10,7 @@ import { randomUUID } from "node:crypto";
 import { appBaseUrl } from "../base-url";
 import { simState, withSimState } from "../sim/store";
 import { toDecimalString, toMinor } from "../money";
+import { drainPaymentEvents, routePayments } from "./emulator-payments";
 
 type SimItem = { name: string; description?: string; quantity: string; unit_amount: { currency_code: string; value: string }; unit_of_measure?: string };
 type SimInvoice = {
@@ -33,7 +34,9 @@ type PayPalSim = {
 };
 
 function state(): PayPalSim {
-  return simState<PayPalSim>("paypal", () => ({ invoices: {}, requestIds: {}, nextNumber: 1, outbox: [], webhooks: [] }));
+  const s = simState<Partial<PayPalSim>>("paypal", () => ({}));
+  s.invoices ??= {}; s.requestIds ??= {}; s.nextNumber ??= 1; s.outbox ??= []; s.webhooks ??= [];
+  return s as PayPalSim;
 }
 
 const reply = (status: number, body: unknown) => new Response(status === 204 ? null : JSON.stringify(body), { status, headers: { "content-type": "application/json", "paypal-debug-id": "sim-" + randomUUID().slice(0, 8) } });
@@ -86,7 +89,7 @@ export async function simInvoiceSnapshot(id: string): Promise<SimInvoice | null>
 
 /** Take queued webhook events (the caller delivers them to the app's own handler). */
 export async function takeSimOutbox(): Promise<Array<Record<string, unknown>>> {
-  return withSimState(() => state().outbox.splice(0));
+  return withSimState(() => [...state().outbox.splice(0), ...drainPaymentEvents()]);
 }
 
 // ---------------------------------------------------------------------------
@@ -106,6 +109,8 @@ function route(input: string, init: RequestInit): Response {
     try { body = JSON.parse(init.body); } catch { return err(400, "MALFORMED_REQUEST_JSON", "MALFORMED_REQUEST_JSON", "The request JSON is not well formed."); }
   }
   const p = url.pathname;
+  const pay = routePayments(url, method, headers, body);
+  if (pay) return pay;
   const s = state();
 
   if (p === "/v1/oauth2/token" && method === "POST") return reply(200, { access_token: "SIMULATED-TOKEN", token_type: "Bearer", expires_in: 32400 });

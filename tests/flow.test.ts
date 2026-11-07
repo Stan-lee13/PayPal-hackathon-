@@ -65,7 +65,7 @@ d("MergePay end to end (simulated PayPal + GitHub)", async () => {
     expect(p.comments.at(-1)!.body).toMatch(/Paid via PayPal.*Merged commit/s);
 
     // the trail is complete and tamper-evident
-    const trail = await getDb().select().from(schema.auditLog).where(eq(schema.auditLog.invoiceId, draft.id)).orderBy(asc(schema.auditLog.seq));
+    const trail = await getDb().select().from(schema.auditLog).where(eq(schema.auditLog.subjectId, draft.id)).orderBy(asc(schema.auditLog.seq));
     expect(trail.map((t) => t.action)).toEqual(["invoice.drafted", "invoice.sent", "invoice.paid", "pr.merged"]);
     const v = verifyChain(FL, draft.id, trail.map((t) => ({ ...t, createdAt: t.createdAt.toISOString() })) as never);
     expect(v.ok).toBe(true);

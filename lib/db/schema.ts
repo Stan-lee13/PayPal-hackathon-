@@ -137,12 +137,13 @@ export const paypalEvents = pgTable("paypal_events", {
   processedAt: ts("processed_at"),
 }, (t) => [index("paypal_events_status").on(t.processingStatus)]);
 
-/** Tamper-evident trail: one SHA-256 chain per invoice, plus one per freelancer for account-level entries. */
+/** Tamper-evident trail: one SHA-256 chain per invoice or bounty, plus one per account. `freelancerId` holds the account that owns the chain (a freelancer or a company). */
 export const auditLog = pgTable("audit_log", {
   id: bigserial("id", { mode: "number" }).primaryKey(),
   freelancerId: text("freelancer_id").notNull(),
-  invoiceId: text("invoice_id"),
-  actor: text("actor", { enum: ["ai", "freelancer", "client", "system", "paypal", "github"] }).notNull(),
+  /** The invoice or bounty this entry belongs to (null: account-level). */
+  subjectId: text("subject_id"),
+  actor: text("actor", { enum: ["ai", "freelancer", "client", "system", "paypal", "github", "company", "developer"] }).notNull(),
   action: text("action").notNull(),
   ref: text("ref"),
   outcome: text("outcome", { enum: ["OK", "REJECTED", "FAILED", "PENDING", "INFO"] }).notNull(),
@@ -152,8 +153,8 @@ export const auditLog = pgTable("audit_log", {
   prevHash: text("prev_hash").notNull(),
   hash: text("hash").notNull(),
 }, (t) => [
-  index("audit_invoice").on(t.invoiceId, t.seq),
-  uniqueIndex("audit_chain_seq").on(t.freelancerId, sql`coalesce(${t.invoiceId}, '-')`, t.seq),
+  index("audit_subject").on(t.subjectId, t.seq),
+  uniqueIndex("audit_chain_seq").on(t.freelancerId, sql`coalesce(${t.subjectId}, '-')`, t.seq),
 ]);
 
 /** Every Claude call: what it was for, which model served it, what it cost (micro-USD). */
@@ -195,3 +196,109 @@ export type Contract = typeof contracts.$inferSelect;
 export type Invoice = typeof invoices.$inferSelect;
 export type PaypalEvent = typeof paypalEvents.$inferSelect;
 export type AuditEntry = typeof auditLog.$inferSelect;
+
+// ---------------------------------------------------------------------------
+// Bounties: a company funds a task through PayPal; a developer completes it; verified work is paid.
+// ---------------------------------------------------------------------------
+
+export const companies = pgTable("companies", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  email: text("email").notNull(),
+  createdAt: ts("created_at").notNull().defaultNow(),
+});
+
+export const developers = pgTable("developers", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  githubLogin: text("github_login").notNull().unique(),
+  /** Where payouts go. PayPal performs identity verification (KYC) on the receiving account. */
+  paypalEmail: text("paypal_email").notNull(),
+  country: text("country"),
+  /** SHA-256 of the developer's MCP token (their coding agent can find, claim and submit bounties). */
+  mcpTokenHash: text("mcp_token_hash"),
+  createdAt: ts("created_at").notNull().defaultNow(),
+});
+
+export const BOUNTY_STATES = ["DRAFT", "AWAITING_FUNDS", "OPEN", "CLAIMED", "IN_REVIEW", "PAYING", "PAID", "PAYOUT_FAILED", "DISPUTED", "CANCELLED", "EXPIRED"] as const;
+export type BountyState = (typeof BOUNTY_STATES)[number];
+
+export const bounties = pgTable("bounties", {
+  id: text("id").primaryKey(),
+  companyId: text("company_id").notNull().references(() => companies.id),
+  repo: text("repo").notNull(),
+  issueNumber: integer("issue_number"),
+  title: text("title").notNull(),
+  /** Public summary, shown on the board. */
+  summary: text("summary").notNull(),
+  /** Full task details; for NDA bounties only shown after the NDA is signed. */
+  details: text("details").notNull(),
+  criteria: jsonb("criteria").$type<string[]>().notNull(),
+  skills: jsonb("skills").$type<string[]>().notNull().default([]),
+  currency: text("currency").notNull().default("USD"),
+  /** What the developer receives, in full. */
+  amountMinor: integer("amount_minor").notNull(),
+  /** MergePay's fee, paid by the company on top (covers PayPal's fees). */
+  feeMinor: integer("fee_minor").notNull(),
+  deadline: ts("deadline"),
+  ndaRequired: boolean("nda_required").notNull().default(false),
+  ndaText: text("nda_text"),
+  requiresTests: boolean("requires_tests").notNull().default(true),
+  requiredChecks: jsonb("required_checks").$type<string[]>().notNull().default([]),
+  scopePaths: jsonb("scope_paths").$type<string[]>().notNull().default([]),
+  /** How long a claim lasts before the bounty reopens. */
+  claimHours: integer("claim_hours").notNull().default(72),
+  status: text("status", { enum: BOUNTY_STATES }).notNull().default("DRAFT"),
+  fundingAttempt: integer("funding_attempt").notNull().default(0),
+  paypalOrderId: text("paypal_order_id"),
+  authorizationId: text("authorization_id").unique(),
+  authorizationExpiresAt: ts("authorization_expires_at"),
+  captureId: text("capture_id"),
+  payoutBatchId: text("payout_batch_id"),
+  payoutItemId: text("payout_item_id"),
+  payoutStatus: text("payout_status"),
+  refundId: text("refund_id"),
+  claimedBy: text("claimed_by").references(() => developers.id),
+  claimedAt: ts("claimed_at"),
+  claimExpiresAt: ts("claim_expires_at"),
+  paidTo: text("paid_to").references(() => developers.id),
+  createdAt: ts("created_at").notNull().defaultNow(),
+  fundedAt: ts("funded_at"),
+  paidAt: ts("paid_at"),
+  closedAt: ts("closed_at"),
+  updatedAt: ts("updated_at").notNull().defaultNow(),
+}, (t) => [index("bounties_status").on(t.status, t.createdAt)]);
+
+export const SUBMISSION_STATES = ["VERIFYING", "VERIFIED", "CHANGES_REQUESTED", "REJECTED", "APPROVED", "DISPUTED", "WITHDRAWN"] as const;
+export type SubmissionState = (typeof SUBMISSION_STATES)[number];
+
+export const submissions = pgTable("submissions", {
+  id: text("id").primaryKey(),
+  bountyId: text("bounty_id").notNull().references(() => bounties.id),
+  developerId: text("developer_id").notNull().references(() => developers.id),
+  prNumber: integer("pr_number").notNull(),
+  prUrl: text("pr_url").notNull(),
+  headSha: text("head_sha").notNull(),
+  status: text("status", { enum: SUBMISSION_STATES }).notNull().default("VERIFYING"),
+  report: jsonb("report").$type<import("../verify/index").VerificationReport>(),
+  companyNote: text("company_note"),
+  developerNote: text("developer_note"),
+  createdAt: ts("created_at").notNull().defaultNow(),
+  decidedAt: ts("decided_at"),
+}, (t) => [index("submissions_bounty").on(t.bountyId, t.createdAt)]);
+
+export const ndaSignatures = pgTable("nda_signatures", {
+  id: text("id").primaryKey(),
+  bountyId: text("bounty_id").notNull().references(() => bounties.id),
+  developerId: text("developer_id").notNull().references(() => developers.id),
+  /** SHA-256 of the exact NDA text signed, so later edits can't change what was agreed. */
+  ndaSha256: text("nda_sha256").notNull(),
+  signedName: text("signed_name").notNull(),
+  signedAt: ts("signed_at").notNull().defaultNow(),
+  ip: text("ip"),
+}, (t) => [uniqueIndex("nda_once").on(t.bountyId, t.developerId)]);
+
+export type Company = typeof companies.$inferSelect;
+export type Developer = typeof developers.$inferSelect;
+export type Bounty = typeof bounties.$inferSelect;
+export type Submission = typeof submissions.$inferSelect;
