@@ -24,6 +24,7 @@ export default function Home() {
         <span className="font-semibold tracking-tight">Merge<span className="text-accent">Pay</span></span>
         <nav className="flex items-center gap-1 text-sm">
           <a className="btn btn-ghost btn-sm" href="#how">How it works</a>
+          <Link className="btn btn-ghost btn-sm" href="/bounties">Bounties</Link>
           <Link className="btn btn-ghost btn-sm" href="/connect">Connect your editor</Link>
           <Link className="btn btn-sm" href="/app">Dashboard</Link>
         </nav>
