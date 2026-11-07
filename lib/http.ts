@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { ZodError } from "zod";
-import { UserFacingError } from "./services/orders";
-import { currentMerchant } from "./security/session";
+import { UserFacingError } from "./errors";
+import { currentFreelancer } from "./security/session";
 import { appBaseUrl } from "./base-url";
 
 export function json(data: unknown, status = 200) {
@@ -10,9 +10,9 @@ export function json(data: unknown, status = 200) {
 
 /** Map errors to safe responses: user-facing messages pass through, everything else is generic. */
 export function errorResponse(e: unknown) {
-  if (e instanceof UserFacingError) return json({ error: e.message, ...("preflight" in e ? { preflight: (e as { preflight: unknown }).preflight } : {}) }, e.status);
+  if (e instanceof UserFacingError) return json({ error: e.message }, e.status);
   if (e instanceof ZodError) return json({ error: "Invalid request", issues: e.issues.map((i) => i.path.join(".") + ": " + i.message) }, 400);
-  console.error("[kept] unhandled", e);
+  console.error("[mergepay] unhandled", e);
   return json({ error: "Something went wrong. It has been logged." }, 500);
 }
 
@@ -27,10 +27,10 @@ export function sameOrigin(req: Request): boolean {
   }
 }
 
-export async function requireMerchant(req: Request): Promise<string> {
+export async function requireFreelancer(req: Request): Promise<string> {
   if (!sameOrigin(req)) throw new UserFacingError("Cross-origin request refused.", 403);
-  const m = await currentMerchant();
-  if (!m) throw new UserFacingError("Merchant sign-in required.", 401);
+  const m = await currentFreelancer();
+  if (!m) throw new UserFacingError("Sign in first.", 401);
   return m;
 }
 

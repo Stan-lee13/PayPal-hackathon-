@@ -1,104 +1,178 @@
+CREATE TABLE "ai_cache" (
+	"key" text PRIMARY KEY NOT NULL,
+	"purpose" text NOT NULL,
+	"value" jsonb NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "ai_usage" (
+	"id" bigserial PRIMARY KEY NOT NULL,
+	"purpose" text NOT NULL,
+	"model" text NOT NULL,
+	"input_tokens" integer NOT NULL,
+	"output_tokens" integer NOT NULL,
+	"cache_read_tokens" integer DEFAULT 0 NOT NULL,
+	"cost_micro_usd" bigint NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
 CREATE TABLE "audit_log" (
 	"id" bigserial PRIMARY KEY NOT NULL,
-	"merchant_id" text NOT NULL,
-	"order_id" text,
+	"freelancer_id" text NOT NULL,
+	"subject_id" text,
 	"actor" text NOT NULL,
 	"action" text NOT NULL,
 	"ref" text,
 	"outcome" text NOT NULL,
 	"detail" jsonb NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"seq" integer NOT NULL,
+	"prev_hash" text NOT NULL,
+	"hash" text NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "bounties" (
+	"id" text PRIMARY KEY NOT NULL,
+	"company_id" text NOT NULL,
+	"repo" text NOT NULL,
+	"issue_number" integer,
+	"title" text NOT NULL,
+	"summary" text NOT NULL,
+	"details" text NOT NULL,
+	"criteria" jsonb NOT NULL,
+	"skills" jsonb DEFAULT '[]'::jsonb NOT NULL,
+	"currency" text DEFAULT 'USD' NOT NULL,
+	"amount_minor" integer NOT NULL,
+	"fee_minor" integer NOT NULL,
+	"deadline" timestamp with time zone,
+	"nda_required" boolean DEFAULT false NOT NULL,
+	"nda_text" text,
+	"requires_tests" boolean DEFAULT true NOT NULL,
+	"required_checks" jsonb DEFAULT '[]'::jsonb NOT NULL,
+	"scope_paths" jsonb DEFAULT '[]'::jsonb NOT NULL,
+	"claim_hours" integer DEFAULT 72 NOT NULL,
+	"status" text DEFAULT 'DRAFT' NOT NULL,
+	"funding_attempt" integer DEFAULT 0 NOT NULL,
+	"paypal_order_id" text,
+	"authorization_id" text,
+	"authorization_expires_at" timestamp with time zone,
+	"capture_id" text,
+	"payout_batch_id" text,
+	"payout_item_id" text,
+	"payout_status" text,
+	"refund_id" text,
+	"claimed_by" text,
+	"claimed_at" timestamp with time zone,
+	"claim_expires_at" timestamp with time zone,
+	"paid_to" text,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"funded_at" timestamp with time zone,
+	"paid_at" timestamp with time zone,
+	"closed_at" timestamp with time zone,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "bounties_authorization_id_unique" UNIQUE("authorization_id")
+);
+--> statement-breakpoint
+CREATE TABLE "clients" (
+	"id" text PRIMARY KEY NOT NULL,
+	"freelancer_id" text NOT NULL,
+	"name" text NOT NULL,
+	"company" text,
+	"email" text NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "chat_sessions" (
+CREATE TABLE "companies" (
 	"id" text PRIMARY KEY NOT NULL,
-	"merchant_id" text NOT NULL,
-	"messages" jsonb DEFAULT '[]'::jsonb NOT NULL,
-	"cart" jsonb DEFAULT '[]'::jsonb NOT NULL,
-	"shipping_option" text DEFAULT 'STANDARD' NOT NULL,
-	"order_id" text,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
-);
---> statement-breakpoint
-CREATE TABLE "commitments" (
-	"id" text PRIMARY KEY NOT NULL,
-	"order_id" text NOT NULL,
-	"merchant_id" text NOT NULL,
-	"type" text NOT NULL,
-	"params" jsonb NOT NULL,
-	"quote" text NOT NULL,
-	"source_id" text NOT NULL,
-	"span_start" integer NOT NULL,
-	"span_end" integer NOT NULL,
-	"confidence" real NOT NULL,
-	"enforceable" boolean NOT NULL,
-	"validation" jsonb NOT NULL,
-	"extractor" text NOT NULL,
-	"state" text NOT NULL,
-	"state_reason" text NOT NULL,
-	"due_at" timestamp with time zone,
-	"evaluation" jsonb,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
-);
---> statement-breakpoint
-CREATE TABLE "disputes" (
-	"paypal_dispute_id" text PRIMARY KEY NOT NULL,
-	"order_id" text,
-	"reason" text,
-	"status" text,
-	"stage" text,
-	"amount_minor" integer,
-	"currency" text,
-	"paypal_created_at" timestamp with time zone,
-	"verified_at" timestamp with time zone NOT NULL,
-	"raw" jsonb NOT NULL
-);
---> statement-breakpoint
-CREATE TABLE "merchants" (
-	"id" text PRIMARY KEY NOT NULL,
-	"slug" text NOT NULL,
 	"name" text NOT NULL,
-	"currency" text NOT NULL,
-	"policy" jsonb NOT NULL,
-	"demo_clock_offset_ms" integer DEFAULT 0 NOT NULL,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "merchants_slug_unique" UNIQUE("slug")
+	"email" text NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "orders" (
+CREATE TABLE "contracts" (
 	"id" text PRIMARY KEY NOT NULL,
-	"merchant_id" text NOT NULL,
-	"chat_session_id" text,
+	"freelancer_id" text NOT NULL,
+	"client_id" text NOT NULL,
+	"repo" text NOT NULL,
+	"title" text NOT NULL,
+	"currency" text DEFAULT 'USD' NOT NULL,
+	"pricing" text NOT NULL,
+	"issue_prices" jsonb DEFAULT '{}'::jsonb NOT NULL,
+	"hourly_rate_minor" integer,
+	"max_hours_per_invoice" integer,
+	"merge_on_payment" boolean DEFAULT true NOT NULL,
+	"merge_method" text DEFAULT 'squash' NOT NULL,
+	"client_token" text NOT NULL,
+	"client_accepted_at" timestamp with time zone,
+	"status" text DEFAULT 'ACTIVE' NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "contracts_client_token_unique" UNIQUE("client_token")
+);
+--> statement-breakpoint
+CREATE TABLE "developers" (
+	"id" text PRIMARY KEY NOT NULL,
+	"name" text NOT NULL,
+	"github_login" text NOT NULL,
+	"paypal_email" text NOT NULL,
+	"country" text,
+	"mcp_token_hash" text,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "developers_github_login_unique" UNIQUE("github_login")
+);
+--> statement-breakpoint
+CREATE TABLE "emulator_state" (
+	"id" text PRIMARY KEY NOT NULL,
+	"state" jsonb NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "freelancers" (
+	"id" text PRIMARY KEY NOT NULL,
+	"name" text NOT NULL,
+	"email" text NOT NULL,
+	"business_name" text,
+	"mcp_token_hash" text,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "invoices" (
+	"id" text PRIMARY KEY NOT NULL,
+	"contract_id" text NOT NULL,
+	"freelancer_id" text NOT NULL,
+	"repo" text NOT NULL,
+	"pr_number" integer NOT NULL,
+	"pr_title" text NOT NULL,
+	"pr_url" text NOT NULL,
+	"head_sha" text NOT NULL,
 	"status" text DEFAULT 'DRAFT' NOT NULL,
 	"currency" text NOT NULL,
-	"lines" jsonb NOT NULL,
-	"item_total_minor" integer NOT NULL,
-	"shipping_minor" integer NOT NULL,
-	"tax_minor" integer DEFAULT 0 NOT NULL,
-	"requested_total_minor" integer NOT NULL,
-	"paypal_order_id" text,
-	"paypal_capture_id" text,
-	"capture_status" text,
-	"capture_status_reason" text,
-	"capture_amount_minor" integer,
-	"capture_currency" text,
-	"paypal_fee_minor" integer,
-	"net_amount_minor" integer,
-	"captured_at" timestamp with time zone,
-	"capture_verified_at" timestamp with time zone,
-	"refunded_minor" integer DEFAULT 0 NOT NULL,
-	"buyer_first_name" text,
-	"buyer_email_redacted" text,
-	"receipt_token" text NOT NULL,
-	"extraction_status" text DEFAULT 'NOT_STARTED' NOT NULL,
-	"extraction_note" text,
+	"amount_minor" integer NOT NULL,
+	"line_items" jsonb NOT NULL,
+	"scope" jsonb NOT NULL,
+	"note" text,
+	"preview_url" text,
+	"paypal_invoice_id" text,
+	"paypal_invoice_number" text,
+	"payer_view_url" text,
+	"sent_at" timestamp with time zone,
+	"paid_at" timestamp with time zone,
+	"paid_amount_minor" integer,
+	"merged_at" timestamp with time zone,
+	"merge_commit_sha" text,
+	"block_reason" text,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "orders_paypal_order_id_unique" UNIQUE("paypal_order_id"),
-	CONSTRAINT "orders_paypal_capture_id_unique" UNIQUE("paypal_capture_id"),
-	CONSTRAINT "orders_receipt_token_unique" UNIQUE("receipt_token")
+	CONSTRAINT "invoices_paypal_invoice_id_unique" UNIQUE("paypal_invoice_id")
+);
+--> statement-breakpoint
+CREATE TABLE "nda_signatures" (
+	"id" text PRIMARY KEY NOT NULL,
+	"bounty_id" text NOT NULL,
+	"developer_id" text NOT NULL,
+	"nda_sha256" text NOT NULL,
+	"signed_name" text NOT NULL,
+	"signed_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"ip" text
 );
 --> statement-breakpoint
 CREATE TABLE "paypal_events" (
@@ -110,7 +184,7 @@ CREATE TABLE "paypal_events" (
 	"summary" text,
 	"verification" text NOT NULL,
 	"payload" jsonb NOT NULL,
-	"order_id" text,
+	"invoice_id" text,
 	"processing_status" text DEFAULT 'RECEIVED' NOT NULL,
 	"processing_error" text,
 	"attempts" integer DEFAULT 0 NOT NULL,
@@ -119,113 +193,46 @@ CREATE TABLE "paypal_events" (
 	CONSTRAINT "paypal_events_paypal_event_id_unique" UNIQUE("paypal_event_id")
 );
 --> statement-breakpoint
-CREATE TABLE "products" (
-	"id" text PRIMARY KEY NOT NULL,
-	"merchant_id" text NOT NULL,
-	"sku" text NOT NULL,
-	"name" text NOT NULL,
-	"description" text NOT NULL,
-	"price_minor" integer NOT NULL,
-	"currency" text NOT NULL,
-	"image_alt" text NOT NULL,
-	"swatch" text NOT NULL,
-	"in_stock" integer NOT NULL,
-	"active" boolean DEFAULT true NOT NULL
-);
---> statement-breakpoint
 CREATE TABLE "rate_limits" (
 	"key" text PRIMARY KEY NOT NULL,
 	"window_start" timestamp with time zone NOT NULL,
 	"count" integer NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "refunds" (
-	"paypal_refund_id" text PRIMARY KEY NOT NULL,
-	"order_id" text NOT NULL,
-	"remedy_id" text,
-	"amount_minor" integer NOT NULL,
-	"currency" text NOT NULL,
-	"status" text NOT NULL,
-	"status_reason" text,
-	"paypal_created_at" timestamp with time zone,
-	"verified_at" timestamp with time zone NOT NULL
-);
---> statement-breakpoint
-CREATE TABLE "remedies" (
+CREATE TABLE "submissions" (
 	"id" text PRIMARY KEY NOT NULL,
-	"commitment_id" text NOT NULL,
-	"order_id" text NOT NULL,
-	"merchant_id" text NOT NULL,
-	"kind" text NOT NULL,
-	"amount_minor" integer,
-	"currency" text,
-	"customer_message" text NOT NULL,
-	"rationale" text NOT NULL,
-	"citations" jsonb NOT NULL,
-	"proposed_by" text NOT NULL,
-	"policy_checks" jsonb NOT NULL,
-	"state" text NOT NULL,
-	"paypal_request_id" text NOT NULL,
-	"paypal_refund_id" text,
-	"paypal_refund_status" text,
-	"error_code" text,
-	"error_detail" text,
-	"decided_by" text,
-	"decided_at" timestamp with time zone,
-	"executed_at" timestamp with time zone,
-	"completed_at" timestamp with time zone,
+	"bounty_id" text NOT NULL,
+	"developer_id" text NOT NULL,
+	"pr_number" integer NOT NULL,
+	"pr_url" text NOT NULL,
+	"head_sha" text NOT NULL,
+	"status" text DEFAULT 'VERIFYING' NOT NULL,
+	"report" jsonb,
+	"company_note" text,
+	"developer_note" text,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "remedies_paypal_request_id_unique" UNIQUE("paypal_request_id"),
-	CONSTRAINT "remedies_paypal_refund_id_unique" UNIQUE("paypal_refund_id")
+	"decided_at" timestamp with time zone
 );
 --> statement-breakpoint
-CREATE TABLE "sources" (
-	"id" text PRIMARY KEY NOT NULL,
-	"merchant_id" text NOT NULL,
-	"order_id" text,
-	"kind" text NOT NULL,
-	"title" text NOT NULL,
-	"text" text NOT NULL,
-	"sha256" text NOT NULL,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL
-);
---> statement-breakpoint
-CREATE TABLE "trackers" (
-	"id" text PRIMARY KEY NOT NULL,
-	"order_id" text NOT NULL,
-	"paypal_tracker_id" text,
-	"tracking_number" text NOT NULL,
-	"carrier" text NOT NULL,
-	"status" text NOT NULL,
-	"recorded_at" timestamp with time zone NOT NULL
-);
---> statement-breakpoint
-ALTER TABLE "chat_sessions" ADD CONSTRAINT "chat_sessions_merchant_id_merchants_id_fk" FOREIGN KEY ("merchant_id") REFERENCES "public"."merchants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "commitments" ADD CONSTRAINT "commitments_order_id_orders_id_fk" FOREIGN KEY ("order_id") REFERENCES "public"."orders"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "commitments" ADD CONSTRAINT "commitments_merchant_id_merchants_id_fk" FOREIGN KEY ("merchant_id") REFERENCES "public"."merchants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "commitments" ADD CONSTRAINT "commitments_source_id_sources_id_fk" FOREIGN KEY ("source_id") REFERENCES "public"."sources"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "orders" ADD CONSTRAINT "orders_merchant_id_merchants_id_fk" FOREIGN KEY ("merchant_id") REFERENCES "public"."merchants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "orders" ADD CONSTRAINT "orders_chat_session_id_chat_sessions_id_fk" FOREIGN KEY ("chat_session_id") REFERENCES "public"."chat_sessions"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "products" ADD CONSTRAINT "products_merchant_id_merchants_id_fk" FOREIGN KEY ("merchant_id") REFERENCES "public"."merchants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "refunds" ADD CONSTRAINT "refunds_order_id_orders_id_fk" FOREIGN KEY ("order_id") REFERENCES "public"."orders"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "remedies" ADD CONSTRAINT "remedies_commitment_id_commitments_id_fk" FOREIGN KEY ("commitment_id") REFERENCES "public"."commitments"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "remedies" ADD CONSTRAINT "remedies_order_id_orders_id_fk" FOREIGN KEY ("order_id") REFERENCES "public"."orders"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "remedies" ADD CONSTRAINT "remedies_merchant_id_merchants_id_fk" FOREIGN KEY ("merchant_id") REFERENCES "public"."merchants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "sources" ADD CONSTRAINT "sources_merchant_id_merchants_id_fk" FOREIGN KEY ("merchant_id") REFERENCES "public"."merchants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "trackers" ADD CONSTRAINT "trackers_order_id_orders_id_fk" FOREIGN KEY ("order_id") REFERENCES "public"."orders"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-CREATE INDEX "audit_order" ON "audit_log" USING btree ("order_id","created_at");--> statement-breakpoint
-CREATE INDEX "audit_merchant" ON "audit_log" USING btree ("merchant_id","created_at");--> statement-breakpoint
-CREATE INDEX "commitments_order" ON "commitments" USING btree ("order_id");--> statement-breakpoint
-CREATE INDEX "commitments_merchant_state" ON "commitments" USING btree ("merchant_id","state");--> statement-breakpoint
-CREATE INDEX "orders_merchant" ON "orders" USING btree ("merchant_id","created_at");--> statement-breakpoint
-CREATE INDEX "paypal_events_order" ON "paypal_events" USING btree ("order_id");--> statement-breakpoint
+ALTER TABLE "bounties" ADD CONSTRAINT "bounties_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "bounties" ADD CONSTRAINT "bounties_claimed_by_developers_id_fk" FOREIGN KEY ("claimed_by") REFERENCES "public"."developers"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "bounties" ADD CONSTRAINT "bounties_paid_to_developers_id_fk" FOREIGN KEY ("paid_to") REFERENCES "public"."developers"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "clients" ADD CONSTRAINT "clients_freelancer_id_freelancers_id_fk" FOREIGN KEY ("freelancer_id") REFERENCES "public"."freelancers"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "contracts" ADD CONSTRAINT "contracts_freelancer_id_freelancers_id_fk" FOREIGN KEY ("freelancer_id") REFERENCES "public"."freelancers"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "contracts" ADD CONSTRAINT "contracts_client_id_clients_id_fk" FOREIGN KEY ("client_id") REFERENCES "public"."clients"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "invoices" ADD CONSTRAINT "invoices_contract_id_contracts_id_fk" FOREIGN KEY ("contract_id") REFERENCES "public"."contracts"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "invoices" ADD CONSTRAINT "invoices_freelancer_id_freelancers_id_fk" FOREIGN KEY ("freelancer_id") REFERENCES "public"."freelancers"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "nda_signatures" ADD CONSTRAINT "nda_signatures_bounty_id_bounties_id_fk" FOREIGN KEY ("bounty_id") REFERENCES "public"."bounties"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "nda_signatures" ADD CONSTRAINT "nda_signatures_developer_id_developers_id_fk" FOREIGN KEY ("developer_id") REFERENCES "public"."developers"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "submissions" ADD CONSTRAINT "submissions_bounty_id_bounties_id_fk" FOREIGN KEY ("bounty_id") REFERENCES "public"."bounties"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "submissions" ADD CONSTRAINT "submissions_developer_id_developers_id_fk" FOREIGN KEY ("developer_id") REFERENCES "public"."developers"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+CREATE INDEX "ai_usage_created" ON "ai_usage" USING btree ("created_at");--> statement-breakpoint
+CREATE INDEX "audit_subject" ON "audit_log" USING btree ("subject_id","seq");--> statement-breakpoint
+CREATE UNIQUE INDEX "audit_chain_seq" ON "audit_log" USING btree ("freelancer_id",coalesce("subject_id", '-'),"seq");--> statement-breakpoint
+CREATE INDEX "bounties_status" ON "bounties" USING btree ("status","created_at");--> statement-breakpoint
+CREATE INDEX "contracts_repo" ON "contracts" USING btree ("repo");--> statement-breakpoint
+CREATE INDEX "invoices_freelancer" ON "invoices" USING btree ("freelancer_id","created_at");--> statement-breakpoint
+CREATE UNIQUE INDEX "invoices_live_pr" ON "invoices" USING btree ("repo","pr_number") WHERE status <> 'CANCELLED';--> statement-breakpoint
+CREATE UNIQUE INDEX "nda_once" ON "nda_signatures" USING btree ("bounty_id","developer_id");--> statement-breakpoint
 CREATE INDEX "paypal_events_status" ON "paypal_events" USING btree ("processing_status");--> statement-breakpoint
-CREATE UNIQUE INDEX "products_merchant_sku" ON "products" USING btree ("merchant_id","sku");--> statement-breakpoint
-CREATE INDEX "refunds_order" ON "refunds" USING btree ("order_id");--> statement-breakpoint
-CREATE INDEX "remedies_order" ON "remedies" USING btree ("order_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "remedies_one_active_per_commitment" ON "remedies" USING btree ("commitment_id") WHERE state in ('PROPOSED','APPROVED','EXECUTING','PENDING');--> statement-breakpoint
-CREATE INDEX "sources_order" ON "sources" USING btree ("order_id");--> statement-breakpoint
-CREATE INDEX "sources_merchant" ON "sources" USING btree ("merchant_id");--> statement-breakpoint
-CREATE INDEX "trackers_order" ON "trackers" USING btree ("order_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "trackers_order_number" ON "trackers" USING btree ("order_id","tracking_number");
+CREATE INDEX "submissions_bounty" ON "submissions" USING btree ("bounty_id","created_at");

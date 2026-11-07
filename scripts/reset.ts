@@ -1,10 +1,8 @@
 import { closeDb, getDb } from "../lib/db";
-import { resetTransactions, seedDemoMerchant } from "../lib/services/seed";
+import { resetDemo } from "../lib/services/seed";
 import { loadEnv } from "./env";
 
 loadEnv();
-const db = getDb();
-await resetTransactions(db);
-await seedDemoMerchant(db);
-console.log("Demo data reset: all orders, promises, events and remedies removed; merchant re-seeded.");
+await resetDemo(getDb());
+console.log("Demo reset: invoices, events and audit trail removed; demo contract re-seeded.");
 await closeDb();

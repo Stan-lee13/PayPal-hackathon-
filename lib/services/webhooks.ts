@@ -1,28 +1,27 @@
 /**
  * PayPal webhook ingestion and processing.
  *
- *   1. read raw body            5. acknowledge (200) promptly
- *   2. verify signature         6. re-fetch the PayPal resource (GET) — the payload is never payment truth
- *   3. reject invalid → 400     7. process idempotently, evaluate commitments, audit
- *   4. dedupe on event id, persist
+ *   1. read raw body           4. dedupe on PayPal's event id, persist
+ *   2. verify the signature    5. acknowledge (200) promptly
+ *   3. reject invalid → 400    6. GET the invoice from PayPal — the event body is never payment truth
  */
 import { and, eq, lt, or } from "drizzle-orm";
 import { getDb } from "../db";
-import { disputes, orders, paypalEvents } from "../db/schema";
+import { invoices, paypalEvents } from "../db/schema";
 import { newId } from "../ids";
 import { getPayPal, paypalMode } from "../paypal/client";
-import { getCapture, getDispute, getRefund } from "../paypal/api";
+import { invoiceIdFromEvent } from "../paypal/invoicing";
 import { readWebhookHeaders, verifyWebhookSignature } from "../paypal/webhook-verify";
+import { onInvoicePaid } from "./invoices";
+import { bounties } from "../db/schema";
+import { getAuthorization } from "../paypal/payments";
+import { syncPayout } from "./bounties";
 import { audit } from "./audit";
-import { afterPaymentEvidence, refreshOrder } from "./pipeline";
-import { syncCapture } from "./orders";
-import { syncRefund } from "./remedies";
 
-type IngestResult = { status: 200 | 400; body: { ok: boolean; duplicate?: boolean; eventId?: string; error?: string } };
-
+type IngestResult = { status: 200 | 400; body: { ok: boolean; duplicate?: boolean; eventId?: string; error?: string }; internalId?: string };
 type RawEvent = { id?: string; event_type?: string; resource_type?: string; summary?: string; resource?: Record<string, unknown> };
 
-export async function ingestWebhook(rawBody: string, headers: Headers): Promise<IngestResult & { internalId?: string }> {
+export async function ingestWebhook(rawBody: string, headers: Headers): Promise<IngestResult> {
   const verdict = await verifyWebhookSignature({ headers: readWebhookHeaders(headers), rawBody, webhookId: process.env.PAYPAL_WEBHOOK_ID, paypal: getPayPal() });
   if (!verdict.ok) {
     console.warn(`[webhook] rejected: ${verdict.reason}`);
@@ -31,32 +30,20 @@ export async function ingestWebhook(rawBody: string, headers: Headers): Promise<
   return persistEvent(rawBody, "SUCCESS");
 }
 
-/** Simulated events (local emulator) skip signature verification and are refused outside simulated mode. */
-export async function ingestSimulatedEvent(event: RawEvent) {
+/** Events from the built-in simulator skip signature verification and are refused outside simulated mode. */
+export async function ingestSimulatedEvent(event: Record<string, unknown>): Promise<IngestResult> {
   if (paypalMode() !== "simulated") throw new Error("simulated events are only accepted in PAYPAL_MODE=simulated");
   return persistEvent(JSON.stringify(event), "SIMULATED");
 }
 
-async function persistEvent(rawBody: string, verification: "SUCCESS" | "SIMULATED"): Promise<IngestResult & { internalId?: string }> {
+async function persistEvent(rawBody: string, verification: "SUCCESS" | "SIMULATED"): Promise<IngestResult> {
   let ev: RawEvent;
-  try {
-    ev = JSON.parse(rawBody);
-  } catch {
-    return { status: 400, body: { ok: false, error: "malformed JSON" } };
-  }
+  try { ev = JSON.parse(rawBody); } catch { return { status: 400, body: { ok: false, error: "malformed JSON" } }; }
   if (!ev.id || !ev.event_type) return { status: 400, body: { ok: false, error: "missing id/event_type" } };
-  const db = getDb();
-  const resourceId = typeof ev.resource?.id === "string" ? ev.resource.id : typeof ev.resource?.dispute_id === "string" ? ev.resource.dispute_id : null;
   const internalId = newId("evt");
-  const inserted = await db.insert(paypalEvents).values({
-    id: internalId,
-    paypalEventId: ev.id,
-    eventType: ev.event_type,
-    resourceType: ev.resource_type ?? null,
-    resourceId,
-    summary: ev.summary ?? null,
-    verification,
-    payload: ev as Record<string, unknown>,
+  const inserted = await getDb().insert(paypalEvents).values({
+    id: internalId, paypalEventId: ev.id, eventType: ev.event_type, resourceType: ev.resource_type ?? null,
+    resourceId: invoiceIdFromEvent(ev.resource), summary: ev.summary ?? null, verification, payload: ev as Record<string, unknown>,
   }).onConflictDoNothing({ target: paypalEvents.paypalEventId }).returning({ id: paypalEvents.id });
   if (inserted.length === 0) return { status: 200, body: { ok: true, duplicate: true, eventId: ev.id } };
   return { status: 200, body: { ok: true, eventId: ev.id }, internalId };
@@ -68,49 +55,37 @@ export async function processEvent(internalId: string): Promise<void> {
   const ev = await db.query.paypalEvents.findFirst({ where: eq(paypalEvents.id, internalId) });
   if (!ev || ev.processingStatus === "PROCESSED" || ev.processingStatus === "IGNORED") return;
   await db.update(paypalEvents).set({ attempts: ev.attempts + 1 }).where(eq(paypalEvents.id, ev.id));
-  const pp = getPayPal();
   try {
-    let orderId: string | null = null;
-    let status: "PROCESSED" | "IGNORED" = "PROCESSED";
-    const t = ev.eventType;
-    if (t === "CHECKOUT.ORDER.APPROVED") {
-      const o = ev.resourceId ? await db.query.orders.findFirst({ where: eq(orders.paypalOrderId, ev.resourceId) }) : undefined;
-      orderId = o?.id ?? null;
-      if (o && o.status === "PAYPAL_CREATED") await db.update(orders).set({ status: "APPROVED", updatedAt: new Date() }).where(eq(orders.id, o.id));
-      if (!o) status = "IGNORED";
-    } else if (t.startsWith("PAYMENT.CAPTURE.") && t !== "PAYMENT.CAPTURE.REFUNDED") {
-      if (!ev.resourceId) throw new Error("capture event without resource id");
-      const facts = await getCapture(pp, ev.resourceId); // authoritative re-fetch
-      const order = await syncCapture(facts, `webhook ${t}`);
-      orderId = order.id;
-      await afterPaymentEvidence(order.id);
-    } else if (t === "PAYMENT.CAPTURE.REFUNDED" || t.startsWith("PAYMENT.REFUND.")) {
-      if (!ev.resourceId) throw new Error("refund event without resource id");
-      const facts = await getRefund(pp, ev.resourceId); // authoritative re-fetch
-      await syncRefund(facts, null, `webhook ${t}`);
-      const o = facts.customId ? await db.query.orders.findFirst({ where: eq(orders.id, facts.customId) }) : undefined;
-      orderId = o?.id ?? null;
-      if (orderId) await refreshOrder(orderId);
-    } else if (t.startsWith("CUSTOMER.DISPUTE.")) {
-      if (!ev.resourceId) throw new Error("dispute event without resource id");
-      const d = await getDispute(pp, ev.resourceId);
-      let order;
-      for (const capId of d.sellerTransactionIds) {
-        order = await db.query.orders.findFirst({ where: eq(orders.paypalCaptureId, capId) });
-        if (order) break;
+    let status: "PROCESSED" | "IGNORED" = "IGNORED";
+    let invoiceId: string | null = null;
+    const res = (ev.payload as { resource?: Record<string, unknown> }).resource ?? {};
+    if (ev.eventType === "PAYMENT.AUTHORIZATION.VOIDED" && typeof res.id === "string") {
+      // fires on our own voids and when PayPal lets an authorization lapse: re-read it and close the bounty if it lapsed
+      const b = await db.query.bounties.findFirst({ where: eq(bounties.authorizationId, res.id) });
+      if (b && ["OPEN", "CLAIMED", "IN_REVIEW", "DISPUTED"].includes(b.status)) {
+        const auth = await getAuthorization(getPayPal(), res.id);
+        if (auth.status === "VOIDED") {
+          const [x] = await db.update(bounties).set({ status: "EXPIRED", closedAt: new Date(), updatedAt: new Date() }).where(and(eq(bounties.id, b.id), eq(bounties.status, b.status))).returning();
+          if (x) await audit(db, { freelancerId: b.companyId, subjectId: b.id, actor: "paypal", action: "bounty.reservation_lapsed", ref: res.id, outcome: "INFO", detail: { via: "webhook" } });
+        }
       }
-      orderId = order?.id ?? null;
-      await db.insert(disputes).values({ paypalDisputeId: d.disputeId, orderId, reason: d.reason, status: d.status, stage: d.stage, amountMinor: d.amountMinor, currency: d.currency, paypalCreatedAt: d.createdAt, verifiedAt: new Date(), raw: { reason: d.reason, status: d.status, stage: d.stage } })
-        .onConflictDoUpdate({ target: disputes.paypalDisputeId, set: { status: d.status, stage: d.stage, verifiedAt: new Date(), orderId } });
-      if (order) {
-        await audit(db, { merchantId: order.merchantId, orderId: order.id, actor: "paypal", action: "paypal.dispute.verified", ref: d.disputeId, outcome: "INFO", detail: { event: t, reason: d.reason, status: d.status, stage: d.stage } });
-        const { proposeDisputeResponse } = await import("./disputes");
-        await proposeDisputeResponse(order.id, d.disputeId);
+      status = b ? "PROCESSED" : "IGNORED";
+    } else if (ev.eventType.startsWith("PAYMENT.PAYOUTS-ITEM.")) {
+      const batchId = typeof res.payout_batch_id === "string" ? res.payout_batch_id : null;
+      const b = batchId ? await db.query.bounties.findFirst({ where: eq(bounties.payoutBatchId, batchId) }) : undefined;
+      if (b) { await syncPayout(b.id); status = "PROCESSED"; } // authoritative GET of the batch
+    } else if (ev.eventType.startsWith("PAYMENT.CAPTURE.")) {
+      status = "IGNORED"; // captures are made synchronously on approval and read back from the response
+    } else if (ev.eventType.startsWith("INVOICING.INVOICE.") && ev.resourceId) {
+      const inv = await db.query.invoices.findFirst({ where: eq(invoices.paypalInvoiceId, ev.resourceId) });
+      if (inv) {
+        invoiceId = inv.id;
+        // PAID also fires for partial and pending payments; CANCELLED/UPDATED are reconciled the same way.
+        await onInvoicePaid(ev.resourceId, `webhook ${ev.eventType}`);
+        status = "PROCESSED";
       }
-    } else {
-      status = "IGNORED";
     }
-    await db.update(paypalEvents).set({ processingStatus: status, processedAt: new Date(), orderId, processingError: null }).where(eq(paypalEvents.id, ev.id));
+    await db.update(paypalEvents).set({ processingStatus: status, processedAt: new Date(), invoiceId, processingError: null }).where(eq(paypalEvents.id, ev.id));
   } catch (e) {
     await db.update(paypalEvents).set({ processingStatus: "FAILED", processingError: String(e).slice(0, 500) }).where(eq(paypalEvents.id, ev.id));
     throw e;
@@ -119,16 +94,21 @@ export async function processEvent(internalId: string): Promise<void> {
 
 /** Retry failed/unprocessed events (bounded). */
 export async function retryEvents(maxAttempts = 5) {
-  const db = getDb();
-  const stuck = await db.select().from(paypalEvents).where(and(or(eq(paypalEvents.processingStatus, "FAILED"), eq(paypalEvents.processingStatus, "RECEIVED")), lt(paypalEvents.attempts, maxAttempts))).limit(50);
-  const out: Array<{ id: string; ok: boolean; error?: string }> = [];
+  const stuck = await getDb().select().from(paypalEvents)
+    .where(and(or(eq(paypalEvents.processingStatus, "FAILED"), eq(paypalEvents.processingStatus, "RECEIVED")), lt(paypalEvents.attempts, maxAttempts))).limit(50);
   for (const e of stuck) {
-    try {
-      await processEvent(e.id);
-      out.push({ id: e.id, ok: true });
-    } catch (err) {
-      out.push({ id: e.id, ok: false, error: String(err).slice(0, 200) });
-    }
+    try { await processEvent(e.id); } catch { /* recorded on the event */ }
   }
-  return out;
+  return stuck.length;
+}
+
+/** Simulated mode: hand the simulator's queued events to our own handler, as PayPal would. */
+export async function deliverSimulatedEvents(): Promise<number> {
+  const { takeSimOutbox } = await import("../paypal/emulator");
+  const events = await takeSimOutbox();
+  for (const e of events) {
+    const r = await ingestSimulatedEvent(e);
+    if (r.internalId) await processEvent(r.internalId);
+  }
+  return events.length;
 }

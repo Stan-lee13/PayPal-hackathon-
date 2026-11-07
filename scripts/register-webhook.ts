@@ -1,13 +1,14 @@
 /**
- * Registers Kept's webhook with the PayPal app (sandbox/live) for the events Kept consumes.
+ * Registers MergePay's webhook with the PayPal app (sandbox/live) for the INVOICING.INVOICE.* events MergePay consumes.
  * Requires a PUBLIC HTTPS APP_BASE_URL. Prints the webhook id → put it in PAYPAL_WEBHOOK_ID.
  */
 import { loadEnv } from "./env";
 loadEnv();
 const { getPayPal, paypalMode } = await import("../lib/paypal/client");
-const { createWebhook, listWebhooks } = await import("../lib/paypal/api");
+const { createWebhook, listWebhooks } = await import("../lib/paypal/invoicing");
 if (paypalMode() === "simulated") throw new Error("Set PAYPAL_CLIENT_ID/SECRET (PAYPAL_MODE=sandbox) first.");
-const base = (process.env.APP_BASE_URL ?? "").replace(/\/$/, "");
+const { appBaseUrl } = await import("../lib/base-url");
+const base = appBaseUrl();
 if (!base.startsWith("https://")) throw new Error("APP_BASE_URL must be public https:// (PayPal only delivers to HTTPS on 443).");
 const url = `${base}/api/webhooks/paypal`;
 const existing = (await listWebhooks(getPayPal())).webhooks?.find((w) => w.url === url);
