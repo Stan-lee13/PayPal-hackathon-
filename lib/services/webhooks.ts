@@ -13,6 +13,10 @@ import { getPayPal, paypalMode } from "../paypal/client";
 import { invoiceIdFromEvent } from "../paypal/invoicing";
 import { readWebhookHeaders, verifyWebhookSignature } from "../paypal/webhook-verify";
 import { onInvoicePaid } from "./invoices";
+import { bounties } from "../db/schema";
+import { getAuthorization } from "../paypal/payments";
+import { syncPayout } from "./bounties";
+import { audit } from "./audit";
 
 type IngestResult = { status: 200 | 400; body: { ok: boolean; duplicate?: boolean; eventId?: string; error?: string }; internalId?: string };
 type RawEvent = { id?: string; event_type?: string; resource_type?: string; summary?: string; resource?: Record<string, unknown> };
@@ -54,7 +58,25 @@ export async function processEvent(internalId: string): Promise<void> {
   try {
     let status: "PROCESSED" | "IGNORED" = "IGNORED";
     let invoiceId: string | null = null;
-    if (ev.eventType.startsWith("INVOICING.INVOICE.") && ev.resourceId) {
+    const res = (ev.payload as { resource?: Record<string, unknown> }).resource ?? {};
+    if (ev.eventType === "PAYMENT.AUTHORIZATION.VOIDED" && typeof res.id === "string") {
+      // fires on our own voids and when PayPal lets an authorization lapse: re-read it and close the bounty if it lapsed
+      const b = await db.query.bounties.findFirst({ where: eq(bounties.authorizationId, res.id) });
+      if (b && ["OPEN", "CLAIMED", "IN_REVIEW", "DISPUTED"].includes(b.status)) {
+        const auth = await getAuthorization(getPayPal(), res.id);
+        if (auth.status === "VOIDED") {
+          const [x] = await db.update(bounties).set({ status: "EXPIRED", closedAt: new Date(), updatedAt: new Date() }).where(and(eq(bounties.id, b.id), eq(bounties.status, b.status))).returning();
+          if (x) await audit(db, { freelancerId: b.companyId, subjectId: b.id, actor: "paypal", action: "bounty.reservation_lapsed", ref: res.id, outcome: "INFO", detail: { via: "webhook" } });
+        }
+      }
+      status = b ? "PROCESSED" : "IGNORED";
+    } else if (ev.eventType.startsWith("PAYMENT.PAYOUTS-ITEM.")) {
+      const batchId = typeof res.payout_batch_id === "string" ? res.payout_batch_id : null;
+      const b = batchId ? await db.query.bounties.findFirst({ where: eq(bounties.payoutBatchId, batchId) }) : undefined;
+      if (b) { await syncPayout(b.id); status = "PROCESSED"; } // authoritative GET of the batch
+    } else if (ev.eventType.startsWith("PAYMENT.CAPTURE.")) {
+      status = "IGNORED"; // captures are made synchronously on approval and read back from the response
+    } else if (ev.eventType.startsWith("INVOICING.INVOICE.") && ev.resourceId) {
       const inv = await db.query.invoices.findFirst({ where: eq(invoices.paypalInvoiceId, ev.resourceId) });
       if (inv) {
         invoiceId = inv.id;

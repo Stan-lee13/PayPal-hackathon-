@@ -1,8 +1,8 @@
 import { closeDb, getDb } from "../lib/db";
-import { seedDemo } from "../lib/services/seed";
+import { seedAll } from "../lib/services/seed";
 import { loadEnv } from "./env";
 
 loadEnv();
-await seedDemo(getDb());
-console.log("Seeded the demo freelancer, client and contract.");
+await seedAll(getDb());
+console.log("Seeded the demo freelancer, client, contract, company and developers.");
 await closeDb();

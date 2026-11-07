@@ -8,7 +8,7 @@
 import { createHash } from "node:crypto";
 import { sql } from "drizzle-orm";
 import type { DB } from "../db";
-import { clients, contracts, freelancers } from "../db/schema";
+import { clients, companies, contracts, developers, freelancers } from "../db/schema";
 import { DEMO_FREELANCER_ID } from "../security/session";
 import { DEMO_REPO as SIM_REPO } from "../github/emulator";
 import { githubMode } from "../github/client";
@@ -20,6 +20,11 @@ export const DEMO_CONTRACT_ID = "ct_demo";
 
 export function demoRepo(): string {
   return process.env.DEMO_REPO || (githubMode() === "simulated" ? SIM_REPO : SIM_REPO);
+}
+
+export async function seedAll(db: DB) {
+  await seedDemo(db);
+  await seedBountyDemo(db);
 }
 
 export async function seedDemo(db: DB) {
@@ -35,11 +40,25 @@ export async function seedDemo(db: DB) {
   }).onConflictDoUpdate({ target: contracts.id, set: { repo: demoRepo() } });
 }
 
+export const DEMO_COMPANY_ID = "co_lagosroast";
+export const DEMO_DEVELOPERS = { honest: "dev_chidi", cheat: "dev_quickfix" } as const;
+
+/** Bounty side: one company, two developers (one honest, one who games CI). All fictional. */
+export async function seedBountyDemo(db: DB) {
+  await db.insert(companies).values({ id: DEMO_COMPANY_ID, name: "Lagos Roast Coffee", email: process.env.DEMO_COMPANY_EMAIL || "eng@lagosroast.example" }).onConflictDoNothing();
+  const devToken = process.env.MERGEPAY_DEV_MCP_TOKEN;
+  await db.insert(developers).values({ id: DEMO_DEVELOPERS.honest, name: "Chidi Okafor", githubLogin: "chidi-dev", paypalEmail: process.env.DEMO_DEVELOPER_PAYPAL_EMAIL || "chidi@example.com", country: "NG",
+    mcpTokenHash: devToken ? createHash("sha256").update(devToken).digest("hex") : null })
+    .onConflictDoUpdate({ target: developers.id, set: { paypalEmail: process.env.DEMO_DEVELOPER_PAYPAL_EMAIL || "chidi@example.com", mcpTokenHash: devToken ? createHash("sha256").update(devToken).digest("hex") : null } });
+  await db.insert(developers).values({ id: DEMO_DEVELOPERS.cheat, name: "Quick Fix", githubLogin: "quickfix-dev", paypalEmail: "quickfix@example.com", country: "US" }).onConflictDoNothing();
+}
+
 /** Remove all invoices, events and audit entries; re-seed; the client has to accept the terms again. */
 export async function resetDemo(db: DB) {
-  await db.execute(sql`truncate table audit_log, paypal_events, invoices, rate_limits restart identity cascade`);
+  await db.execute(sql`truncate table audit_log, paypal_events, invoices, rate_limits, nda_signatures, submissions, bounties restart identity cascade`);
   await db.execute(sql`delete from emulator_state`);
   resetSimMemory(); // the simulated repo and PayPal start over too
   await db.execute(sql`update contracts set client_accepted_at = null, issue_prices = '{"12": 45000, "14": 8000}'::jsonb`);
   await seedDemo(db);
+  await seedBountyDemo(db);
 }

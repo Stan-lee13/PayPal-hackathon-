@@ -379,8 +379,9 @@ export async function listOpenBounties() {
 export async function companyStats(companyId: string) {
   const rows = await getDb().select({ status: submissions.status, rec: sql<string>`${submissions.report}->>'recommendation'` }).from(submissions)
     .innerJoin(bounties, eq(bounties.id, submissions.bountyId)).where(eq(bounties.companyId, companyId));
-  const decided = rows.filter((r) => ["APPROVED", "REJECTED"].includes(r.status));
-  const rejectedPassing = rows.filter((r) => r.status === "REJECTED" && r.rec === "APPROVE").length;
+  const decided = rows.filter((r) => ["APPROVED", "REJECTED", "DISPUTED"].includes(r.status));
+  // a rejection the verification disagreed with stays on the company's record, disputed or not
+  const rejectedPassing = rows.filter((r) => (r.status === "REJECTED" || r.status === "DISPUTED") && r.rec === "APPROVE").length;
   const paid = await getDb().select({ n: sql<number>`count(*)::int` }).from(bounties).where(and(eq(bounties.companyId, companyId), eq(bounties.status, "PAID")));
   return { decided: decided.length, rejectedPassing, paid: paid[0]?.n ?? 0 };
 }
