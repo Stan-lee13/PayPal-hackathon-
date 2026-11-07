@@ -8,6 +8,7 @@
  *   PUT  /repos/{repo}/pulls/{n}/merge       with `sha` = the invoiced commit, so a moved head is refused
  *   POST /repos/{repo}/issues/{n}/comments   status notes on the PR
  *   GET  /repos/{repo}/deployments?sha=      the preview the client checks before paying
+ *   GET  /repos/{repo}/commits/{sha}/check-runs   CI results for the exact submitted commit (bounties)
  *
  * GITHUB_MODE=live uses api.github.com with MERGEPAY_GITHUB_TOKEN (a fine-grained token scoped to the
  * demo repository). GITHUB_MODE=simulated uses lib/github/emulator.ts. Unset: live when a token exists.
@@ -117,6 +118,13 @@ export class GitHubClient {
 
   async comment(repo: string, n: number, body: string): Promise<{ id: number; html_url: string }> {
     return this.request("POST", `/repos/${assertRepo(repo)}/issues/${n}/comments`, { body });
+  }
+
+  /** CI results (check runs) for one exact commit. Needs the token's "Checks: read" permission. */
+  async listCheckRuns(repo: string, sha: string): Promise<Array<{ name: string; status: string; conclusion: string | null; url: string | null }>> {
+    const r = await this.request<{ check_runs: Array<{ name: string; status: string; conclusion: string | null; html_url: string | null }> }>(
+      "GET", `/repos/${assertRepo(repo)}/commits/${encodeURIComponent(sha)}/check-runs?per_page=100`);
+    return r.check_runs.map((c) => ({ name: c.name, status: c.status, conclusion: c.conclusion, url: c.html_url }));
   }
 
   /** The newest successful deployment URL for a commit (e.g. a Vercel preview), if any. */
