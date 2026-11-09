@@ -5,12 +5,12 @@ export const dynamic = "force-dynamic";
 
 const STEPS = [
   { n: "1", title: "Agree once", body: "The client accepts the prices (per issue, or an hourly rate) and merge-on-payment on their own page. MergePay won't invoice under terms they haven't seen." },
-  { n: "2", title: "Bill from your editor", body: "Tell the agent “bill this PR”. It reads the PR and the issues it closes, prices it from the contract, writes line items the client can understand, and flags work nobody agreed to." },
-  { n: "3", title: "Paid, then merged", body: "You approve; PayPal emails the invoice. The client checks the preview and pays. PayPal's webhook arrives, MergePay re-reads the invoice from PayPal, and merges exactly the commit that was paid for." },
+  { n: "2", title: "Bill from your editor", body: "Tell the agent “bill this PR”. It reads the PR and linked issues, prices from the contract, drafts readable line items, and flags work nobody agreed to. Optional AI helps with wording and scope checks." },
+  { n: "3", title: "Paid, then merged", body: "You approve; the client pays the PayPal invoice. MergePay re-reads the invoice and the PR, then merges only the same SHA the client paid for." },
 ];
 
 const GUARANTEES = [
-  { title: "The contract sets the numbers", body: "Amounts come from the agreed prices, in code. The AI writes descriptions and a scope check, never an amount, and hours always come from you." },
+  { title: "The contract sets the numbers", body: "Amounts come from the agreed prices, in code. Optional AI may write descriptions and a scope check, never an amount; hours always come from you." },
   { title: "Nothing goes out without you", body: "Sending, reminding and cancelling need your explicit yes. The agent shows you the draft first; the tool refuses without confirm: true." },
   { title: "Paid means paid", body: "Before touching the repo, MergePay asks PayPal directly: status PAID, nothing due. A partial payment, a pending one, or “marked as paid” by hand never merges." },
   { title: "Only what was paid for", body: "The merge is pinned to the invoiced commit. Push anything after the invoice and it won't merge. Every step lands on a SHA-256 chained, tamper-evident trail." },
@@ -24,7 +24,6 @@ export default function Home() {
         <span className="font-semibold tracking-tight">Merge<span className="text-accent">Pay</span></span>
         <nav className="flex items-center gap-1 text-sm">
           <a className="btn btn-ghost btn-sm" href="#how">How it works</a>
-          <Link className="btn btn-ghost btn-sm" href="/bounties">Bounties</Link>
           <Link className="btn btn-ghost btn-sm" href="/connect">Connect your editor</Link>
           <Link className="btn btn-sm" href="/app">Dashboard</Link>
         </nav>
@@ -34,15 +33,15 @@ export default function Home() {
         <section className="mx-auto grid max-w-6xl items-center gap-10 px-4 pb-16 pt-8 lg:grid-cols-[1.05fr_1fr] lg:pt-16">
           <div>
             <p className="eyebrow seq">For freelance developers · PayPal Invoicing · MCP</p>
-            <h1 className="seq mt-3 text-4xl font-semibold leading-[1.05] sm:text-5xl" style={{ animationDelay: "60ms" }}>Get paid before you merge.</h1>
+            <h1 className="seq mt-3 text-4xl font-semibold leading-[1.05] sm:text-5xl" style={{ animationDelay: "60ms" }}>Paid invoice. Same SHA. Then merge.</h1>
             <p className="seq mt-4 max-w-xl text-lg text-ink-soft" style={{ animationDelay: "120ms" }}>
-              Ask your editor&rsquo;s agent to bill a pull request. MergePay drafts a PayPal invoice from the price you agreed with the client, sends it when you say so, and merges the PR the moment PayPal confirms the payment.
+              MergePay ties a client-approved task to one PayPal invoice and one GitHub commit. It sends only after you say so, verifies payment with PayPal, then rechecks the PR SHA before merging.
             </p>
             <div className="seq mt-7 flex flex-wrap gap-3" style={{ animationDelay: "180ms" }}>
-              <Link className="btn btn-primary" href="/demo">Try it in your browser →</Link>
+              <Link className="btn btn-primary" href="/demo">Open the guided demo →</Link>
               <Link className="btn" href="/connect">Connect Cursor or Claude Code</Link>
             </div>
-            <p className="seq mt-4 text-sm text-ink-soft" style={{ animationDelay: "240ms" }}>No install needed for the demo. It runs the same tools your editor would.</p>
+            <p className="seq mt-4 text-sm text-ink-soft" style={{ animationDelay: "240ms" }}>The guided browser demo calls the same tools your editor agent can use. The banner shows whether PayPal and GitHub are simulated or live.</p>
           </div>
 
           <figure className="code card-lift seq overflow-hidden" style={{ animationDelay: "160ms" }}>
@@ -83,7 +82,7 @@ export default function Home() {
 
         <section className="mx-auto max-w-6xl px-4 py-14">
           <h2 className="text-2xl font-semibold">An agent that moves money has to be boring about it</h2>
-          <p className="mt-2 max-w-2xl text-ink-soft">The AI makes billing effortless. Everything that decides money or touches your client&rsquo;s code is deterministic, checked against PayPal and GitHub, and logged.</p>
+          <p className="mt-2 max-w-2xl text-ink-soft">Optional AI helps explain the work. Everything that decides money or touches your client&rsquo;s code is deterministic, checked against PayPal and GitHub, and logged.</p>
           <div className="mt-6 grid gap-4 sm:grid-cols-2">
             {GUARANTEES.map((g) => (
               <div key={g.title} className="card p-5">
@@ -97,10 +96,10 @@ export default function Home() {
         <section className="mx-auto max-w-6xl px-4 pb-16">
           <div className="card flex flex-wrap items-center justify-between gap-4 p-6">
             <div>
-              <h2 className="text-lg font-semibold">See a PR go from invoice to merged in about a minute</h2>
-              <p className="text-sm text-ink-soft">Built on the PayPal Invoicing API v2, signature-verified PayPal webhooks, the Model Context Protocol, the GitHub API and Claude (optional, capped).</p>
+              <h2 className="text-lg font-semibold">Watch the whole gate: invoice → paid → same SHA → merged</h2>
+              <p className="text-sm text-ink-soft">Built on PayPal Invoicing v2, verified webhooks, MCP and GitHub. The demo banner identifies simulated versus live integrations; Claude is optional.</p>
             </div>
-            <Link className="btn btn-primary" href="/demo">Open the live demo →</Link>
+            <Link className="btn btn-primary" href="/demo">Open the guided demo →</Link>
           </div>
         </section>
       </main>

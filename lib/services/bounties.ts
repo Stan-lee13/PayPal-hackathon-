@@ -22,7 +22,7 @@ import { newId } from "../ids";
 import { formatMoney, toMinor } from "../money";
 import { appBaseUrl } from "../base-url";
 import { getPayPal, PayPalApiError } from "../paypal/client";
-import { authorizeOrder, captureAuthorization, createBountyOrder, getAuthorization, getPayout, payout, refundCapture, voidAuthorization } from "../paypal/payments";
+import { authorizeOrder, captureAuthorization, createBountyOrder, getAuthorization, getCapture, getPayout, payout, refundCapture, voidAuthorization, type CaptureFacts } from "../paypal/payments";
 import { getGitHub, GitHubApiError } from "../github/client";
 import { verifySubmission, type VerificationReport } from "../verify/index";
 import { audit } from "./audit";
@@ -286,6 +286,7 @@ export async function releaseFunds(b: Bounty, dev: { id: string; name: string; p
   const db = getDb();
   const pp = getPayPal();
   let captureId = b.captureId;
+  let cap: CaptureFacts;
   if (!captureId) {
     const auth = await getAuthorization(pp, b.authorizationId!).catch((e) => ppError(e, "read the reservation"));
     // PayPal reports an expired authorization as VOIDED (and fires PAYMENT.AUTHORIZATION.VOIDED)
@@ -294,11 +295,18 @@ export async function releaseFunds(b: Bounty, dev: { id: string; name: string; p
       await trail(b, "paypal", "bounty.reservation_lapsed", "FAILED", auth.id, { status: auth.status });
       throw new UserFacingError("PayPal's reservation lapsed before approval, so nothing could be captured. The company must fund the bounty again.", 409);
     }
-    const cap = await captureAuthorization(pp, b.authorizationId!, b.id, `Bounty "${b.title}" approved`).catch((e) => ppError(e, "capture the reserved funds"));
+    cap = await captureAuthorization(pp, b.authorizationId!, b.id, `Bounty "${b.title}" approved`).catch((e) => ppError(e, "capture the reserved funds"));
     captureId = cap.id;
     await db.update(bounties).set({ captureId, updatedAt: new Date() }).where(eq(bounties.id, b.id));
-    await trail(b, "paypal", "bounty.captured", cap.status === "COMPLETED" ? "OK" : "PENDING", cap.id, { amount: formatMoney(cap.amountMinor, cap.currency), paypalFee: cap.feeMinor === null ? null : formatMoney(cap.feeMinor, cap.currency), status: cap.status });
+  } else {
+    cap = await getCapture(pp, captureId).catch((e) => ppError(e, "check the capture"));
   }
+  if (cap.status !== "COMPLETED") {
+    const pending = cap.status === "PENDING";
+    await trail(b, "paypal", pending ? "bounty.capture_pending" : "bounty.capture_failed", pending ? "PENDING" : "FAILED", cap.id, { status: cap.status, payoutWithheld: true, mergeWithheld: true });
+    throw new UserFacingError(`PayPal capture is ${cap.status}; no payout or PR merge will occur unless PayPal confirms COMPLETED.`, 409);
+  }
+  await trail(b, "paypal", "bounty.captured", "OK", cap.id, { amount: formatMoney(cap.amountMinor, cap.currency), paypalFee: cap.feeMinor === null ? null : formatMoney(cap.feeMinor, cap.currency), status: cap.status });
   let batchId = b.payoutBatchId;
   if (!batchId) {
     const po = await payout(pp, { bountyId: b.id, receiverEmail: dev.paypalEmail, amountMinor: b.amountMinor, currency: b.currency, note: `Payment for "${b.title}" (${b.repo}#${s.prNumber}), verified at commit ${s.headSha.slice(0, 7)}.` })
@@ -317,6 +325,25 @@ export async function releaseFunds(b: Bounty, dev: { id: string; name: string; p
   }
   try { await getGitHub().comment(b.repo, s.prNumber, `✅ **Bounty paid via PayPal**: ${formatMoney(b.amountMinor, b.currency)} to @${dev.githubLogin}, for commit \`${s.headSha.slice(0, 7)}\` after verification and the company's approval.\n\n<sub>MergePay · ${b.id}</sub>`); } catch { /* not essential */ }
   return after;
+}
+
+/** Re-read a possibly asynchronous capture; only a completed capture may resume payout and merge. */
+export async function syncCapture(bountyId: string): Promise<Bounty> {
+  const b = await load(bountyId);
+  if (b.status !== "PAYING" || !b.captureId || !b.paidTo) return b;
+  const cap = await getCapture(getPayPal(), b.captureId).catch((e) => ppError(e, "check the capture"));
+  if (cap.status !== "COMPLETED") {
+    const pending = cap.status === "PENDING";
+    await trail(b, "paypal", pending ? "bounty.capture_pending" : "bounty.capture_failed", pending ? "PENDING" : "FAILED", cap.id, { status: cap.status, payoutWithheld: true, mergeWithheld: true });
+    return b;
+  }
+  const dev = await getDb().query.developers.findFirst({ where: eq(developers.id, b.paidTo) });
+  const submission = await getDb().query.submissions.findFirst({ where: and(eq(submissions.bountyId, b.id), eq(submissions.developerId, b.paidTo), eq(submissions.status, "APPROVED")) });
+  if (!dev || !submission) {
+    await trail(b, "system", "bounty.capture_recovery_missing_records", "FAILED", cap.id, { paidTo: b.paidTo });
+    return b;
+  }
+  return releaseFunds(b, dev, submission);
 }
 
 /** Ask PayPal where the payout is; settle the bounty's state from the answer. */

@@ -22,9 +22,9 @@ export default function DemoPage() {
       </header>
       <main id="main" className="mx-auto max-w-6xl px-4 pb-16">
         <div className="mb-5 max-w-3xl">
-          <h1 className="text-2xl font-semibold sm:text-3xl">Bill a pull request, get paid, watch it merge</h1>
+          <h1 className="text-2xl font-semibold sm:text-3xl">Invoice paid. Same SHA. Then merge.</h1>
           <p className="mt-1.5 text-ink-soft">
-            This is the conversation you&rsquo;d have with the agent in Cursor or Claude Code. Every step calls the same MergePay tools over MCP: the requests are shown under each reply.
+            This guided browser walkthrough calls the same MergePay tools your Cursor or Claude Code agent can use over MCP. Requests and responses appear under each step; the banner above shows whether PayPal and GitHub are simulated or live.
           </p>
         </div>
         <Playground paypal={paypalMode()} github={githubMode()} />

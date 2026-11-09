@@ -32,7 +32,7 @@ if (reset !== 200) fail(`reset failed: ${reset}`);
 step("signed in, demo reset");
 
 await page.goto(`${BASE}/`);
-await page.getByRole("heading", { name: "Get paid before you merge." }).waitFor();
+await page.getByRole("heading", { name: "Paid invoice. Same SHA. Then merge." }).waitFor();
 await page.waitForTimeout(800); // let the entrance animation finish
 await page.screenshot({ path: `${OUT}/01-home.png` });
 step("home page");

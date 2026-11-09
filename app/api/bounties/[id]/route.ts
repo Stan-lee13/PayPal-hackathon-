@@ -20,6 +20,7 @@ const Action = z.discriminatedUnion("action", [
   z.object({ action: z.literal("decide"), submissionId: z.string(), decision: z.enum(["APPROVE", "REQUEST_CHANGES", "REJECT"]), note: z.string().max(2000).default(""), override: z.boolean().default(false) }),
   z.object({ action: z.literal("dispute"), submissionId: z.string(), reason: z.string().max(2000) }),
   z.object({ action: z.literal("refund") }),
+  z.object({ action: z.literal("sync_capture") }),
   z.object({ action: z.literal("sync_payout") }),
 ]);
 
@@ -43,6 +44,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       case "decide": return json(await B.decide(asCompany(), a.submissionId, a.decision, a.note, { overrideFailedChecks: a.override }));
       case "dispute": return json({ submission: await B.disputeRejection(asDev(), a.submissionId, a.reason) });
       case "refund": return json({ bounty: await B.refundFailedPayout(asCompany(), id) });
+      case "sync_capture": asCompany(); return json({ bounty: await B.syncCapture(id) });
       case "sync_payout": return json({ bounty: await B.syncPayout(id) });
     }
   } catch (e) {

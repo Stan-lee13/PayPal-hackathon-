@@ -15,7 +15,7 @@ import { readWebhookHeaders, verifyWebhookSignature } from "../paypal/webhook-ve
 import { onInvoicePaid } from "./invoices";
 import { bounties } from "../db/schema";
 import { getAuthorization } from "../paypal/payments";
-import { syncPayout } from "./bounties";
+import { syncCapture, syncPayout } from "./bounties";
 import { audit } from "./audit";
 
 type IngestResult = { status: 200 | 400; body: { ok: boolean; duplicate?: boolean; eventId?: string; error?: string }; internalId?: string };
@@ -75,7 +75,8 @@ export async function processEvent(internalId: string): Promise<void> {
       const b = batchId ? await db.query.bounties.findFirst({ where: eq(bounties.payoutBatchId, batchId) }) : undefined;
       if (b) { await syncPayout(b.id); status = "PROCESSED"; } // authoritative GET of the batch
     } else if (ev.eventType.startsWith("PAYMENT.CAPTURE.")) {
-      status = "IGNORED"; // captures are made synchronously on approval and read back from the response
+      const b = ev.resourceId ? await db.query.bounties.findFirst({ where: eq(bounties.captureId, ev.resourceId) }) : undefined;
+      if (b) { await syncCapture(b.id); status = "PROCESSED"; } // authoritative GET; a completed capture resumes release
     } else if (ev.eventType.startsWith("INVOICING.INVOICE.") && ev.resourceId) {
       const inv = await db.query.invoices.findFirst({ where: eq(invoices.paypalInvoiceId, ev.resourceId) });
       if (inv) {

@@ -84,6 +84,45 @@ d("bounties end to end (simulated PayPal + GitHub)", async () => {
     expect(verifyChain(CO, b0.id, trail.map((t) => ({ ...t, createdAt: t.createdAt.toISOString() })) as never).ok).toBe(true);
   });
 
+  it("withholds payout and merge while a capture is pending, then resumes on confirmed completion", async () => {
+    const b0 = await publish();
+    const open = await fund(b0.id);
+    await B.claimBounty(CHIDI, b0.id);
+    const submission = await B.submitWork(CHIDI, b0.id, 32, "");
+    const { PayPalClient, setPayPalForTesting } = await import("../lib/paypal/client");
+    const { emulatorFetch } = await import("../lib/paypal/emulator");
+    const pendingResponse = new PayPalClient({
+      clientId: "SIMULATED", clientSecret: "SIMULATED", env: "sandbox",
+      fetchImpl: async (input, init) => {
+        const response = await emulatorFetch(input, init);
+        const url = new URL(input);
+        if (init.method === "POST" && url.pathname === `/v2/payments/authorizations/${open.authorizationId}/capture`) {
+          const body = await response.json() as Record<string, unknown>;
+          return new Response(JSON.stringify({ ...body, status: "PENDING" }), { status: response.status, headers: { "content-type": "application/json" } });
+        }
+        return response;
+      },
+    });
+    setPayPalForTesting(pendingResponse);
+    try {
+      await expect(B.decide(CO, submission.id, "APPROVE", "Thanks!")).rejects.toThrow(/PayPal capture is PENDING.*no payout or PR merge/i);
+      const pending = await bounty(b0.id);
+      expect(pending.status).toBe("PAYING");
+      expect(pending.captureId).toBeTruthy();
+      expect(pending.payoutBatchId).toBeNull();
+      expect((await withSimState(() => gh.simPullSnapshot(BOUNTY_REPO, 32)))!.merged).toBe(false);
+
+      const { deliverSimulatedEvents } = await import("../lib/services/webhooks");
+      expect(await deliverSimulatedEvents()).toBeGreaterThan(0);
+      const completed = await bounty(b0.id);
+      expect(completed.status).toBe("PAID");
+      expect(completed.payoutBatchId).toMatch(/^SIMBATCH/);
+      expect((await withSimState(() => gh.simPullSnapshot(BOUNTY_REPO, 32)))!.merged).toBe(true);
+    } finally {
+      setPayPalForTesting(null);
+    }
+  });
+
   it("cancelling releases the reservation; the company is never charged", async () => {
     const b = await fund((await publish()).id);
     const c = await B.cancelBounty(CO, b.id, "Changed plans");

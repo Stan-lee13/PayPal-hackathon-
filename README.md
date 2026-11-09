@@ -1,8 +1,8 @@
 # MergePay
 
-**Get paid before you merge.**
+**Paid invoice. Same SHA. Then merge.**
 
-MergePay lets a freelance developer bill a client for a GitHub pull request without leaving the editor. Ask the agent in Cursor or Claude Code to "bill this PR". MergePay:
+MergePay binds a client-approved GitHub task and exact pull-request commit to a PayPal invoice. The developer approves sending; after PayPal confirms full payment, MergePay rechecks the PR SHA and merges only that same revision.
 
 1. Drafts a PayPal invoice, priced from what the client agreed to.
 2. Sends it once the developer says so.
@@ -63,7 +63,7 @@ An agent that moves money and touches a client's code has to be boring about bot
 
 ## AI
 
-Claude (`claude-opus-5-5` by default) writes the client-readable line-item descriptions and the scope check, returned as structured output. Its output is validated against the PR, and it can never change an amount.
+When `ANTHROPIC_API_KEY` is configured, the optional Claude integration writes client-readable line-item descriptions and the scope check as structured output. The model name is configurable; a live model run has not yet been verified. Its output is validated against the PR, and it can never change an amount.
 
 Every call runs under a hard daily spend cap (`MERGEPAY_AI_DAILY_BUDGET_USD`, default $2). Costs are recorded per call, and identical inputs are answered from a cache. Without a key, or over the cap, MergePay's rules write the same output, labelled "rules". The demo works fully without a key.
 
@@ -75,7 +75,7 @@ bash scripts/local-postgres.sh        # Postgres on :5433 (databases kept, kept_
 cp .env.example .env                  # fill SESSION_SECRET, MERGEPAY_PASSCODE, MERGEPAY_MCP_TOKEN
 npm run db:migrate && npm run db:seed
 npm run build && npm start            # http://localhost:3000/demo
-npm test                              # 20 tests: pricing, scope validator, full flow, attacks
+npm test                              # full PostgreSQL-backed unit and end-to-end suite
 PASSCODE=… node scripts/e2e-demo.mjs   # drives the whole demo in Chromium, writes docs/screenshots
 ```
 
@@ -92,7 +92,7 @@ For **real GitHub**: set `MERGEPAY_GITHUB_TOKEN` (a fine-grained token for one r
 
 | Part | Status |
 |---|---|
-| Full loop against the simulators | **Ran.** `npm test` (20 tests): draft → consent → send → pay → webhook → GET → merge; moved head blocks the merge; double billing refused; duplicate webhooks ignored; missed webhook recovered; serverless persistence; MCP tools. `scripts/e2e-demo.mjs` drives the same loop in a real browser. |
+| Full loop against the simulators | **Ran.** `npm test` (35 tests): draft → consent → send → pay → webhook → GET → merge; moved head blocks the merge; double billing refused; duplicate webhooks ignored; missed webhook recovered; pending bounty capture withholds payout/merge until confirmed; serverless persistence; MCP tools. Manual Playwright browser QA also confirmed the $530 invoice, same-SHA merge, and paid-but-unmerged late-commit case. |
 | PayPal sandbox | Code paths written against PayPal's Invoicing v2 spec; **not yet run against the sandbox** (needs sandbox credentials). |
 | Live GitHub | Client and demo-PR generator written; **not yet run against a real repo** (needs a token). |
 | Claude | Structured-output call written; **not yet run with a key**. The rules path is what the tests exercise. |
