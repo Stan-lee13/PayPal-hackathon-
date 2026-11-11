@@ -1,114 +1,234 @@
 import Link from "next/link";
 import { ModeBanner } from "@/components/mode-banner";
+import { SiteHeader } from "@/components/site-header";
+import { Figure, Flap, Meter, Passport, Postmark, Sigil, Stamp } from "@/components/stationery";
+import attacks from "@/docs/evidence/attack-suite.json";
+import evidence from "@/docs/evidence/sandbox-run.json";
 
 export const dynamic = "force-dynamic";
 
-const STEPS = [
-  { n: "1", title: "Agree once", body: "The client accepts the prices (per issue, or an hourly rate) and merge-on-payment on their own page. MergePay won't invoice under terms they haven't seen." },
-  { n: "2", title: "Bill from your editor", body: "Tell the agent “bill this PR”. It reads the PR and the issues it closes, prices it from the contract, writes line items the client can understand, and flags work nobody agreed to." },
-  { n: "3", title: "Paid, then merged", body: "You approve; PayPal emails the invoice. The client checks the preview and pays. PayPal's webhook arrives, MergePay re-reads the invoice from PayPal, and merges exactly the commit that was paid for." },
+// Example keys for the illustrations only (no envelope was ever sealed for them).
+const K_OPS = "Qm9zZS1vcHMtYWdlbnQtZXhhbXBsZS1rZXktMDAwMDE";
+const K_ART = "Y3JlYXRpdmUtYWdlbnQtZXhhbXBsZS1rZXktMDAwMDI";
+
+const ACCOUNT = [
+  { yours: "An account number", theirs: "A key only the agent holds. Its account number and its face are drawn from it.", paypal: "—" },
+  { yours: "Money in the account", theirs: "A budget its owner signed, backed by money PayPal is holding.", paypal: "Authorization (a hold)" },
+  { yours: "A card limit", theirs: "A total, a cap per payment, the only payees and purposes allowed, and an expiry.", paypal: "PayPal refuses to capture past the hold" },
+  { yours: "ID a shop can check", theirs: "A passport, and a signed answer to “is this agent good for $45 to me, right now?”", paypal: "Live look-up of the hold" },
+  { yours: "A salary paid in", theirs: "Other agents pay it by its account number. PayPal pays out to the owner who answers for it.", paypal: "Payout" },
+  { yours: "A certified cheque", theirs: "Money set aside for one payee before the work starts. Nothing else can spend it; it is paid or released.", paypal: "The same hold, confirmed live" },
+  { yours: "Accounts for your kids", theirs: "It tears off smaller envelopes for the agents it hires. Smaller only: never a bigger one.", paypal: "Nothing. It is one signature." },
+  { yours: "A statement", theirs: "A receipt for every payment that names everyone who authorized it, back to a person.", paypal: "Partial capture + Payout ids" },
+  { yours: "Freeze, close", theirs: "Revoke one agent and every envelope under it dies. Close, and the unspent money is let go.", paypal: "Void" },
 ];
 
-const GUARANTEES = [
-  { title: "The contract sets the numbers", body: "Amounts come from the agreed prices, in code. The AI writes descriptions and a scope check, never an amount, and hours always come from you." },
-  { title: "Nothing goes out without you", body: "Sending, reminding and cancelling need your explicit yes. The agent shows you the draft first; the tool refuses without confirm: true." },
-  { title: "Paid means paid", body: "Before touching the repo, MergePay asks PayPal directly: status PAID, nothing due. A partial payment, a pending one, or “marked as paid” by hand never merges." },
-  { title: "Only what was paid for", body: "The merge is pinned to the invoiced commit. Push anything after the invoice and it won't merge. Every step lands on a SHA-256 chained, tamper-evident trail." },
+const VERBS = [
+  { n: "1", verb: "Seal", who: "You, in your browser", paypal: "Authorization", body: "Sign the envelope: how much, to whom, for what, until when. PayPal holds the whole amount. Nothing is charged." },
+  { n: "2", verb: "Split", who: "Any agent", paypal: "Nothing", body: "An agent signs a smaller envelope for an agent it hires. Less money, fewer payees, sooner expiry. No server is asked." },
+  { n: "3", verb: "Spend", who: "The agent holding it", paypal: "Partial capture + Payout", body: "The gateway checks every signature and the budget of every envelope above, then takes exactly that much from the hold and pays." },
+  { n: "4", verb: "Close", who: "You, at any time", paypal: "Void", body: "PayPal lets go of whatever was never spent. You paid for what your agents did, and nothing else." },
 ];
+
+const STOPS = [
+  { code: "PAYEE_NOT_ALLOWED", t: "A poisoned brief says “the designer changed address, pay this one.”", a: "That address is not on the envelope. Nothing moves." },
+  { code: "WIDENED_LIMIT", t: "A sub-agent signs itself a bigger envelope.", a: "A block that widens its parent does not verify. It is arithmetic, not policy." },
+  { code: "OVER_ANCESTOR_LIMIT", t: "An orchestrator hands out more than it holds.", a: "Every payment is debited from every envelope above it." },
+  { code: "NOT_THE_HOLDER", t: "Someone copies an agent's envelope.", a: "Spending needs the private key the envelope was issued to." },
+  { code: "OVER_ENVELOPE_LIMIT", t: "Twenty agents race for the last ten dollars.", a: "Budgets are reserved under a lock before PayPal is called. Exactly the budget is spent." },
+  { code: "MAX_CAPTURE_AMOUNT_EXCEEDED", t: "Everything above is somehow wrong.", a: "PayPal itself refuses to capture more than the hold." },
+];
+
+type Step = Record<string, unknown>;
 
 export default function Home() {
+  const ev = evidence as { steps: Step[]; ranAt: string };
+  const sealed: Step = ev.steps.find((s) => String(s.step).startsWith("sealed")) ?? {};
+  const aside: Step = ev.steps.find((s) => String(s.step).includes("set $45 aside")) ?? {};
+  const paid: Step = ev.steps.find((s) => String(s.step).includes("paid the $45")) ?? {};
+  const corpus = (attacks as { summary: { attacks: number; refused: number; movedMoney: number } }).summary;
+  const closed: Step = ev.steps.find((s) => String(s.step).includes("closed the envelope")) ?? {};
   return (
     <>
       <ModeBanner />
-      <header className="mx-auto flex max-w-6xl items-center justify-between px-4 py-4">
-        <span className="font-semibold tracking-tight">Merge<span className="text-accent">Pay</span></span>
-        <nav className="flex items-center gap-1 text-sm">
-          <a className="btn btn-ghost btn-sm" href="#how">How it works</a>
-          <Link className="btn btn-ghost btn-sm" href="/bounties">Bounties</Link>
-          <Link className="btn btn-ghost btn-sm" href="/connect">Connect your editor</Link>
-          <Link className="btn btn-sm" href="/app">Dashboard</Link>
-        </nav>
-      </header>
-
-      <main id="main">
-        <section className="mx-auto grid max-w-6xl items-center gap-10 px-4 pb-16 pt-8 lg:grid-cols-[1.05fr_1fr] lg:pt-16">
-          <div>
-            <p className="eyebrow seq">For freelance developers · PayPal Invoicing · MCP</p>
-            <h1 className="seq mt-3 text-4xl font-semibold leading-[1.05] sm:text-5xl" style={{ animationDelay: "60ms" }}>Get paid before you merge.</h1>
-            <p className="seq mt-4 max-w-xl text-lg text-ink-soft" style={{ animationDelay: "120ms" }}>
-              Ask your editor&rsquo;s agent to bill a pull request. MergePay drafts a PayPal invoice from the price you agreed with the client, sends it when you say so, and merges the PR the moment PayPal confirms the payment.
+      <SiteHeader />
+      <main id="main" className="overflow-x-clip">
+        {/* ------------------------------------------------------------------ hero */}
+        <section className="mx-auto grid max-w-6xl items-center gap-x-10 gap-y-14 px-5 pb-20 pt-6 lg:grid-cols-[1.02fr_1fr] lg:pt-12">
+          <div className="seq">
+            <p className="label">Spending authority for AI agents · backed by a PayPal hold</p>
+            <h1 className="display mt-5 text-[clamp(2.7rem,6.4vw,4.9rem)]">Give your agent an envelope, <em>not your wallet.</em></h1>
+            <p className="mt-6 max-w-[34rem] text-[1.12rem] leading-relaxed text-ink-2">
+              An envelope is money PayPal is already holding, with your limits signed onto it. Your agent can tear off smaller envelopes for the agents it hires, never bigger ones. And anyone it wants to hire can check, before doing any work, that the money is really there.
             </p>
-            <div className="seq mt-7 flex flex-wrap gap-3" style={{ animationDelay: "180ms" }}>
-              <Link className="btn btn-primary" href="/demo">Try it in your browser →</Link>
-              <Link className="btn" href="/connect">Connect Cursor or Claude Code</Link>
+            <div className="mt-8 flex flex-wrap gap-4">
+              <Link className="btn btn-ink" href="/console">Seal an envelope →</Link>
+              <Link className="btn" href="/spec">Read the protocol</Link>
             </div>
-            <p className="seq mt-4 text-sm text-ink-soft" style={{ animationDelay: "240ms" }}>No install needed for the demo. It runs the same tools your editor would.</p>
           </div>
 
-          <figure className="code card-lift seq overflow-hidden" style={{ animationDelay: "160ms" }}>
-            <div className="flex items-center justify-between border-b border-white/10 px-4 py-2 text-xs text-code-soft">
-              <span>agent · mergepay</span><span className="rounded bg-white/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wider">Example</span>
+          <figure aria-label="Illustration: an agent's passport, its envelope, and a receipt" className="relative mx-auto h-[520px] w-full max-w-[520px] sm:h-[548px]">
+            <div className="absolute left-0 top-0 w-[84%] -rotate-[4deg] enter" style={{ animationDelay: "80ms" }}>
+              <Passport compact k={K_OPS} label="ops-agent" sponsors={["Ada"]} state={{ text: "In good standing", tone: "green" }} />
             </div>
-            <div className="space-y-2.5 px-4 py-4 text-[13px]">
-              <p><span className="text-code-soft">you ›</span> bill Lagos Roast for PR #18</p>
-              <p><span className="text-[#9be8c8]">✓ draft_invoice</span> <span className="text-code-soft">{'{ repo: "lagosroast/storefront", pr: 18 }'}</span></p>
-              <div className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
-                <p className="flex justify-between"><span>#12 Add PayPal checkout to the cart page</span><span>$450.00</span></p>
-                <p className="flex justify-between"><span>#14 Menu overflows on small phones</span><span>$80.00</span></p>
-                <p className="mt-1 flex justify-between border-t border-white/10 pt-1 font-semibold"><span>Total</span><span>$530.00</span></p>
-                <p className="mt-1.5 text-[12px] text-[#f6cf93]">Not billed: analytics rewrite in lib/analytics.ts (no issue asked for it)</p>
+            <div className="envl absolute right-0 top-[132px] w-[84%] rotate-[2.2deg] px-5 pb-5 pt-12 enter" style={{ animationDelay: "180ms" }}>
+              <Flap />
+              <div className="flex items-end justify-between gap-3">
+                <div className="envl-label px-3 py-2">
+                  <p className="micro">Pay to the order of</p>
+                  <p className="title text-lg">ops-agent</p>
+                  <p className="mono text-[.7rem] text-ink-2">sealed by Ada · 6 hours</p>
+                </div>
+                <Figure minor={20000} className="text-[2.6rem] text-kraft-ink" />
               </div>
-              <p><span className="text-code-soft">you ›</span> looks right, send it</p>
-              <p><span className="text-[#9be8c8]">✓ send_invoice</span> <span className="text-code-soft">MP-0001 sent via PayPal to the client</span></p>
-              <p className="text-code-soft">paypal › INVOICING.INVOICE.PAID · re-read: PAID, $0.00 due</p>
-              <p className="text-[#c9b4ff]">✓ merged 9f3c2ab into main · comment posted on the PR</p>
+              <div className="mt-4 text-kraft-ink"><Meter spent={11500} of={20000} label="$115 of $200 spent" /></div>
+              <p className="mono mt-1.5 flex justify-between text-[.7rem]"><span>$115.00 spent</span><span>$85.00 still held by PayPal</span></p>
+              <p className="mt-3 flex flex-wrap gap-1.5"><span className="tag">translator@…</span><span className="tag">designer@…</span><span className="tag">translation</span><span className="tag">design</span></p>
+              <Postmark className="absolute -right-10 -top-12 rotate-[9deg]" size={118} top="PAYPAL · HOLD" bottom="AUTHORIZED" line1="$200.00" line2="SANDBOX" />
+            </div>
+            <div className="receipt absolute bottom-0 left-0 w-[44%] rotate-[-5deg] px-4 pt-4 text-[.68rem] leading-relaxed enter" style={{ animationDelay: "300ms" }}>
+              <p className="text-center text-[.6rem] tracking-[.2em]">RECEIPT</p>
+              <p className="leader mt-2"><span>creative-agent</span><i /><span>$70.00</span></p>
+              <p className="text-ink-2">to designer@…</p>
+              <p className="mt-1.5 text-ink-2">authorized by</p>
+              <p>Ada → ops → creative</p>
+              <p className="mt-2 text-center"><Stamp tone="green">Paid</Stamp></p>
             </div>
           </figure>
         </section>
 
-        <section id="how" className="border-y border-rule bg-raised/60">
-          <div className="mx-auto max-w-6xl px-4 py-14">
-            <h2 className="text-2xl font-semibold">How it works</h2>
-            <ol className="mt-6 grid gap-4 md:grid-cols-3">
-              {STEPS.map((s) => (
-                <li key={s.n} className="card p-5">
-                  <span className="mono inline-flex h-7 w-7 items-center justify-center rounded-full bg-accent text-sm font-semibold text-accent-ink">{s.n}</span>
-                  <h3 className="mt-3 font-semibold">{s.title}</h3>
-                  <p className="mt-1.5 text-sm text-ink-soft">{s.body}</p>
+        {/* ------------------------------------------------------------------ the account, taken apart */}
+        <section id="account" className="border-y-[1.5px] border-ink bg-sheet">
+          <div className="mx-auto max-w-6xl px-5 py-16">
+            <div className="grid gap-6 lg:grid-cols-[1fr_2.1fr]">
+              <div>
+                <p className="label">The idea</p>
+                <h2 className="title mt-3 text-[2.2rem]">People have accounts. Agents borrow a card. This gives an agent its own.</h2>
+                <p className="mt-4 text-ink-2">PayPal does not open accounts for software, and it does not have to. Four things it already does (hold, capture part, pay out, let go) are enough to give an agent something that behaves like an account.</p>
+              </div>
+              <div role="table" aria-label="A person's account compared with an agent's account">
+                <div role="row" className="label grid grid-cols-[1fr_1.7fr_1.1fr] gap-4 border-b-[1.5px] border-ink pb-2">
+                  <span role="columnheader">Your account has</span><span role="columnheader">An agent&rsquo;s account has</span><span role="columnheader">PayPal does</span>
+                </div>
+                {ACCOUNT.map((r) => (
+                  <div role="row" key={r.yours} className="grid grid-cols-[1fr_1.7fr_1.1fr] gap-4 border-b border-rule py-3.5 text-[.95rem]">
+                    <span role="cell" className="title text-[1.05rem]">{r.yours}</span>
+                    <span role="cell" className="text-ink-2">{r.theirs}</span>
+                    <span role="cell" className="mono text-[.78rem] leading-snug text-blue">{r.paypal}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* ------------------------------------------------------------------ four verbs */}
+        <section className="mx-auto max-w-6xl px-5 py-16">
+          <p className="label">How it works</p>
+          <h2 className="title mt-3 max-w-2xl text-[2.2rem]">Four verbs. Each one is something PayPal already does.</h2>
+          <ol className="mt-10 grid gap-x-8 gap-y-10 md:grid-cols-2 lg:grid-cols-4">
+            {VERBS.map((s) => (
+              <li key={s.verb} className="ruled pt-4">
+                <p className="flex items-baseline justify-between"><span className="display text-[3.4rem]">{s.verb}</span><span className="mono text-sm text-ink-3">0{s.n}</span></p>
+                <p className="micro mt-1">{s.who}</p>
+                <p className="mt-3 text-[.95rem] text-ink-2">{s.body}</p>
+                <p className="mt-4 flex items-center gap-2"><span className="micro">PayPal</span><Stamp tone="blue" flat>{s.paypal}</Stamp></p>
+              </li>
+            ))}
+          </ol>
+          <div className="mt-10 grid gap-x-10 gap-y-6 border-t-[1.5px] border-ink pt-6 md:grid-cols-2">
+            <p className="text-[.95rem] text-ink-2"><span className="title mr-2 text-[1.5rem] text-ink">Check</span>Anyone an agent wants to hire can ask the gateway whether it is good for the money. The answer is signed, names everyone standing behind the agent, and includes PayPal&rsquo;s word that the hold is live.</p>
+            <p className="text-[.95rem] text-ink-2"><span className="title mr-2 text-[1.5rem] text-ink">Set aside</span>An agent can earmark the fee for one payee before the work starts. It is reserved at every level like a payment, so nothing else can spend it. When the work arrives the agent pays it, or releases it.</p>
+          </div>
+        </section>
+
+        {/* ------------------------------------------------------------------ know your agent */}
+        <section className="border-y-[1.5px] border-ink bg-desk">
+          <div className="mx-auto grid max-w-6xl items-center gap-10 px-5 py-16 lg:grid-cols-[1fr_1.05fr]">
+            <div className="relative">
+              <Passport k={K_ART} label="creative-agent" sponsors={["Ada", "ops-agent"]} state={{ text: "In good standing", tone: "green" }} since="11 Nov 2026" />
+              <div className="sheet sheet-lift relative -mt-3 ml-auto w-[88%] rotate-[1.4deg] p-5">
+                <p className="micro">Statement of standing · signed by the gateway</p>
+                <p className="title mt-2 text-xl">Good for <span className="money">$70.00</span> to designer@example.com</p>
+                <ul className="mt-3 space-y-1 text-sm text-ink-2">
+                  <li className="leader"><span>Controls its key</span><i /><span className="mono text-green">proved</span></li>
+                  <li className="leader"><span>Stands behind it</span><i /><span className="mono text-ink">Ada → ops-agent</span></li>
+                  <li className="leader"><span>PayPal hold</span><i /><span className="mono text-ink">live · $155.00 unused</span></li>
+                  <li className="leader"><span>Valid for</span><i /><span className="mono text-ink">5 minutes</span></li>
+                </ul>
+                <Stamp tone="green" size="lg" className="absolute -right-3 -top-5">Good</Stamp>
+              </div>
+            </div>
+            <div>
+              <p className="label">Know your agent</p>
+              <h2 className="title mt-3 text-[2.2rem]">Before anyone works for an agent, they can check it.</h2>
+              <p className="mt-4 text-ink-2">A freelancer, a shop or another agent is asked to do $70 of work by software it has never met. Today it has no way to tell whether that software can pay.</p>
+              <p className="mt-3 text-ink-2">With Envelope the agent introduces itself with a signed note. The payee hands the note to the gateway and gets back a signed answer: the agent holds the key it claims, here is every person and agent standing behind it, PayPal confirms the money is on hold, and this payment would go through right now.</p>
+              <p className="mt-3 text-ink-2">The note cannot be replayed as a payment, and the answer expires in five minutes. If the payee wants more than an answer, the agent sets the fee aside for it: the money is then spoken for until it is paid or released.</p>
+              <p className="mt-3 text-ink-2">And an agent can be the one getting paid. It opens an account with its own key and its owner&rsquo;s; from then on other agents pay it by account number, and its passport shows what it has earned.</p>
+            </div>
+          </div>
+        </section>
+
+        {/* ------------------------------------------------------------------ what it stops */}
+        <section className="mx-auto max-w-6xl px-5 py-16">
+          <div className="grid gap-6 lg:grid-cols-[1fr_2.1fr]">
+            <div>
+              <p className="label">What it stops</p>
+              <h2 className="title mt-3 text-[2.2rem]">No model decides whether money moves.</h2>
+              <p className="mt-4 text-ink-2">Agents decide what to ask for. The gateway answers by reading signatures and numbers. An agent&rsquo;s stated reason is shown to its owner and never read by the gateway.</p>
+              <p className="mt-6"><span className="figure text-[3.2rem] leading-none">{corpus.refused}<span className="text-ink-3">/{corpus.attacks}</span></span></p>
+              <p className="mt-2 text-sm text-ink-2">attacks refused in the test corpus: forged and tampered envelopes, bad requests, races and replays, promise and account abuse, forged evidence. {corpus.movedMoney === 0 ? "None moved money." : `${corpus.movedMoney} moved money.`} It runs with every test.</p>
+            </div>
+            <ul className="grid gap-x-8 sm:grid-cols-2">
+              {STOPS.map((s) => (
+                <li key={s.code} className="border-t border-rule py-4">
+                  <Stamp tone="red">{s.code === "MAX_CAPTURE_AMOUNT_EXCEEDED" ? "Refused by PayPal" : "Denied"}</Stamp>
+                  <p className="title mt-2.5 text-[1.08rem]">{s.t}</p>
+                  <p className="mt-1.5 text-[.93rem] text-ink-2">{s.a}</p>
+                  <p className="mono mt-2 text-[.7rem] text-red">{s.code}</p>
                 </li>
               ))}
-            </ol>
+            </ul>
           </div>
         </section>
 
-        <section className="mx-auto max-w-6xl px-4 py-14">
-          <h2 className="text-2xl font-semibold">An agent that moves money has to be boring about it</h2>
-          <p className="mt-2 max-w-2xl text-ink-soft">The AI makes billing effortless. Everything that decides money or touches your client&rsquo;s code is deterministic, checked against PayPal and GitHub, and logged.</p>
-          <div className="mt-6 grid gap-4 sm:grid-cols-2">
-            {GUARANTEES.map((g) => (
-              <div key={g.title} className="card p-5">
-                <h3 className="font-semibold">{g.title}</h3>
-                <p className="mt-1.5 text-sm text-ink-soft">{g.body}</p>
-              </div>
-            ))}
-          </div>
-        </section>
-
-        <section className="mx-auto max-w-6xl px-4 pb-16">
-          <div className="card flex flex-wrap items-center justify-between gap-4 p-6">
-            <div>
-              <h2 className="text-lg font-semibold">See a PR go from invoice to merged in about a minute</h2>
-              <p className="text-sm text-ink-soft">Built on the PayPal Invoicing API v2, signature-verified PayPal webhooks, the Model Context Protocol, the GitHub API and Claude (optional, capped).</p>
+        {/* ------------------------------------------------------------------ evidence */}
+        <section className="mx-auto max-w-6xl px-5 pb-16">
+          <div className="grid items-start gap-10 lg:grid-cols-[1.25fr_1fr]">
+            <div className="receipt px-6 pt-6 text-[.8rem] leading-relaxed sm:px-8">
+              <p className="text-center tracking-[.3em]">PAYPAL SANDBOX · REAL RUN</p>
+              <p className="text-center text-ink-2">{String(ev.ranAt).slice(0, 16).replace("T", " ")} UTC</p>
+              <p className="mt-4 border-t border-dashed border-ink pt-3 leader"><span>SEAL · hold placed</span><i /><span>$200.00</span></p>
+              <p className="text-ink-2">authorization {String(sealed.authorization)}</p>
+              <p className="mt-2 leader"><span>SET ASIDE · for translator-agent</span><i /><span>$45.00</span></p>
+              <p className="text-ink-2">hold confirmed {String(aside.paypalHold)} · no money moved</p>
+              <p className="mt-2 leader"><span>PAID · agent to agent</span><i /><span>$45.00</span></p>
+              <p className="text-ink-2">capture {String(paid.capture)} · payout {String(paid.payoutBatch)}</p>
+              <p className="mt-2 leader"><span>SPEND · creative-agent → attacker@evil</span><i /><span className="text-red">DENIED</span></p>
+              <p className="text-red">PAYEE_NOT_ALLOWED</p>
+              <p className="mt-2 leader"><span>CLOSE · hold {String(closed.authorizationStatus).toLowerCase()}</span><i /><span>${(Number(closed.released) / 100).toFixed(2)} let go</span></p>
+              <p className="mt-3 border-t border-dashed border-ink pt-3 leader text-[.95rem] font-semibold"><span>CHARGED</span><i /><span>${(Number(closed.captured) / 100).toFixed(2)}</span></p>
+              <p className="mt-3 text-center text-ink-3">docs/evidence/sandbox-run.json</p>
             </div>
-            <Link className="btn btn-primary" href="/demo">Open the live demo →</Link>
+            <div>
+              <p className="label">What has actually run</p>
+              <h2 className="title mt-3 text-[2.2rem]">Every figure on that slip came back from PayPal.</h2>
+              <p className="mt-4 text-ink-2">The whole flow runs against the PayPal sandbox with no login page: a hold, money set aside and then paid from one agent to another, partial captures, payouts, denials, a receipt checked against PayPal&rsquo;s own records, and a void.</p>
+              <p className="mt-3 text-ink-2">Real models have used it too. On the envelope page you can hand the brief to a language model and watch it play the agents; in the last stage it is asked to attack the envelope. Earlier, four Claude agents ran a launch through the command line, and one spent twelve attempts trying to get past a $10 envelope. Nothing has moved outside an envelope yet.</p>
+              <p className="mt-3 text-sm text-ink-3">Standing on known ideas: attenuating capability chains come from macaroons, Biscuit, UCAN and L402, and other teams are working on agent identity and delegation too. What we have not found anywhere else is the combination: a chain anyone can verify, budgets debited at every level, one real PayPal hold behind the whole tree, and proof of funds tied to that hold.</p>
+              <div className="mt-7 flex flex-wrap gap-4">
+                <Link className="btn btn-ink" href="/console">Try it →</Link>
+                <Link className="btn" href="/spec">The protocol</Link>
+              </div>
+            </div>
           </div>
         </section>
       </main>
-
-      <footer className="border-t border-rule">
-        <div className="mx-auto flex max-w-6xl flex-wrap justify-between gap-2 px-4 py-6 text-xs text-ink-soft">
-          <span>MergePay · MIT licence · built for the PayPal AI Hackathon 2026</span>
-          <span>Sandbox and simulated modes are labelled on every page.</span>
+      <footer className="border-t-[1.5px] border-ink">
+        <div className="micro mx-auto flex max-w-6xl flex-wrap justify-between gap-2 px-5 py-6">
+          <span className="flex items-center gap-2 text-ink-2"><Sigil k={K_OPS} size={18} className="text-ink-2" /> Envelope · MIT licence · PayPal AI Hackathon 2026</span>
+          <span>Not a bank. A PayPal authorization is a hold, not escrow. Sandbox only.</span>
         </div>
       </footer>
     </>

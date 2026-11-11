@@ -1,32 +1,17 @@
+import { gatewayRunsInBrowser } from "@/lib/deployment";
 import { paypalMode } from "@/lib/paypal/client";
-import { githubMode } from "@/lib/github/client";
-import { aiConfigured, aiModel } from "@/lib/ai/client";
-import { dailyBudgetUsd, spentTodayUsd } from "@/lib/ai/budget";
 
-/** Always-visible honesty strip: which PayPal, GitHub and AI are actually in use. */
-export async function ModeBanner() {
-  const pp = paypalMode();
-  const gh = githubMode();
-  const simulated = pp === "simulated" || gh === "simulated";
-  const parts = [
-    pp === "simulated" ? "PayPal: SIMULATED (built-in, no money moves)" : pp === "sandbox" ? "PayPal: SANDBOX (test money)" : "PayPal: LIVE",
-    gh === "simulated" ? "GitHub: SIMULATED repo" : "GitHub: live API",
-    aiConfigured() ? `AI: Claude ${aiModel()} · ${await budgetLine()}` : "AI: rules only (no Claude key)",
-  ];
+/** Always-visible honesty strip: which PayPal is actually in use, and where the gateway is running. */
+export function ModeBanner() {
+  const local = gatewayRunsInBrowser();
+  const pp = local ? "simulated" : paypalMode();
+  const sim = pp === "simulated";
   return (
-    <div className={`border-b text-xs ${simulated ? "bg-blocked-wash text-ink border-rule" : "bg-sunken text-ink-soft border-rule"}`} role="note">
-      <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-x-4 gap-y-1 px-4 py-1.5">
-        {parts.map((p, i) => <span key={i} className={i === 0 && pp === "simulated" ? "font-semibold" : ""}>{p}</span>)}
+    <div className={`border-b border-ink ${sim ? "bg-red text-sheet" : "bg-ink text-sheet"}`} role="note">
+      <div className="micro mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-x-6 gap-y-0.5 px-5 py-1.5 !text-[.6rem] !text-sheet">
+        <span>{local ? "Try-it copy · the whole gateway runs in your browser · PayPal simulated · no money moves" : sim ? "PayPal simulated · built-in simulator · no money moves" : pp === "sandbox" ? "PayPal sandbox · real API calls · test money only" : "PayPal live"}</span>
+        <span className="opacity-70">{local ? "Real sandbox runs: see the video and docs/evidence" : "Agents hold signed envelopes, never PayPal credentials"}</span>
       </div>
     </div>
   );
-}
-
-async function budgetLine(): Promise<string> {
-  const cap = dailyBudgetUsd().toFixed(2);
-  try {
-    return `$${(await spentTodayUsd()).toFixed(2)} of $${cap} daily cap`;
-  } catch {
-    return `capped at $${cap}/day`;
-  }
 }

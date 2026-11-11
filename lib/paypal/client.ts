@@ -1,13 +1,13 @@
 /**
  * Minimal, dependency-free PayPal REST client (server-side only).
  *
- * Endpoints used: OAuth client-credentials (POST /v1/oauth2/token), the Invoicing v2 calls in
- * ./invoicing.ts, and webhook signature verification / registration (./webhook-verify.ts).
+ * Endpoints used: OAuth client-credentials (POST /v1/oauth2/token) and the Orders, Payments and
+ * Payouts calls in ./payments.ts.
  *
  * Secrets never leave the server. Every mutating call takes an explicit
  * PayPal-Request-Id so retries are idempotent on PayPal's side.
  */
-import { setTimeout as sleep } from "node:timers/promises";
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 export type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
 
