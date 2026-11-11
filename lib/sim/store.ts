@@ -7,18 +7,22 @@
  * simulator use loads the state from Postgres and saves it back, under an advisory lock so two
  * requests never interleave. Nested uses inside one scope run directly.
  */
-import { AsyncLocalStorage } from "node:async_hooks";
 import { eq, sql } from "drizzle-orm";
 import { getDb } from "../db";
 import { emulatorState } from "../db/schema";
 
-const scope = new AsyncLocalStorage<true>();
+// Loaded without a static import so this module also runs in a browser tab, where every simulator
+// use is a single un-nested call and no scope tracking is needed.
+type Scope = { getStore(): true | undefined; run<T>(store: true, fn: () => T): T };
+const ALS = (globalThis as { process?: { getBuiltinModule?: (id: string) => { AsyncLocalStorage: new () => Scope } | undefined } }).process?.getBuiltinModule?.("node:async_hooks")?.AsyncLocalStorage;
+const scope: Scope = ALS ? new ALS() : { getStore: () => undefined, run: (_s, fn) => fn() };
 
 export type SimKey = "paypal";
 type Holder = { __envelopeSim?: Partial<Record<SimKey, unknown>> };
 
 export function simPersistenceEnabled(): boolean {
-  return process.env.ENVELOPE_SIM_PERSIST === "1";
+  // In a browser tab the database IS the only durable place, and other tabs share it.
+  return process.env.ENVELOPE_SIM_PERSIST === "1" || typeof window !== "undefined";
 }
 
 /** The simulator's state object, created by `init` on first use. Mutate it in place. */

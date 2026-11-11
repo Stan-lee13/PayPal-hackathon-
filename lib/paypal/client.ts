@@ -7,7 +7,7 @@
  * Secrets never leave the server. Every mutating call takes an explicit
  * PayPal-Request-Id so retries are idempotent on PayPal's side.
  */
-import { setTimeout as sleep } from "node:timers/promises";
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 export type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
 

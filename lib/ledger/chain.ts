@@ -3,7 +3,7 @@
  * freelancer-level entry) is linked to the previous one by SHA-256, so editing, deleting
  * or reordering any past entry breaks every hash after it.
  *
- * Pure and dependency-free (node:crypto only), so an evidence pack can be re-verified
+ * Pure and dependency-free (a small SHA-256 in lib/sha256.ts, no platform APIs), so an evidence pack can be re-verified
  * offline by anyone: `npx tsx scripts/verify-trail.ts trail.json`.
  *
  * What this proves: the record has not been altered since each entry was written, and
@@ -11,7 +11,7 @@
  * that the newest entries were not truncated — compare the head hash with one shown to
  * the customer earlier (the invoice page shows it) to detect that.
  */
-import { createHash } from "node:crypto";
+import { sha256Hex } from "../sha256";
 
 export const CHAIN_VERSION = "envelope-audit-chain/1";
 
@@ -39,7 +39,7 @@ export function canonicalJson(v: unknown): string {
   return JSON.stringify(norm(JSON.parse(JSON.stringify(v ?? null))));
 }
 
-const sha256 = (s: string) => createHash("sha256").update(s, "utf8").digest("hex");
+const sha256 = sha256Hex;
 
 export function genesisHash(scopeId: string, subjectId: string | null): string {
   return sha256(`${CHAIN_VERSION}|genesis|${scopeId}|${subjectId ?? "-"}`);

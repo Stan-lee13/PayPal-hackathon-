@@ -6,7 +6,6 @@
  * PayPal-Request-Ids return the first answer, and a reused sender_batch_id is rejected.
  * Every page shows a SIMULATED banner in this mode; no money moves.
  */
-import { randomUUID } from "node:crypto";
 import { simState, withSimState } from "../sim/store";
 import { toDecimalString, toMinor } from "../money";
 
@@ -20,7 +19,7 @@ function state(): Sim {
   return simState<Sim>("paypal", () => ({ auths: {}, captures: {}, payouts: {}, idem: {}, calls: [], failNext: null }));
 }
 
-const id = (prefix: string) => `${prefix}${randomUUID().replace(/-/g, "").slice(0, 16).toUpperCase()}`;
+const id = (prefix: string) => `${prefix}${crypto.randomUUID().replace(/-/g, "").slice(0, 16).toUpperCase()}`;
 let last: { status: number; body: unknown } | null = null;
 const reply = (status: number, body: unknown) => { last = { status, body }; return new Response(status === 204 ? null : JSON.stringify(body), { status, headers: { "content-type": "application/json" } }); };
 const err = (status: number, name: string, issue: string, description: string) => reply(status, { name, message: description, debug_id: "sim", details: [{ issue, description }] });

@@ -22,6 +22,7 @@
     "node": ">=20.11"
   },
   "dependencies": {
+    "@electric-sql/pglite": "^0.5.16",
     "drizzle-orm": "^0.45.4",
     "next": "^15.5.29",
     "postgres": "^3.4.9",

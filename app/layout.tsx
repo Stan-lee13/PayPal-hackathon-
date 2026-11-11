@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Fraunces, IBM_Plex_Mono, Instrument_Sans } from "next/font/google";
 import { InkDefs } from "@/components/stationery";
+import { gatewayRunsInBrowser } from "@/lib/deployment";
 import "./globals.css";
 
 const display = Fraunces({ subsets: ["latin", "latin-ext"], style: ["normal", "italic"], axes: ["opsz", "SOFT"], variable: "--font-display", display: "swap" });
@@ -14,9 +15,12 @@ export const metadata: Metadata = {
 
 export const viewport: Viewport = { width: "device-width", initialScale: 1, themeColor: "#F3EEE3" };
 
+// Read at request time: a deployment with no database serves pages that run the gateway in the browser.
+export const dynamic = "force-dynamic";
+
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`${display.variable} ${ui.variable} ${data.variable}`}>
+    <html lang="en" data-gateway={gatewayRunsInBrowser() ? "browser" : "server"} className={`${display.variable} ${ui.variable} ${data.variable}`}>
       <body className="min-h-dvh">
         <a href="#main" className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-50 btn btn-ink">Skip to content</a>
         <InkDefs />

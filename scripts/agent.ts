@@ -102,6 +102,63 @@ switch (cmd) {
     console.log(`  Receipt: ${GATEWAY}/r/${r.json.spendId}`);
     break;
   }
+  case "open-account": {
+    // An account that can RECEIVE: signed by the agent's own key and by the owner who answers for it.
+    const me = await key(need("as"));
+    const owner = await key(need("owner"), true);
+    const signed = await E.signAccount(me, owner, { label: args.as!, ownerName: args["owner-name"] ?? args.owner!, settleTo: need("settle-to") });
+    const r = await post("/api/accounts", { signed });
+    if (r.status !== 200) { console.error(`Refused: ${r.json.error}`); process.exit(1); }
+    console.log(`${args.as} can now be paid as ${r.json.payee} (account ${r.json.account}). Income settles to ${r.json.settlesTo}.`);
+    break;
+  }
+  case "promise": {
+    // Set money aside for a payee before work starts. Prints a note the payee can verify.
+    const me = await key(need("as"));
+    const signed = await E.signPromise(envelope(args.as!), me, { amount: cents(need("amount")), payee: need("payee"), purpose: need("purpose"), memo: args.memo, ttl: args.minutes ? Math.round(Number(args.minutes) * 60) : 900 });
+    const r = await post("/api/gateway/promise", { signed, note: args.note });
+    if (r.json.status !== "PROMISED") {
+      console.log(`${r.json.status ?? "ERROR"}. Nothing was set aside.${r.json.error ? " " + r.json.error : ""}`);
+      for (const x of r.json.reasons ?? []) console.log(`  ${x.code}: ${x.meaning} (${x.detail})`);
+      process.exit(3);
+    }
+    console.log(`SET ASIDE: ${usd(signed.request.amount)} for ${signed.request.payee} until ${r.json.expiresAt}. Promise ${r.json.promiseId}`);
+    console.log(`  Give the payee this note: ${E.b64u(new TextEncoder().encode(JSON.stringify(r.json.note)))}`);
+    console.log(`  Pay it:     agent.ts keep ${r.json.promiseId} --as ${args.as}`);
+    console.log(`  Release it: agent.ts release ${r.json.promiseId} --as ${args.as}`);
+    break;
+  }
+  case "keep":
+  case "release": {
+    const me = await key(need("as"));
+    const r = await post("/api/gateway/keep", { signed: await E.signKeep(me, positional[0] ?? need("promise"), cmd === "keep" ? "pay" : "release"), note: args.note });
+    if (!r.json.status) { console.error(`Gateway: ${r.json.error ?? r.status}`); process.exit(1); }
+    if (cmd === "release") { console.log(r.json.status === "LAPSED" ? "Released. The money is back in the envelope." : `Not released: the promise is ${r.json.status}.`); break; }
+    if (r.json.status === "LAPSED" || r.json.status === "DENIED" || r.json.status === "FAILED") {
+      console.log(`${r.json.status}. Nothing was paid.`);
+      for (const x of r.json.reasons ?? []) console.log(`  ${x.code}: ${x.meaning} (${x.detail})`);
+      process.exit(3);
+    }
+    console.log(`${r.json.status}: the promise was paid${r.json.duplicate ? " (already done; not paid twice)" : ""}`);
+    if (r.json.paypal) console.log(`  PayPal capture ${r.json.paypal.captureId}, payout ${r.json.paypal.payoutBatchId} (${r.json.paypal.payoutStatus ?? "pending"})`);
+    console.log(`  Receipt: ${GATEWAY}/r/${r.json.spendId}`);
+    break;
+  }
+  case "verify-promise": {
+    // Run by the payee: is this note really from the gateway, and is the money still set aside?
+    let n: any; // eslint-disable-line @typescript-eslint/no-explicit-any
+    try { n = JSON.parse(new TextDecoder().decode(E.unb64u(positional[0] ?? need("note")))); } catch { console.error("That is not a promise note."); process.exit(2); }
+    const { sig, ...body } = n;
+    const pinned = await fetch(`${GATEWAY}/api/gateway/key`).then((x) => x.json()).catch(() => null) as { publicKey?: string } | null;
+    const signed = (await E.verifyDetached(n.gateway, "envelope-promise-note/1", body, sig)) && pinned?.publicKey === n.gateway;
+    const live = Date.parse(n.expiresAt) > Date.now();
+    console.log(`${n.agentLabel} (account ${n.account}) has ${usd(n.amount)} set aside for ${n.payee}, for ${n.purpose}`);
+    console.log(`  Stands behind it: ${n.sponsors.map((x: { label: string; role: string }) => `${x.label} (${x.role})`).join(" → ")}`);
+    console.log(`  PayPal hold ${n.paypal.authorizationId}: ${n.paypal.status} (${n.paypal.mode})`);
+    console.log(`  Held until ${n.expiresAt}${live ? "" : " — EXPIRED"}. Signed by the gateway (${E.fingerprint(n.gateway)}): ${signed ? "signature valid" : "SIGNATURE INVALID"}.`);
+    if (!signed || !live) process.exit(3);
+    break;
+  }
   case "show": {
     const chain = envelope(need("as"));
     const leaf = chain[chain.length - 1]!.body;
@@ -154,10 +211,11 @@ switch (cmd) {
     const p = r.json;
     console.log(`${p.label} · account ${p.account} · first seen ${p.firstSeenAt}`);
     console.log(`  Record: ${p.record.payments} payment(s), ${usd(p.record.paidMinor)} paid, ${p.record.refused} refused, ${usd(p.record.availableMinor)} available now`);
+    if (p.receives) console.log(`  Can be paid as ${p.receives.payee} (answers for it: ${p.receives.owner.label}; settles to ${p.receives.settlesTo}). Earned ${usd(p.record.receivedMinor)} in ${p.record.received} payment(s).`);
     for (const a of p.accounts) console.log(`  ${a.state} · "${a.rootTitle}" · ${usd(a.availableMinor)} available of ${usd(a.caps.limit)} · behind it: ${a.sponsors.map((x: { label: string }) => x.label).join(" → ")}`);
     console.log(`  ${GATEWAY}/a/${pk}`);
     break;
   }
   default:
-    console.log("Commands: keygen, seal, split, pay, show, revoke, close, hello, check, whois. See the header of scripts/agent.ts.");
+    console.log("Commands: keygen, seal, split, pay, promise, keep, release, verify-promise, open-account, show, revoke, close, hello, check, whois. See the header of scripts/agent.ts.");
 }

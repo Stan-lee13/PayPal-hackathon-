@@ -111,7 +111,7 @@ const TOOLS: Array<{ name: string; description: string; inputSchema: object; run
       type: "object",
       properties: {
         amount: { type: "number", description: "Amount in dollars" },
-        payee: { type: "string", description: "The payee's PayPal email" },
+        payee: { type: "string", description: "The payee: a PayPal email, or an agent's account written as acct:xxxx-xxxx-xxxx" },
         purpose: { type: "string", description: "One of the envelope's allowed purposes" },
         memo: { type: "string", description: "What the payment is for (shown to the payee)" },
         note: { type: "string", description: "Why you are making this payment (shown to the owner; never used to decide)" },
@@ -126,6 +126,58 @@ const TOOLS: Array<{ name: string; description: string; inputSchema: object; run
       if (r.json.status === "DENIED") return ["DENIED. Nothing was paid.", ...(r.json.reasons ?? []).map((x: { code: string; meaning: string; detail: string }) => `  ${x.code}: ${x.meaning} (${x.detail})`)].join("\n");
       if (!r.json.status) throw new ToolError(`Gateway error: ${r.json.error ?? r.status}`);
       const lines = [`${r.json.status}: ${usd(signed.request.amount)} to ${signed.request.payee}${r.json.duplicate ? " (already done; not paid twice)" : ""}`];
+      if (r.json.paypal) lines.push(`PayPal capture ${r.json.paypal.captureId}, payout ${r.json.paypal.payoutBatchId} (${r.json.paypal.payoutStatus ?? "pending"})`);
+      lines.push(`Receipt: ${GATEWAY}/r/${r.json.spendId}`);
+      return lines.join("\n");
+    },
+  },
+  {
+    name: "envelope_promise",
+    description: "Set money aside for a payee BEFORE any work is done, so the payee knows it is there. The amount is reserved in this envelope and every envelope above it, PayPal confirms the hold, and nothing else can spend it until you pay it (envelope_keep) or it runs out. Returns a promise id and a signed note to hand to the payee. Moves no money.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        amount: { type: "number", description: "Amount in dollars" },
+        payee: { type: "string", description: "The payee: a PayPal email, or an agent's account written as acct:xxxx-xxxx-xxxx" },
+        purpose: { type: "string", description: "One of the envelope's allowed purposes" },
+        minutes: { type: "number", description: "How long to hold it (1 to 60 minutes, default 15)" },
+        memo: { type: "string", description: "What the payment will be for" },
+        note: { type: "string", description: "Why you are setting this aside (shown to the owner; never used to decide)" },
+      },
+      required: ["amount", "payee", "purpose"],
+      additionalProperties: false,
+    },
+    async run(a) {
+      const minutes = typeof a.minutes === "number" && a.minutes >= 1 && a.minutes <= 60 ? a.minutes : 15;
+      const signed = await E.signPromise(envelope(), await key(AGENT, false), { amount: cents(a.amount, "amount"), payee: text(a.payee, "payee", 254), purpose: text(a.purpose, "purpose", 60), memo: typeof a.memo === "string" ? a.memo.slice(0, 200) : undefined, ttl: Math.round(minutes * 60) });
+      const r = await post("/api/gateway/promise", { signed, note: typeof a.note === "string" ? a.note.slice(0, 500) : undefined });
+      if (r.json.status !== "PROMISED") {
+        if (!r.json.status) throw new ToolError(`Gateway error: ${r.json.error ?? r.status}`);
+        return [`${r.json.status}. Nothing was set aside.`, ...(r.json.reasons ?? []).map((x: { code: string; meaning: string; detail: string }) => `  ${x.code}: ${x.meaning} (${x.detail})`)].join("\n");
+      }
+      return [`SET ASIDE: ${usd(signed.request.amount)} for ${signed.request.payee} until ${r.json.expiresAt}.`, `Promise id: ${r.json.promiseId}`, `Note for the payee: ${E.b64u(new TextEncoder().encode(JSON.stringify(r.json.note)))}`].join("\n");
+    },
+  },
+  {
+    name: "envelope_keep",
+    description: "Pay a promise this agent made earlier (PayPal captures from the hold and pays the payee), or release it so the money returns to the envelope. Paying twice pays once.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        promise: { type: "string", description: "The promise id returned by envelope_promise" },
+        action: { type: "string", enum: ["pay", "release"], description: "pay (default) or release" },
+        note: { type: "string", description: "Why (shown to the owner; never used to decide)" },
+      },
+      required: ["promise"],
+      additionalProperties: false,
+    },
+    async run(a) {
+      const action = a.action === "release" ? "release" : "pay";
+      const r = await post("/api/gateway/keep", { signed: await E.signKeep(await key(AGENT, false), text(a.promise, "promise", 60), action), note: typeof a.note === "string" ? a.note.slice(0, 500) : undefined });
+      if (!r.json.status) throw new ToolError(`Gateway error: ${r.json.error ?? r.status}`);
+      if (action === "release") return r.json.status === "LAPSED" ? "Released. The money is back in the envelope." : `Not released: the promise is ${r.json.status}.`;
+      if (["LAPSED", "DENIED", "FAILED"].includes(r.json.status)) return [`${r.json.status}. Nothing was paid.`, ...(r.json.reasons ?? []).map((x: { code: string; meaning: string; detail: string }) => `  ${x.code}: ${x.meaning} (${x.detail})`)].join("\n");
+      const lines = [`${r.json.status}: the promise was paid${r.json.duplicate ? " (already done; not paid twice)" : ""}`];
       if (r.json.paypal) lines.push(`PayPal capture ${r.json.paypal.captureId}, payout ${r.json.paypal.payoutBatchId} (${r.json.paypal.payoutStatus ?? "pending"})`);
       lines.push(`Receipt: ${GATEWAY}/r/${r.json.spendId}`);
       return lines.join("\n");

@@ -41,6 +41,8 @@ const SPEND: Record<string, { text: string; tone: Tone }> = {
   FAILED: { text: "Failed · refunded", tone: "amber" },
   RESERVED: { text: "In flight", tone: "blue" },
   CAPTURED: { text: "In flight", tone: "blue" },
+  PROMISED: { text: "Set aside", tone: "blue" },
+  LAPSED: { text: "Released", tone: "grey" },
 };
 export function SpendStamp({ status, land }: { status: string; land?: boolean }) {
   const s = SPEND[status] ?? { text: status, tone: "grey" as Tone };

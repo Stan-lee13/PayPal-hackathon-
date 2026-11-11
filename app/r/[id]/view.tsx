@@ -1,11 +1,12 @@
 "use client";
 
+import { api } from "@/lib/client/api";
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { fingerprint, verifyChain, verifyDetached, verifySpend, type Envelope } from "@/lib/envelope/core";
+import { fingerprint, PROMISE_VERSION, verifyChain, verifyDetached, verifyPromise, verifySpend, type Envelope } from "@/lib/envelope/core";
 import { Figure, Stamp, usd } from "@/components/stationery";
 
-type ReceiptT = { v: string; spend: string; request: { amount: number; currency: string; payee: string; purpose: string; memo: string; at: string; leaf: string; nonce: string; v: string }; requestSig: string; chain: Array<{ id: string; hash: string; holder: string; holderLabel: string }>; principal: string; paypal: { mode: string; authorizationId: string; captureId: string; payoutBatchId: string; payoutItemId: string | null }; issuedAt: string; gateway: string; sig: string };
+type ReceiptT = { v: string; spend: string; request: { amount: number; currency: string; payee: string; purpose: string; memo: string; at: string; leaf: string; nonce: string; v: string }; requestSig: string; paidTo?: { account: string; agent: string; agentLabel: string; settledTo: string }; chain: Array<{ id: string; hash: string; holder: string; holderLabel: string }>; principal: string; paypal: { mode: string; authorizationId: string; captureId: string; payoutBatchId: string; payoutItemId: string | null }; issuedAt: string; gateway: string; sig: string };
 type Data = { ok: boolean; checks: Array<{ name: string; ok: boolean; detail?: string }>; receipt: ReceiptT; chain: Envelope; spend: { id: string; status: string; payoutStatus: string | null; payoutTransactionId: string | null; agentNote: string | null } };
 
 /** A barcode drawn from the spend id: decoration, but the same id always draws the same bars. */
@@ -26,8 +27,8 @@ export function ReceiptView({ id }: { id: string }) {
 
   useEffect(() => {
     void (async () => {
-      const r = await fetch(`/api/spends/${id}`, { cache: "no-store" });
-      const j = await r.json();
+      const r = await api(`/api/spends/${id}`);
+      const j = r.json;
       if (!r.ok) { setErr(j.error ?? "No receipt."); return; }
       setD(j);
       // Independent verification in THIS browser: nothing below trusts the server's answer.
@@ -36,13 +37,13 @@ export function ReceiptView({ id }: { id: string }) {
       const { sig, ...body } = data.receipt;
       const [chain, spend, rec] = await Promise.all([
         verifyChain(data.chain, at),
-        verifySpend({ request: data.receipt.request as never, sig: data.receipt.requestSig, chain: data.chain }, at),
+        (data.receipt.request.v === PROMISE_VERSION ? verifyPromise : verifySpend)({ request: data.receipt.request as never, sig: data.receipt.requestSig, chain: data.chain }, at),
         verifyDetached(data.receipt.gateway, "envelope-receipt/1", body, sig),
       ]);
       setLocal([
         { name: "Every block in the chain is signed by the holder above it, and only narrows it", ok: chain.ok },
         { name: "The root is signed by the owner's key named on the receipt", ok: chain.principal === data.receipt.principal },
-        { name: "The spend request is signed by the agent the last envelope was given to, and fits its limits", ok: spend.ok },
+        { name: `The ${data.receipt.request.v === PROMISE_VERSION ? "promise" : "spend request"} is signed by the agent the last envelope was given to, and fits its limits`, ok: spend.ok },
         { name: "The receipt is signed by the gateway", ok: rec },
       ]);
     })();
@@ -62,7 +63,8 @@ export function ReceiptView({ id }: { id: string }) {
         <article className="receipt relative mt-4 px-6 pt-7 text-[.8rem] leading-relaxed sm:px-8" aria-label="Receipt">
           <p className="text-center text-[.68rem] tracking-[.34em]">ENVELOPE · RECEIPT</p>
           <h1 className="mt-5 text-center font-sans"><span className="sr-only">Receipt: </span><Figure minor={r.request.amount} className="text-[3.4rem]" /></h1>
-          <p className="mt-2 text-center">to <b className="break-all">{r.request.payee}</b></p>
+          <p className="mt-2 text-center">to {r.paidTo ? <><Link href={`/a/${r.paidTo.agent}`} className="link !text-ink"><b>{r.paidTo.agentLabel}</b></Link> <span className="text-ink-2">account {r.paidTo.account}</span></> : <b className="break-all">{r.request.payee}</b>}</p>
+          {r.request.v === PROMISE_VERSION && <p className="text-center text-ink-2">set aside first, paid when the work was done</p>}
           <p className="text-center text-ink-2">{r.request.purpose}{r.request.memo ? ` · ${r.request.memo}` : ""}</p>
           <p className="text-center text-ink-2">{new Date(r.request.at).toISOString().replace("T", " ").slice(0, 19)} UTC</p>
           <Stamp tone="green" size="lg" land className="absolute right-4 top-[5.2rem]">Paid</Stamp>
@@ -76,7 +78,7 @@ export function ReceiptView({ id }: { id: string }) {
                 <p className="text-ink-2">{i === 0 ? "received the root envelope" : `was given a narrower envelope by ${d.chain[i - 1]!.body.holderLabel}`}: up to {usd(b.body.caps.limit)}, {b.body.caps.payees ? `only to ${b.body.caps.payees.join(", ")}` : "any payee"}, {b.body.caps.purposes ? `only for ${b.body.caps.purposes.join(", ")}` : "any purpose"}</p>
               </li>
             ))}
-            <li className="is-end"><p><b>{r.request.payee}</b> received {usd(r.request.amount)}</p>{d.spend.agentNote && <p className="text-ink-2">Agent's stated reason: “{d.spend.agentNote}”</p>}</li>
+            <li className="is-end"><p><b>{r.paidTo ? r.paidTo.agentLabel : r.request.payee}</b> received {usd(r.request.amount)}</p>{r.paidTo && <p className="text-ink-2">an agent with its own account ({r.paidTo.account}); PayPal paid its owner at {r.paidTo.settledTo}</p>}{d.spend.agentNote && <p className="text-ink-2">Agent's stated reason: “{d.spend.agentNote}”</p>}</li>
           </ol>
 
           <h2 className="mt-3 border-t border-dashed border-ink pt-4 text-[.68rem] tracking-[.2em]">PAYPAL</h2>
