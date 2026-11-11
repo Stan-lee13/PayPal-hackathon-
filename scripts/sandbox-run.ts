@@ -17,13 +17,20 @@ const { closeDb } = await import("../lib/db");
 const { getPayPal } = await import("../lib/paypal/client");
 const { getAuthorization } = await import("../lib/paypal/payments");
 
-const translator = (process.env.ENVELOPE_PAYEE_1 ?? `translator-${Date.now()}@example.com`).toLowerCase();
+const translatorPayPal = (process.env.ENVELOPE_PAYEE_1 ?? "translator@example.com").toLowerCase();
 const designer = (process.env.ENVELOPE_PAYEE_2 ?? `designer-${Date.now()}@example.com`).toLowerCase();
 const notAfter = new Date(Date.now() + 6 * 3600_000).toISOString();
 const steps: Array<Record<string, unknown>> = [];
 const log = (step: string, data: Record<string, unknown>) => { steps.push({ step, at: new Date().toISOString(), ...data }); console.log(`• ${step}`, JSON.stringify(data)); };
 
-const [ada, ops, loc, art] = await Promise.all([1, 2, 3, 4].map(() => E.generateKeyPair()));
+const [ada, ops, loc, art, bea, tr] = await Promise.all([1, 2, 3, 4, 5, 6].map(() => E.generateKeyPair()));
+
+// The translator is itself an agent, owned by someone else (Bea). It opens an account that can receive:
+// signed by its own key and by Bea's. Payments to its account number settle to Bea's PayPal address.
+const acct = await G.openAccount(await E.signAccount(tr!, bea!, { label: "translator-agent", ownerName: "Bea", settleTo: translatorPayPal }));
+const translator = E.accountPayee(tr!.publicKey);
+log("translator-agent opened an account that can receive", { account: acct.account, payAs: translator, answersForIt: "Bea", settlesTo: G.maskEmail(acct.settleTo) });
+
 const rootChain = await E.seal(ada!, { publicKey: ops!.publicKey, label: "ops-agent" }, { currency: "USD", limit: 20000, perPayment: 8000, payees: [translator, designer], purposes: ["translation", "design"], notAfter, splits: 2 });
 const root = await G.registerRoot({ chain: rootChain, principalName: "Ada (sandbox)", title: "Launch budget" });
 const pp = getPayPal();
@@ -32,7 +39,7 @@ log("sealed: PayPal hold placed", { root: root.id, order: root.paypalOrderId, au
 const locChain = await E.split(rootChain, ops!, { publicKey: loc!.publicKey, label: "localization-agent" }, { currency: "USD", limit: 6000, perPayment: 5000, payees: [translator], purposes: ["translation"], notAfter, splits: 0 });
 const artChain = await E.split(rootChain, ops!, { publicKey: art!.publicKey, label: "creative-agent" }, { currency: "USD", limit: 9000, perPayment: 8000, payees: [designer], purposes: ["design"], notAfter, splits: 0 });
 await G.announce(locChain); await G.announce(artChain);
-log("split offline into two sub-envelopes", { localization: "$60 · translator only", creative: "$90 · designer only" });
+log("split offline into two sub-envelopes", { localization: "$60 · translator-agent's account only", creative: "$90 · designer only" });
 
 // Know your agent: before doing any work, the designer asks whether creative-agent is good for $70.
 const good = await G.standing(await E.signHello(artChain, art!, { amount: 7000, payee: designer, purpose: "design" }));
@@ -40,8 +47,16 @@ log("proof of funds: the designer checked creative-agent before working", { good
 const bad = await G.standing(await E.signHello(artChain, art!, { amount: 2000, payee: "attacker@evil.example", purpose: "design" }));
 log("proof of funds refused for a payee that is not on the envelope", { good: bad.good, reasons: bad.reasons.map((x) => x.code) });
 
-const pay1 = await G.spend(await E.signSpend(locChain, loc!, { amount: 4500, payee: translator, purpose: "translation", memo: "FR + YO store strings" }));
-log("localization-agent paid $45", { status: pay1.status, capture: pay1.spend?.captureId, payoutBatch: pay1.spend?.payoutBatchId, payoutItem: pay1.spend?.payoutItemId, reasons: pay1.reasons });
+// Agent pays agent, with the money set aside first: translator-agent wants to see it before it starts.
+const pr = await G.promise(await E.signPromise(locChain, loc!, { amount: 4500, payee: translator, purpose: "translation", memo: "FR + YO store strings", ttl: 900 }));
+log("localization-agent set $45 aside for translator-agent (no money moved)", { status: pr.status, promise: pr.spend?.id, heldUntil: pr.note?.expiresAt, paypalHold: pr.note?.paypal.status, noteSignatureValid: pr.note ? await G.verifyPromiseNote(pr.note) : false, standsBehindThePayer: pr.note?.sponsors.map((x) => x.label).join(" → ") });
+const squeezed = await G.spend(await E.signSpend(locChain, loc!, { amount: 2000, payee: translator, purpose: "translation" }));
+log("the money set aside can't be spent on anything else", { status: squeezed.status, reasons: squeezed.reasons.map((r) => r.code) });
+const pay1 = await G.keep(await E.signKeep(loc!, pr.spend!.id, "pay"), "Translator delivered both files; paying what was set aside.");
+log("translator-agent delivered; localization-agent paid the $45 it had set aside", { status: pay1.status, capture: pay1.spend?.captureId, payoutBatch: pay1.spend?.payoutBatchId, payoutItem: pay1.spend?.payoutItemId, paidToAccount: pay1.receipt?.paidTo?.account, settledTo: pay1.spend?.payoutTo ? G.maskEmail(pay1.spend.payoutTo) : null, reasons: pay1.reasons });
+const pr2 = await G.promise(await E.signPromise(locChain, loc!, { amount: 1000, payee: translator, purpose: "translation", ttl: 600 }));
+const rel = await G.keep(await E.signKeep(loc!, pr2.spend!.id, "release"));
+log("a second $10 was set aside, then released: it went back into the envelope", { promised: pr2.status, afterRelease: rel.status });
 const pay2 = await G.spend(await E.signSpend(artChain, art!, { amount: 7000, payee: designer, purpose: "design", memo: "Launch banner set" }));
 log("creative-agent paid $70", { status: pay2.status, capture: pay2.spend?.captureId, payoutBatch: pay2.spend?.payoutBatchId, reasons: pay2.reasons });
 
@@ -60,6 +75,11 @@ log("owner revoked creative-agent; its next spend is denied", { status: dead.sta
 const { root: closed } = await G.revoke(await E.signRevoke(ada!, root.id));
 const authAfter = await getAuthorization(pp, root.authorizationId!);
 log("owner closed the envelope: PayPal released the rest of the hold", { captured: closed.capturedMinor, released: closed.releasedMinor, authorizationStatus: authAfter.status });
+
+const earner = await G.agentProfile(tr!.publicKey);
+log("translator-agent's record", { earned: `$${((earner?.record.receivedMinor ?? 0) / 100).toFixed(2)}`, timesPaid: earner?.record.received, holdsAnEnvelope: (earner?.accounts.length ?? 0) > 0 });
+const payer = await G.agentProfile(loc!.publicKey);
+log("localization-agent's record", { promisesKept: payer?.record.promisesKept, promisesReleasedOrLapsed: payer?.record.promisesLapsed });
 
 for (const s of [pay1, pay2]) if (s.spend) { const u = await G.syncSpend(s.spend.id); log("payout status", { spend: u.id, payee: u.payee, status: u.status, paypal: u.payoutStatus, transaction: u.payoutTransactionId }); }
 
