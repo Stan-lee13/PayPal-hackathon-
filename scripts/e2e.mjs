@@ -5,8 +5,11 @@
  *
  *   BASE=http://localhost:3000 node scripts/e2e.mjs            # optional: OUT=<dir> for screenshots
  *
- * Covers: seal with a key held in the browser, agents split, money set aside and paid agent to
- * agent, a direct payment, the earning agent's passport, a receipt checked against PayPal and in
+ * Covers: seal with a key held in the browser, agents split, money set aside and released when a
+ * named agent signs for the delivered work, a direct payment, a payment over the owner's threshold
+ * that waits for the owner's signature, the earning agent's passport and balance (transfer to another
+ * agent, a refused drain, an owner freeze, a withdrawal), its card (a subscription charged by the
+ * merchant, three declined charges, cancellation), the books, a receipt checked against PayPal and in
  * the browser, proof of funds, three attacks denied, close, and a second tab seeing the same data.
  */
 import { createRequire } from "node:module";
@@ -39,15 +42,68 @@ try {
   await page.waitForTimeout(1500);
   if (OUT) await page.screenshot({ path: `${OUT}/local-2-envelope.png`, fullPage: true }).catch(() => {});
   console.log("launch ran");
+  // over the owner's threshold: the agent can only ask; the owner signs in this browser
+  await page.getByRole("button", { name: "Agent asks for a bigger payment" }).click();
+  await page.getByTestId("approval").getByText(/asks to pay/).waitFor(T);
+  await page.getByTestId("approval").getByRole("button", { name: /^Sign & pay \$80\.00/ }).click();
+  await page.getByText(/^You signed\./).waitFor(T);
+  await page.getByTestId("approval").waitFor({ state: "detached", timeout: 20000 });
+  console.log("owner approval: asked, signed, paid");
   await page.getByText("held for this payee until").waitFor({ state: "detached", timeout: 20000 }).catch(() => {});
   if (OUT) await page.screenshot({ path: `${OUT}/local-2-envelope.png`, fullPage: true }).catch(() => {});
   // the agent that got paid
+  const envelopeUrl = page.url();
   await page.getByTestId("statement").getByRole("link", { name: /translator-agent/ }).first().click();
   await page.getByTestId("receives").waitFor(T);
   await page.getByTestId("incoming").getByText("from localization-agent").first().waitFor(T);
   if (OUT) await page.screenshot({ path: `${OUT}/local-3-earner.png`, fullPage: true }).catch(() => {});
   console.log("translator-agent passport shows income");
-  await page.goBack();
+  // its balance: the income stayed in its account; it pays another agent, is stopped from draining, is frozen by its owner, withdraws
+  const bal = page.getByTestId("balance");
+  const said = page.getByTestId("bank-result");
+  await bal.getByTestId("ledger").getByText("Paid in from").first().waitFor(T);
+  await bal.getByRole("button", { name: "Pay proofreader-agent $12" }).click();
+  await said.getByText("Moved.").waitFor(T);
+  await bal.getByTestId("ledger").getByText("Paid to").first().waitFor(T);
+  await bal.getByRole("button", { name: /drain to a stranger/ }).click();
+  await said.getByText("Refused.").waitFor(T);
+  await said.getByText(/OVER_ACCOUNT_LIMIT/).waitFor(T);
+  await bal.getByRole("button", { name: "Owner freezes it" }).click();
+  await said.getByText("Frozen.").waitFor(T);
+  await bal.getByRole("button", { name: "Pay proofreader-agent $12" }).click();
+  await said.getByText(/ACCOUNT_FROZEN/).waitFor(T);
+  await bal.getByRole("button", { name: "Owner lifts the freeze" }).click();
+  await said.getByText("Open again.").waitFor(T);
+  await bal.getByRole("button", { name: "Withdraw $20 to its owner" }).click();
+  await said.getByText(/Paid by PayPal\.|Sent to PayPal\./).waitFor(T);
+  await bal.getByTestId("ledger").getByText("Withdrawn to its owner at").first().waitFor(T);
+  if (OUT) await page.screenshot({ path: `${OUT}/local-3b-balance.png`, fullPage: true }).catch(() => {});
+  console.log("balance: agent-to-agent transfer booked, drain refused, freeze held, withdrawal sent");
+  // its card: a subscription it pays itself, that only the merchant can charge, within what the card allows
+  const cards = page.getByTestId("cards");
+  const cardSaid = page.getByTestId("card-result");
+  await cards.getByRole("button", { name: "Subscribe to Lexica Pro with its card" }).click();
+  await cardSaid.getByText(/^Charged/).waitFor(T);
+  await page.getByTestId("xenoncard").getByText("Lexica Pro").waitFor(T);
+  await page.getByTestId("card-used").getByText("1 of 2 charges").waitFor(T);
+  await cards.getByRole("button", { name: "Merchant charges the next period" }).click();
+  await cardSaid.getByText(/CHARGE_TOO_SOON/).waitFor(T);
+  await cards.getByRole("button", { name: "Merchant overcharges $19" }).click();
+  await cardSaid.getByText(/OVER_CARD_LIMIT/).waitFor(T);
+  await cards.getByRole("button", { name: "A thief uses the card details" }).click();
+  await cardSaid.getByText(/NOT_THE_MERCHANT/).waitFor(T);
+  if (OUT) await page.screenshot({ path: `${OUT}/local-3d-card.png`, fullPage: true }).catch(() => {});
+  await cards.getByRole("button", { name: "Agent cancels the card" }).click();
+  await cardSaid.getByText("Cancelled.").waitFor(T);
+  await cards.getByRole("button", { name: "Merchant charges the next period" }).click();
+  await cardSaid.getByText(/CARD_CANCELLED/).waitFor(T);
+  console.log("card: subscribed and charged once; too soon, overcharge and a thief declined; cancelled by the agent");
+  await page.goto(`${BASE}/bank`);
+  await page.getByTestId("bank-checks").getByText("Books balance").waitFor(T);
+  await page.getByTestId("bank-accounts").getByText("proofreader-agent").waitFor(T);
+  if (OUT) await page.screenshot({ path: `${OUT}/local-3c-bank.png`, fullPage: true }).catch(() => {});
+  console.log("the books balance");
+  await page.goto(envelopeUrl);
   await page.getByText("PayPal hold backing this envelope").waitFor(T);
   // receipt of the promise that was paid
   await page.getByRole("link", { name: "Receipt & authority chain →" }).last().click();
@@ -74,6 +130,22 @@ try {
   await page.getByText(/You closed the envelope\. PayPal released/).waitFor(T);
   await page.getByText("Closed", { exact: true }).first().waitFor(T);
   console.log("closed");
+  // the owner's treasury: totals, agents, and the books checked against PayPal
+  await page.goto(`${BASE}/treasury`);
+  await page.getByTestId("totals").waitFor(T);
+  await page.getByTestId("agents").getByText("creative-agent").first().waitFor(T);
+  await page.getByRole("button", { name: "Reconcile with PayPal" }).click();
+  await page.getByTestId("books").getByText(/\d+ of \d+ match PayPal/).waitFor(T);
+  const books = await page.getByTestId("books").getByText(/\d+ of \d+ match PayPal/).innerText();
+  if (OUT) await page.screenshot({ path: `${OUT}/local-6-treasury.png`, fullPage: true }).catch(() => {});
+  const m = books.match(/(\d+) of (\d+)/i);
+  if (!m || m[1] !== m[2]) throw new Error(`Treasury books do not match PayPal: ${books}`);
+  console.log("treasury:", books.toLowerCase());
+  // a signed, portable record
+  await page.getByTestId("agents").getByRole("link", { name: "localization-agent" }).first().click();
+  await page.getByRole("button", { name: "Get a signed reference" }).click();
+  await page.getByTestId("reference").getByText("Signature checked in your browser.").waitFor(T);
+  console.log("reference signed and verified");
   const p2 = await ctx.newPage();
   await p2.goto(`${BASE}/console`);
   await p2.getByText("Store launch budget").first().waitFor(T);

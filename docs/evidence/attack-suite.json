@@ -1,9 +1,9 @@
 {
-  "ranAt": "2026-11-11T12:09:07.481Z",
+  "ranAt": "2026-11-11T15:33:18.260Z",
   "paypal": "built-in simulator",
   "summary": {
-    "attacks": 90,
-    "refused": 90,
+    "attacks": 163,
+    "refused": 163,
     "movedMoney": 0
   },
   "byCategory": {
@@ -18,8 +18,8 @@
       "movedMoney": 0
     },
     "Bad request": {
-      "attacks": 22,
-      "refused": 22,
+      "attacks": 26,
+      "refused": 26,
       "movedMoney": 0
     },
     "Budget": {
@@ -33,8 +33,8 @@
       "movedMoney": 0
     },
     "Promise": {
-      "attacks": 12,
-      "refused": 12,
+      "attacks": 29,
+      "refused": 29,
       "movedMoney": 0
     },
     "Account": {
@@ -45,6 +45,16 @@
     "Forged evidence": {
       "attacks": 7,
       "refused": 7,
+      "movedMoney": 0
+    },
+    "Balance": {
+      "attacks": 27,
+      "refused": 27,
+      "movedMoney": 0
+    },
+    "Card": {
+      "attacks": 25,
+      "refused": 25,
       "movedMoney": 0
     }
   },
@@ -583,6 +593,62 @@
     },
     {
       "category": "Promise",
+      "attack": "the payee signs its own acceptance when another key was named",
+      "refused": true,
+      "how": "refused: This promise names a different key as the one that can release it.",
+      "moneyMoved": false
+    },
+    {
+      "category": "Promise",
+      "attack": "an outsider signs the acceptance",
+      "refused": true,
+      "how": "refused: This promise names a different key as the one that can release it.",
+      "moneyMoved": false
+    },
+    {
+      "category": "Promise",
+      "attack": "the payee collects a promise that named no release key",
+      "refused": true,
+      "how": "refused: This promise can only be paid by the agent that made it.",
+      "moneyMoved": false
+    },
+    {
+      "category": "Promise",
+      "attack": "a genuine acceptance pointed at a different promise",
+      "refused": true,
+      "how": "refused: That acceptance isn't properly signed, or is too old.",
+      "moneyMoved": false
+    },
+    {
+      "category": "Promise",
+      "attack": "a keep signature replayed as an acceptance",
+      "refused": true,
+      "how": "refused: That acceptance isn't properly signed, or is too old.",
+      "moneyMoved": false
+    },
+    {
+      "category": "Promise",
+      "attack": "an acceptance dated ten minutes ago",
+      "refused": true,
+      "how": "refused: That acceptance isn't properly signed, or is too old.",
+      "moneyMoved": false
+    },
+    {
+      "category": "Promise",
+      "attack": "release key set to something that is not a key",
+      "refused": true,
+      "how": "MALFORMED",
+      "moneyMoved": false
+    },
+    {
+      "category": "Promise",
+      "attack": "the named key accepts after the owner revoked the payer",
+      "refused": true,
+      "how": "REVOKED",
+      "moneyMoved": false
+    },
+    {
+      "category": "Promise",
       "attack": "forged note: amount edited",
       "refused": true,
       "how": "verification failed",
@@ -593,6 +659,69 @@
       "attack": "forged note: signed by a different key",
       "refused": true,
       "how": "valid only under the attacker's key; a payee pins the gateway's key",
+      "moneyMoved": false
+    },
+    {
+      "category": "Promise",
+      "attack": "pay over the owner's approval threshold without asking",
+      "refused": true,
+      "how": "NEEDS_OWNER_APPROVAL",
+      "moneyMoved": false
+    },
+    {
+      "category": "Promise",
+      "attack": "set the money aside to pay it oneself later",
+      "refused": true,
+      "how": "NEEDS_OWNER_APPROVAL",
+      "moneyMoved": false
+    },
+    {
+      "category": "Promise",
+      "attack": "name a friendly agent instead of the owner as approver",
+      "refused": true,
+      "how": "NEEDS_OWNER_APPROVAL",
+      "moneyMoved": false
+    },
+    {
+      "category": "Promise",
+      "attack": "name oneself as approver",
+      "refused": true,
+      "how": "NEEDS_OWNER_APPROVAL",
+      "moneyMoved": false
+    },
+    {
+      "category": "Promise",
+      "attack": "the agent pays its own request that awaits the owner",
+      "refused": true,
+      "how": "refused: This payment is over the owner's approval threshold: only the owner's signature can pay it",
+      "moneyMoved": false
+    },
+    {
+      "category": "Promise",
+      "attack": "the agent signs the owner's approval itself",
+      "refused": true,
+      "how": "refused: This promise names a different key as the one that can release it.",
+      "moneyMoved": false
+    },
+    {
+      "category": "Promise",
+      "attack": "a sub-envelope that drops the approval threshold",
+      "refused": true,
+      "how": "SPLIT_NOT_ALLOWED, WIDENED_APPROVAL",
+      "moneyMoved": false
+    },
+    {
+      "category": "Promise",
+      "attack": "a sub-envelope that raises the approval threshold",
+      "refused": true,
+      "how": "WIDENED_APPROVAL",
+      "moneyMoved": false
+    },
+    {
+      "category": "Promise",
+      "attack": "split payments just under the threshold are not an attack, but one cent over is",
+      "refused": true,
+      "how": "NEEDS_OWNER_APPROVAL",
       "moneyMoved": false
     },
     {
@@ -677,6 +806,398 @@
       "attack": "proof of funds for a payee the agent can't pay",
       "refused": true,
       "how": "PAYEE_NOT_ALLOWED",
+      "moneyMoved": false
+    },
+    {
+      "category": "Bad request",
+      "attack": "replay a paid request with its signature re-spelled: base64 padding added",
+      "refused": true,
+      "how": "NOT_THE_HOLDER",
+      "moneyMoved": false
+    },
+    {
+      "category": "Bad request",
+      "attack": "replay a paid request with its signature re-spelled: a space in front",
+      "refused": true,
+      "how": "NOT_THE_HOLDER",
+      "moneyMoved": false
+    },
+    {
+      "category": "Bad request",
+      "attack": "replay a paid request with its signature re-spelled: the other base64 alphabet",
+      "refused": true,
+      "how": "NOT_THE_HOLDER",
+      "moneyMoved": false
+    },
+    {
+      "category": "Bad request",
+      "attack": "replay a paid request with its signature re-spelled: spare bits flipped in the last character",
+      "refused": true,
+      "how": "NOT_THE_HOLDER",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "move another agent's balance by writing its key in the request",
+      "refused": true,
+      "how": "NOT_THE_HOLDER",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "raise the amount after the agent signed",
+      "refused": true,
+      "how": "NOT_THE_HOLDER",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "redirect a signed transfer to another payee",
+      "refused": true,
+      "how": "NOT_THE_HOLDER",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "turn a signed payment into a withdrawal",
+      "refused": true,
+      "how": "NOT_THE_HOLDER",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "a signature made for another kind of message, reused as a transfer",
+      "refused": true,
+      "how": "NOT_THE_HOLDER",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "the owner moves the agent's money without the agent's key",
+      "refused": true,
+      "how": "NOT_THE_HOLDER",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "spend one cent more than the balance",
+      "refused": true,
+      "how": "INSUFFICIENT_BALANCE",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "pay more at once than the owner allows",
+      "refused": true,
+      "how": "OVER_ACCOUNT_LIMIT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "a negative amount, to pull money in",
+      "refused": true,
+      "how": "BAD_AMOUNT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "a fraction of a cent",
+      "refused": true,
+      "how": "BAD_AMOUNT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "pay itself to inflate its record",
+      "refused": true,
+      "how": "MALFORMED",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "a transfer signed ten minutes ago",
+      "refused": true,
+      "how": "STALE_REQUEST",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "a transfer from a key that has no account",
+      "refused": true,
+      "how": "NO_BALANCE_ACCOUNT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "pay an account number nobody opened",
+      "refused": true,
+      "how": "PAYEE_ACCOUNT_UNKNOWN",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "credit the same income twice by presenting the payment again",
+      "refused": true,
+      "how": "ignored: the ledger takes one entry per payment",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "the agent swaps in an owner key of its own to drop the cap",
+      "refused": true,
+      "how": "refused: This account already has an owner. Only that owner can co-sign a change to it.",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "a stranger freezes someone's account",
+      "refused": true,
+      "how": "refused: Only the owner who answers for an account can freeze it.",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "replay a completed transfer to move the money again",
+      "refused": true,
+      "how": "ignored: already booked once",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "transfer receipt with the amount edited",
+      "refused": true,
+      "how": "verification failed",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "transfer receipt naming a different recipient",
+      "refused": true,
+      "how": "verification failed",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "eight transfers at once for a balance that covers four",
+      "refused": true,
+      "how": "4 booked, 4 refused INSUFFICIENT_BALANCE; the books balance",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "pay out of a frozen account",
+      "refused": true,
+      "how": "ACCOUNT_FROZEN",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "withdraw from a frozen account",
+      "refused": true,
+      "how": "ACCOUNT_FROZEN",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "the agent lifts its owner's freeze itself",
+      "refused": true,
+      "how": "refused: Only the owner who answers for an account can freeze it.",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "replay a completed transfer with its signature re-spelled",
+      "refused": true,
+      "how": "NOT_THE_HOLDER",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "present the owner's earlier unfreeze again to lift a newer freeze",
+      "refused": true,
+      "how": "refused: A newer freeze or unfreeze has already been applied to this account.",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "a freeze signed by the owner, flipped to an unfreeze",
+      "refused": true,
+      "how": "refused: That isn't properly signed, or is too old.",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "someone who copied the card's details charges it",
+      "refused": true,
+      "how": "NOT_THE_MERCHANT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "another merchant charges a card locked to Lexica",
+      "refused": true,
+      "how": "NOT_THE_MERCHANT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "a charge that names the real merchant but is signed by someone else",
+      "refused": true,
+      "how": "NOT_THE_MERCHANT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "the agent charges its own card to slip money past its owner's rules",
+      "refused": true,
+      "how": "NOT_THE_MERCHANT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "the merchant charges more than the card allows",
+      "refused": true,
+      "how": "OVER_CARD_LIMIT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "the merchant raises the amount after signing the charge",
+      "refused": true,
+      "how": "NOT_THE_MERCHANT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "a negative charge",
+      "refused": true,
+      "how": "BAD_AMOUNT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "a charge signed ten minutes ago",
+      "refused": true,
+      "how": "STALE_REQUEST",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "a charge on a card that does not exist",
+      "refused": true,
+      "how": "UNKNOWN_CARD",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "a signature made for a transfer, reused as a charge",
+      "refused": true,
+      "how": "NOT_THE_MERCHANT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "a card signed by someone else on the agent's balance",
+      "refused": true,
+      "how": "refused: the card is not signed by the key whose balance it would charge",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "the merchant widens the card after the agent signed it",
+      "refused": true,
+      "how": "refused: the card is not signed by the key whose balance it would charge",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "the merchant re-points the card at itself after the agent signed it for another",
+      "refused": true,
+      "how": "refused: the card is not signed by the key whose balance it would charge",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "a card that never expires",
+      "refused": true,
+      "how": "refused: a card needs an expiry after its issue, at most two years on",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "the same signed charge presented twice",
+      "refused": true,
+      "how": "ignored: already charged once",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "the same charge with its signature re-spelled",
+      "refused": true,
+      "how": "NOT_THE_MERCHANT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "a second charge inside the same billing period",
+      "refused": true,
+      "how": "CHARGE_TOO_SOON",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "the merchant cancels the agent's card for it",
+      "refused": true,
+      "how": "refused: Only the card's holder or the owner of its account can cancel it.",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "a stranger cancels the agent's card",
+      "refused": true,
+      "how": "refused: Only the card's holder or the owner of its account can cancel it.",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "five charges at once on a card that allows two",
+      "refused": true,
+      "how": "2 charged, 3 refused CARD_USED_UP",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "a card that allows more per charge than the owner allows per payment",
+      "refused": true,
+      "how": "OVER_ACCOUNT_LIMIT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "card charges that would take the day over the owner's daily limit",
+      "refused": true,
+      "how": "OVER_DAILY_LIMIT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "charging a card while the owner has the account frozen",
+      "refused": true,
+      "how": "ACCOUNT_FROZEN",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "charging a card its owner cancelled",
+      "refused": true,
+      "how": "CARD_CANCELLED",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "presenting the signed card again to bring a cancelled card back",
+      "refused": true,
+      "how": "CARD_CANCELLED",
       "moneyMoved": false
     }
   ]

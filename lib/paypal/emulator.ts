@@ -106,6 +106,8 @@ function route(input: string, init: RequestInit): Response {
     const sbid = body?.sender_batch_header?.sender_batch_id;
     const it = body?.items?.[0];
     if (!sbid || !it?.receiver || !it?.amount?.value) return err(400, "VALIDATION_ERROR", "VALIDATION_ERROR", "sender_batch_id, receiver and amount are required.");
+    // Tests: an address containing "refused" makes PayPal reject the payout outright.
+    if (/refused/i.test(it.receiver)) return err(422, "UNPROCESSABLE_ENTITY", "RECEIVER_ACCOUNT_LOCKED", "The receiver cannot be paid.");
     if (Object.values(s.payouts).some((x) => x.sender_batch_id === sbid)) return err(400, "USER_BUSINESS_ERROR", "DUPLICATE_REQUEST_ID", "Batch with given sender_batch_id already exists.");
     const po: SimPayout = { batch_id: id("SIMBATCH"), sender_batch_id: sbid, item_id: id("SIMITEM"), transaction_id: id("SIMTXN"), item_status: /unclaimed/i.test(it.receiver) ? "UNCLAIMED" : "SUCCESS", receiver: it.receiver, amount: it.amount };
     s.payouts[po.batch_id] = po;

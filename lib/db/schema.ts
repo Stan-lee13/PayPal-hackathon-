@@ -6,7 +6,7 @@
  */
 import { sql } from "drizzle-orm";
 import { bigserial, index, integer, jsonb, pgTable, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
-import type { Block, Caps, SignedAccount, SignedPromise, SignedSpend, Violation } from "../envelope/core";
+import type { Block, Caps, SignedAccount, SignedCard, SignedCharge, SignedPromise, SignedSpend, SignedTransfer, Violation } from "../envelope/core";
 
 const ts = (name: string) => timestamp(name, { withTimezone: true, mode: "date" });
 
@@ -64,11 +64,14 @@ export type Receipt = {
   request: SignedSpend["request"] | SignedPromise["request"];
   requestSig: string;
   /** Present when the payee is an agent's account: whose account it is and where PayPal sent the money. */
-  paidTo?: { account: string; agent: string; agentLabel: string; settledTo: string };
+  paidTo?: { account: string; agent: string; agentLabel: string; settledTo: string; /** Set when the money was credited to the agent's balance here and not paid out by PayPal. */ held?: { ledgerEntry: number; balanceAfterMinor: number } };
+  /** Present when the money was released by the key the promise named: who signed for the work, and its fingerprint. */
+  releasedBy?: { key: string; work: string; note: string; at: string };
   /** The authority chain: block ids and hashes, root first. */
   chain: Array<{ id: string; hash: string; holder: string; holderLabel: string }>;
   principal: string;
-  paypal: { mode: string; authorizationId: string; captureId: string; payoutBatchId: string; payoutItemId: string | null };
+  /** `payoutBatchId` is null when the money was credited to an agent's balance: there was no payout. */
+  paypal: { mode: string; authorizationId: string; captureId: string; payoutBatchId: string | null; payoutItemId: string | null };
   issuedAt: string;
   gateway: string;
   sig: string;
@@ -105,6 +108,8 @@ export const spends = pgTable("spends", {
   /** Set for promises: money set aside for the payee until this time. */
   promiseExpiresAt: ts("promise_expires_at"),
   promiseNote: jsonb("promise_note").$type<PromiseNote>(),
+  /** The signed acceptance that released a promise, when it was released by the key it named. */
+  delivery: jsonb("delivery").$type<{ by: string; work: string; note: string; at: string; sig: string }>(),
   createdAt: ts("created_at").notNull().defaultNow(),
   settledAt: ts("settled_at"),
 }, (t) => [index("spends_root").on(t.rootId, t.createdAt), index("spends_payee_agent").on(t.payeeAgent, t.createdAt)]);
@@ -118,6 +123,8 @@ export type PromiseNote = {
   root: string;
   amount: number; currency: string; payee: string; purpose: string;
   expiresAt: string;
+  /** Set when the promise names a key whose signed acceptance pays it. */
+  releaseBy?: string;
   paypal: { mode: string; authorizationId: string; status: string };
   issuedAt: string; gateway: string; sig: string;
 };
@@ -133,7 +140,93 @@ export const accounts = pgTable("accounts", {
   settleTo: text("settle_to").notNull(),
   signed: jsonb("signed").$type<SignedAccount>().notNull(),
   openedAt: ts("opened_at").notNull().defaultNow(),
+  /** "hold": income stays here as a balance. "settle": income is paid straight out to settleTo. */
+  mode: text("mode", { enum: ["settle", "hold"] }).notNull().default("settle"),
+  /** What the account holds, in minor units. Only ever changed together with a ledger entry. */
+  balanceMinor: integer("balance_minor").notNull().default(0),
+  /** Owner's cap on a single payment out of the balance; null = none. */
+  perPaymentMinor: integer("per_payment_minor"),
+  frozenAt: ts("frozen_at"),
+  /** The signing time of the last freeze or unfreeze applied; an older one is refused. */
+  freezeSignedAt: ts("freeze_signed_at"),
+  /** Owner's cap on what may leave in any 24 hours (payments and card charges); null = none. */
+  perDayMinor: integer("per_day_minor"),
 });
+
+/** Cards an agent has issued on its balance. The signed card is the authority; the counters are what has been used. */
+export const cards = pgTable("cards", {
+  id: text("id").primaryKey(),
+  /** A number to show and say aloud. It grants nothing: only the merchant's key can charge the card. */
+  number: text("number").notNull(),
+  holder: text("holder").notNull(),
+  label: text("label").notNull(),
+  merchantAgent: text("merchant_agent").notNull(),
+  perChargeMinor: integer("per_charge_minor").notNull(),
+  maxCharges: integer("max_charges").notNull(),
+  everySeconds: integer("every_seconds").notNull(),
+  notAfter: ts("not_after").notNull(),
+  signed: jsonb("signed").$type<SignedCard>().notNull(),
+  charges: integer("charges").notNull().default(0),
+  chargedMinor: integer("charged_minor").notNull().default(0),
+  lastChargeAt: ts("last_charge_at"),
+  cancelledAt: ts("cancelled_at"),
+  cancelledBy: text("cancelled_by"),
+  createdAt: ts("created_at").notNull().defaultNow(),
+}, (t) => [index("cards_holder").on(t.holder, t.createdAt), index("cards_merchant").on(t.merchantAgent, t.createdAt)]);
+
+/** Every change to a balance, one row each. `(agent, kind, ref)` is unique so a credit or debit can never be applied twice. */
+export const ledger = pgTable("ledger", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  agent: text("agent").notNull(),
+  kind: text("kind", { enum: ["income", "transfer_in", "transfer_out", "payout", "withdrawal", "reversal"] }).notNull(),
+  /** The spend or transfer this entry belongs to. */
+  ref: text("ref").notNull(),
+  deltaMinor: integer("delta_minor").notNull(),
+  balanceAfterMinor: integer("balance_after_minor").notNull(),
+  counterparty: text("counterparty"),
+  memo: text("memo").notNull().default(""),
+  createdAt: ts("created_at").notNull().defaultNow(),
+}, (t) => [uniqueIndex("ledger_once").on(t.agent, t.kind, t.ref), index("ledger_agent").on(t.agent, t.id)]);
+
+export const TRANSFER_STATES = ["DENIED", "BOOKED", "SENDING", "PAID", "PAYOUT_PENDING", "UNCLAIMED", "FAILED"] as const;
+export type TransferReceipt = {
+  v: "envelope-transfer-receipt/1";
+  transfer: string;
+  request: SignedTransfer["request"] | SignedCharge["request"];
+  requestSig: string;
+  /** Present when the money was pulled by a merchant through a card the agent issued. */
+  card?: { id: string; number: string; label: string; charge: number; of: number };
+  from: { account: string; agent: string; agentLabel: string };
+  /** A book transfer between two accounts here, or a PayPal payout. */
+  to: { kind: "account"; account: string; agent: string; agentLabel: string } | { kind: "paypal"; address: string; payoutBatchId: string; mode: string };
+  balanceAfterMinor: number;
+  issuedAt: string; gateway: string; sig: string;
+};
+/** Money leaving an agent's balance. */
+export const transfers = pgTable("transfers", {
+  id: text("id").primaryKey(),
+  fromAgent: text("from_agent").notNull(),
+  kind: text("kind", { enum: ["pay", "withdraw", "charge"] }).notNull(),
+  /** Set when a merchant pulled the money through a card. */
+  cardId: text("card_id"),
+  payee: text("payee").notNull(),
+  toAgent: text("to_agent"),
+  /** PayPal address when the money leaves through a payout. */
+  payoutTo: text("payout_to"),
+  amountMinor: integer("amount_minor").notNull(),
+  currency: text("currency").notNull(),
+  purpose: text("purpose").notNull().default(""),
+  memo: text("memo").notNull().default(""),
+  requestHash: text("request_hash").notNull().unique(),
+  signed: jsonb("signed").$type<SignedTransfer | SignedCharge>().notNull(),
+  status: text("status", { enum: TRANSFER_STATES }).notNull(),
+  reasons: jsonb("reasons").$type<Violation[]>().notNull().default([]),
+  payoutBatchId: text("payout_batch_id"),
+  payoutItemId: text("payout_item_id"),
+  payoutStatus: text("payout_status"),
+  receipt: jsonb("receipt").$type<TransferReceipt>(),
+  createdAt: ts("created_at").notNull().defaultNow(),
+}, (t) => [index("transfers_from").on(t.fromAgent, t.createdAt), index("transfers_to").on(t.toAgent, t.createdAt), index("transfers_card").on(t.cardId, t.createdAt)]);
 
 /** The gateway's own signing key for receipts (generated on first use). */
 export const gatewayKeys = pgTable("gateway_keys", {
@@ -186,3 +279,6 @@ export type Root = typeof roots.$inferSelect;
 export type BlockRow = typeof blocks.$inferSelect;
 export type Spend = typeof spends.$inferSelect;
 export type Account = typeof accounts.$inferSelect;
+export type LedgerEntry = typeof ledger.$inferSelect;
+export type Transfer = typeof transfers.$inferSelect;
+export type Card = typeof cards.$inferSelect;

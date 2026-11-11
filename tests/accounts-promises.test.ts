@@ -37,7 +37,7 @@ d("accounts and promises (simulated PayPal)", async () => {
   beforeEach(async () => {
     resetSimMemory();
     G.forgetGatewayKey();
-    await getDb().execute(sql`truncate table audit_log, spends, blocks, roots, demo_keys, gateway_keys, emulator_state, rate_limits, accounts restart identity cascade`);
+    await getDb().execute(sql`truncate table audit_log, spends, blocks, roots, demo_keys, gateway_keys, emulator_state, rate_limits, accounts, ledger, transfers, cards restart identity cascade`);
   });
 
   it("an account can only be opened with the agent's own signature, so income can't be hijacked", async () => {
@@ -160,6 +160,99 @@ d("accounts and promises (simulated PayPal)", async () => {
     expect(dead.status).toBe("LAPSED");
     expect((await sim.simCalls()).some((x) => x.includes("/capture"))).toBe(false);
     expect((await G.agentProfile(w.loc.publicKey))!.record).toMatchObject({ promisesKept: 0, promisesLapsed: 3 });
+  });
+
+  it("a promise can name a key whose signed acceptance pays it, and the receipt carries the work's fingerprint", async () => {
+    const w = await world();
+    const checker = await E.generateKeyPair();
+    const work = await E.sha256("fr.json + yo.json, as delivered");
+    // "paid on verified work": the promise names a third agent that checks the delivery
+    const p = await G.promise(await E.signPromise(w.locChain, w.loc, { amount: 4500, payee: w.payee, purpose: "translation", ttl: 600, releaseBy: checker.publicKey }));
+    expect(p.status).toBe("PROMISED");
+    expect(p.note!.releaseBy).toBe(checker.publicKey);
+    expect(await G.verifyPromiseNote(p.note!)).toBe(true);
+    // nobody else can release it: not the payee, not an outsider, not an edited statement
+    await expect(G.accept(await E.signAccept(w.tr, p.spend!.id, { work }))).rejects.toThrow(/names a different key/);
+    await expect(G.accept(await E.signAccept(w.rogue, p.spend!.id, { work }))).rejects.toThrow(/names a different key/);
+    const real = await E.signAccept(checker, p.spend!.id, { work, note: "Both files checked against the brief." });
+    await expect(G.accept({ ...real, request: { ...real.request, promise: "pr_other" } })).rejects.toThrow(/properly signed/);
+    expect((await sim.simCalls()).some((c) => c.includes("/capture"))).toBe(false);
+    // the named key signs: PayPal captures and pays, with no further word from the payer
+    const paid = await G.accept(real);
+    expect(paid.status).toBe("PAID");
+    expect(paid.receipt!.releasedBy).toEqual({ key: checker.publicKey, work, note: "Both files checked against the brief.", at: real.request.at });
+    expect(paid.receipt!.paidTo!.settledTo).toBe("bea@example.com");
+    expect(await G.verifyReceipt(paid.receipt!)).toBe(true);
+    expect(await blockRow(w.root.id)).toMatchObject({ reservedMinor: 0, spentMinor: 4500 });
+    // accepting twice pays once
+    expect(await G.accept(await E.signAccept(checker, p.spend!.id, { work }))).toMatchObject({ status: "PAID", duplicate: true });
+    expect((await sim.simCalls()).filter((c) => c.includes("/capture"))).toHaveLength(1);
+
+    // a promise that names no key can only be paid by its maker
+    const plain = await G.promise(await E.signPromise(w.locChain, w.loc, { amount: 1000, payee: w.payee, purpose: "translation", ttl: 600 }));
+    await expect(G.accept(await E.signAccept(w.tr, plain.spend!.id))).rejects.toThrow(/only be paid by the agent that made it/);
+    // "paid on delivery": naming the payee itself; but the owner's revocation still wins
+    await G.keep(await E.signKeep(w.loc, plain.spend!.id, "release"));
+    const cod = await G.promise(await E.signPromise(w.locChain, w.loc, { amount: 1000, payee: w.payee, purpose: "translation", ttl: 600, releaseBy: w.tr.publicKey }));
+    await G.revoke(await E.signRevoke(w.ada, w.locChain[1]!.body.id));
+    const late = await G.accept(await E.signAccept(w.tr, cod.spend!.id, { work }));
+    expect(late.status).toBe("LAPSED");
+    expect((await sim.simCalls()).filter((c) => c.includes("/capture"))).toHaveLength(1);
+  });
+
+  it("above the owner's threshold an agent can only ask: the owner's signature pays, and the threshold can't be raised down the chain", async () => {
+    const [ada, ops, sub1, rogue] = await Promise.all([1, 2, 3, 4].map(() => E.generateKeyPair()));
+    const caps: E.Caps = { currency: "USD", limit: 20000, perPayment: 8000, payees: ["designer@example.com"], purposes: ["design"], notAfter: EXP, splits: 2, approveOver: 5000 };
+    const rootChain = await E.seal(ada!, { publicKey: ops!.publicKey, label: "ops-agent" }, caps);
+    await G.registerRoot({ chain: rootChain, principalName: "Ada", title: "Launch budget" });
+    const pay = (amount: number) => E.signSpend(rootChain, ops!, { amount, payee: "designer@example.com", purpose: "design" }).then((x) => G.spend(x));
+    // at or under the threshold the agent pays on its own
+    expect((await pay(5000)).status).toBe("PAID");
+    // over it, a payment is refused outright
+    const direct = await pay(5001);
+    expect(codes(direct.reasons)).toEqual(["NEEDS_OWNER_APPROVAL"]);
+    // so is setting it aside for itself to pay later, or naming anyone but the owner
+    const self = await G.promise(await E.signPromise(rootChain, ops!, { amount: 7000, payee: "designer@example.com", purpose: "design", ttl: 600 }));
+    expect(codes(self.reasons)).toEqual(["NEEDS_OWNER_APPROVAL"]);
+    const friend = await G.promise(await E.signPromise(rootChain, ops!, { amount: 7000, payee: "designer@example.com", purpose: "design", ttl: 600, releaseBy: rogue!.publicKey }));
+    expect(codes(friend.reasons)).toEqual(["NEEDS_OWNER_APPROVAL"]);
+    // the standing a payee sees says the same thing
+    const st = await G.standing(await E.signHello(rootChain, ops!, { amount: 7000, payee: "designer@example.com", purpose: "design" }));
+    expect(st.good).toBe(false);
+    expect(st.reasons.map((x) => x.code)).toEqual(["NEEDS_OWNER_APPROVAL"]);
+
+    // the agent asks: money set aside, naming the owner
+    const ask = await G.promise(await E.signPromise(rootChain, ops!, { amount: 7000, payee: "designer@example.com", purpose: "design", ttl: 600, releaseBy: ada!.publicKey }), "extra banner sizes");
+    expect(ask.status).toBe("PROMISED");
+    expect((await G.treasury(ada!.publicKey))!.approvals).toMatchObject([{ id: ask.spend!.id, agent: "ops-agent", amountMinor: 7000, agentNote: "extra banner sizes" }]);
+    // the agent cannot pay it itself, and nobody else can sign for the owner
+    await expect(G.keep(await E.signKeep(ops!, ask.spend!.id, "pay"))).rejects.toThrow(/only the owner's signature/);
+    await expect(G.accept(await E.signAccept(ops!, ask.spend!.id))).rejects.toThrow(/names a different key/);
+    expect((await sim.simCalls()).filter((c) => c.includes("/capture"))).toHaveLength(1);
+    // the owner signs: PayPal pays
+    const ok = await G.accept(await E.signAccept(ada!, ask.spend!.id, { note: "Approved." }));
+    expect(ok.status).toBe("PAID");
+    expect(ok.receipt!.releasedBy!.key).toBe(ada!.publicKey);
+    expect((await G.treasury(ada!.publicKey))!.approvals).toEqual([]);
+
+    // the owner can also say no: the money goes back
+    const ask2 = await G.promise(await E.signPromise(rootChain, ops!, { amount: 6000, payee: "designer@example.com", purpose: "design", ttl: 600, releaseBy: ada!.publicKey }));
+    const no = await G.accept(await E.signAccept(ada!, ask2.spend!.id, { decline: true }));
+    expect(no.status).toBe("LAPSED");
+    expect(no.reasons[0]!.detail).toBe("declined by the key it named");
+    expect(await blockRow(rootChain[0]!.body.id)).toMatchObject({ reservedMinor: 0, spentMinor: 12000 });
+
+    // down the chain the threshold carries over, may be lowered, and can never be raised or dropped
+    const inherited = await E.split(rootChain, ops!, { publicKey: sub1!.publicKey, label: "sub" }, { ...caps, limit: 6000, perPayment: 6000, splits: 0, approveOver: undefined });
+    expect(inherited[1]!.body.caps.approveOver).toBe(5000);
+    expect((await E.split(rootChain, ops!, { publicKey: sub1!.publicKey, label: "sub" }, { ...caps, limit: 6000, perPayment: 6000, splits: 0, approveOver: 1000 }))[1]!.body.caps.approveOver).toBe(1000);
+    await expect(E.split(rootChain, ops!, { publicKey: sub1!.publicKey, label: "sub" }, { ...caps, limit: 6000, perPayment: 6000, splits: 0, approveOver: 9000 })).rejects.toThrow(/owner's signature/);
+    // a hand-forged block that drops the threshold does not verify
+    const { approveOver: _drop, ...without } = caps;
+    const body: E.BlockBody = { v: E.BLOCK_VERSION, id: E.randomId("env"), root: rootChain[0]!.body.id, parent: await E.blockHash(rootChain[0]!), issuer: ops!.publicKey, holder: rogue!.publicKey, holderLabel: "helper", caps: E.normalizeCaps({ ...without, limit: 8000, splits: 0 }), issuedAt: new Date().toISOString() };
+    const forged: E.Envelope = [...rootChain, { body, sig: await E.signDetached(ops!.privateKey, E.BLOCK_VERSION, body) }];
+    const stolen = await G.spend(await E.signSpend(forged, rogue!, { amount: 8000, payee: "designer@example.com", purpose: "design" }));
+    expect(codes(stolen.reasons)).toEqual(["WIDENED_APPROVAL"]);
   });
 
   it("closing the envelope releases open promises and voids the whole hold", async () => {

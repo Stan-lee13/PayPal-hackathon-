@@ -7,8 +7,9 @@ import { asc, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "../db";
 import { auditLog, roots } from "../db/schema";
-import { act, attachDemoAgents, createDemoAgents, DEMO_ACTIONS, demoHello, ensureCounterparty, hasDemoAgents, isDemoAgent, runTool, TOOL_AGENTS } from "../demo/agents";
+import { act, attachDemoAgents, BANK_ACTIONS, bankAct, createDemoAgents, DEMO_ACTIONS, demoHello, ensureCounterparty, hasDemoAgents, isBankDemoAgent, isDemoAgent, runTool, TOOL_AGENTS } from "../demo/agents";
 import * as E from "../envelope/core";
+import * as B from "../gateway/bank";
 import * as G from "../gateway/service";
 import { verifyChain } from "../ledger/chain";
 import { paypalMode } from "../paypal/client";
@@ -50,7 +51,7 @@ export const handlers: Record<string, Handler> = {
     return { body: {
       mode: paypalMode(), root: t.root, demoAgents: await hasDemoAgents(id), payees: t.payees,
       blocks: t.blocks.map(({ raw: _raw, ...b }) => b),
-      spends: t.spends.map(({ signed: _s, receipt: _r, payoutTo: _p, ...s }) => ({ ...s, hasReceipt: Boolean(_r) })),
+      spends: t.spends.map(({ signed: _s, receipt: _r, payoutTo: _p, ...s }) => ({ ...s, hasReceipt: Boolean(_r), releaseBy: (_s.request as E.PromiseRequest).releaseBy ?? null })),
       audit: { ok: audit.ok, length: audit.length, entries: trail.map((x) => ({ seq: x.seq, at: x.createdAt, actor: x.actor, action: x.action, ref: x.ref, outcome: x.outcome })) },
     } };
   },
@@ -73,14 +74,87 @@ export const handlers: Record<string, Handler> = {
     }
     const p = await G.agentProfile(key);
     if (!p) return { status: 404, body: { error: "No agent with that key has been seen by this gateway." } };
-    return { body: { ...p, mode: paypalMode(), demo: await isDemoAgent(key) } };
+    return { body: { ...p, mode: paypalMode(), demo: await isDemoAgent(key), bankDemo: await isBankDemoAgent(key), cards: await B.cardsOf(key) } };
+  },
+
+  /** An agent's record, signed by the gateway so the agent can show it to anyone. */
+  "GET /api/agents/:key/reference": async ({ params }) => {
+    if (!KEY.test(params.key!)) return { status: 400, body: { error: "Not an agent key." } };
+    const r = await G.reference(params.key!);
+    return r ? { body: { reference: r } } : { status: 404, body: { error: "No agent with that key has been seen by this gateway." } };
+  },
+
+  /** One owner's treasury: every envelope sealed with that key, the agents under them, and where the money went. */
+  "GET /api/treasury/:principal": async ({ params }) => {
+    if (!KEY.test(params.principal!)) return { status: 400, body: { error: "Not an owner key." } };
+    const t = await G.treasury(params.principal!);
+    return t ? { body: t } : { status: 404, body: { error: "No envelope has been sealed with that key." } };
+  },
+
+  /** Check that owner's recent payments against PayPal's own records. */
+  "POST /api/treasury/:principal/reconcile": async ({ params }) => {
+    if (!KEY.test(params.principal!)) return { status: 400, body: { error: "Not an owner key." } };
+    const r = await G.reconcileTreasury(params.principal!);
+    return r ? { body: r } : { status: 404, body: { error: "No envelope has been sealed with that key." } };
   },
 
   /** Open an account that can receive: signed by the agent's key and by its owner's key. */
   "POST /api/accounts": async ({ body }) => {
     const { signed } = z.object({ signed: z.object({ body: z.any(), agentSig: z.string(), ownerSig: z.string() }) }).parse(body);
     const a = await G.openAccount(signed as never);
-    return { body: { account: a.account, payee: E.accountPayee(a.agent), agent: a.agent, label: a.label, owner: a.ownerName, settlesTo: G.maskEmail(a.settleTo) } };
+    return { body: { account: a.account, payee: E.accountPayee(a.agent), agent: a.agent, label: a.label, owner: a.ownerName, settlesTo: G.maskEmail(a.settleTo), holds: a.mode === "hold", perPaymentMinor: a.perPaymentMinor, balanceMinor: a.balanceMinor } };
+  },
+
+  /** An agent moves money out of its own balance: to another account, to a PayPal address, or back to its owner. */
+  "POST /api/bank/transfer": async ({ body }) => {
+    const { signed } = z.object({ signed: z.object({ request: z.any(), sig: z.string() }) }).parse(body);
+    const r = await B.transfer(signed as never);
+    return {
+      status: r.status === "DENIED" ? 403 : r.status === "FAILED" ? 502 : 200,
+      body: { status: r.status, duplicate: r.duplicate, transferId: r.transfer?.id ?? null, reasons: withMeaning(r.reasons), balanceMinor: r.balanceMinor, paypal: r.transfer?.payoutBatchId ? { payoutBatchId: r.transfer.payoutBatchId, payoutStatus: r.transfer.payoutStatus } : null, receipt: r.receipt },
+    };
+  },
+  /** The owner freezes or unfreezes an agent's account. */
+  "POST /api/bank/freeze": async ({ body }) => {
+    const { signed } = z.object({ signed: z.object({ request: z.any(), sig: z.string(), by: z.string() }) }).parse(body);
+    const a = await B.freeze(signed as never);
+    return { body: { account: a.account, agent: a.agent, label: a.label, frozen: Boolean(a.frozenAt), balanceMinor: a.balanceMinor } };
+  },
+  /** An agent issues a card on its balance: one merchant, a cap per charge, a number of charges, a spacing, an expiry. */
+  "POST /api/cards": async ({ body }) => {
+    const { signed } = z.object({ signed: z.object({ body: z.any(), sig: z.string() }) }).parse(body);
+    const c = await B.issueCard(signed as never);
+    return { body: await B.cardById(c.id) };
+  },
+  /** The merchant a card is locked to charges it. Signed by the merchant's key. */
+  "POST /api/cards/charge": async ({ body }) => {
+    const { signed } = z.object({ signed: z.object({ request: z.any(), sig: z.string() }) }).parse(body);
+    const r = await B.charge(signed as never);
+    return {
+      status: r.status === "DENIED" ? 403 : r.status === "FAILED" ? 502 : 200,
+      body: {
+        status: r.status, duplicate: r.duplicate, chargeId: r.transfer?.id ?? null, reasons: withMeaning(r.reasons),
+        card: r.card ? { id: r.card.id, state: B.cardState(r.card), charges: r.card.charges, maxCharges: r.card.maxCharges } : null,
+        paypal: r.transfer?.payoutBatchId ? { payoutBatchId: r.transfer.payoutBatchId, payoutStatus: r.transfer.payoutStatus } : null, receipt: r.receipt,
+      },
+    };
+  },
+  /** The card's holder, or the owner of its account, cancels it. */
+  "POST /api/cards/cancel": async ({ body }) => {
+    const { signed } = z.object({ signed: z.object({ request: z.any(), sig: z.string(), by: z.string() }) }).parse(body);
+    const c = await B.cancelCard(signed as never);
+    return { body: await B.cardById(c.id) };
+  },
+  /** A card's signed terms, what has been used, and every attempt to charge it. Nothing in it is secret. */
+  "GET /api/cards/:id": async ({ params }) => {
+    const c = await B.cardById(params.id!);
+    return c ? { body: c } : { status: 404, body: { error: "No such card." } };
+  },
+  /** The books: every balance, and whether they add up. */
+  "GET /api/bank": async () => ({ body: await B.position() }),
+  "GET /api/bank/transfers/:id": async ({ params }) => {
+    const t = await B.transferById(params.id!);
+    return t ? { body: t } : { status: 404, body: { error: "No such transfer." } };
   },
 
   /** The money boundary. Anyone may call it; the only thing that matters is what the signatures say. */
@@ -102,6 +176,13 @@ export const handlers: Record<string, Handler> = {
     const b = z.object({ signed: z.object({ request: z.any(), sig: z.string(), by: z.string() }), note: z.string().max(500).optional() }).parse(body);
     const r = await G.keep(b.signed as never, b.note);
     return { status: spendStatus(r.status === "LAPSED" && (b.signed.request as { action?: string })?.action === "release" ? "OK" : r.status), body: spendOut(r) };
+  },
+
+  /** The key a promise named signs that the work is delivered and accepted; that signature pays it. */
+  "POST /api/gateway/accept": async ({ body }) => {
+    const b = z.object({ signed: z.object({ request: z.any(), sig: z.string(), by: z.string() }) }).parse(body);
+    const r = await G.accept(b.signed as never);
+    return { status: spendStatus(r.status), body: spendOut(r) };
   },
 
   /** "Is this agent good for the money?" Read-only; moves no money. */
@@ -141,6 +222,13 @@ export const handlers: Record<string, Handler> = {
     const b = z.object({ rootId: z.string().max(60), action: z.enum(DEMO_ACTIONS) }).parse(body);
     const r = await act(b.rootId, b.action);
     return { body: { action: r.action, narration: r.narration, status: r.result?.status ?? null, reasons: withMeaning(r.result?.reasons ?? []) } };
+  },
+
+  /** DEMO: the built-in earning agent uses its balance, or its owner freezes it. Same bank code as POST /api/bank/transfer. */
+  "POST /api/demo/bank": async ({ body }) => {
+    const b = z.object({ action: z.enum(BANK_ACTIONS) }).parse(body);
+    const r = await bankAct(b.action);
+    return { body: { ...r, reasons: withMeaning(r.reasons) } };
   },
 
   /** DEMO: carry out one tool call a language model made while playing a built-in agent. The gateway decides. */

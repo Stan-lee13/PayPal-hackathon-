@@ -1,0 +1,1 @@
+ALTER TABLE "accounts" ADD COLUMN "freeze_signed_at" timestamp with time zone;

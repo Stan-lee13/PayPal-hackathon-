@@ -21,6 +21,8 @@ Flat "spending limits" don't compose: an orchestrator with a $500 limit that cal
 
 All structures are JSON. Signatures are Ed25519 over `domain + "\n" + canonical(body)`, where `canonical` is JSON with keys sorted at every level. Hashes are SHA-256 of the canonical JSON. Keys are raw 32-byte public keys, base64url.
 
+Encodings are strict. Keys and signatures are base64url with no padding, and a verifier must reject any other spelling of the same bytes: padding, `+` or `/`, whitespace, or non-zero spare bits in the last character. A lenient decoder would let one signed request be presented as several. A request is identified for replay purposes by the hash of its signed content (which carries a nonce), not by the text of its signature.
+
 ### Block
 
 ```
@@ -127,6 +129,27 @@ The maker of a promise later decides it with a **keep**:
   "sig": "<signature by the promise's maker, domain envelope-keep/1>", "by": "<its public key>" }
 ```
 
+A promise may carry `"releaseBy": "<public key>"`. That key can then pay the promise with an **acceptance**:
+
+```
+{ "request": { "v": "envelope-accept/1", "promise": "pr_…", "work": "<sha-256 of what was delivered, or empty>",
+               "note": "Checked against the brief.", "nonce": "n_…", "at": "…" },
+  "sig": "<signature by the named key, domain envelope-accept/1>", "by": "<that key>" }
+```
+
+### Reference
+
+```
+{ "v": "envelope-reference/1", "agent": "<public key>", "label": "localization-agent", "account": "…",
+  "knownSince": "…", "asOf": "…", "answersForIt": "Bea" | null,
+  "facts": { "paymentsSettled": 2, "paidMinor": 5500, "promisesKept": 2, "promisesLapsed": 1,
+             "requestsRefused": 1, "refusedFor": ["OVER_ENVELOPE_LIMIT"], "envelopesHeld": 1,
+             "envelopesRevoked": 0, "timesPaid": 0, "earnedMinor": 0 },
+  "paypalMode": "sandbox", "gateway": "<gateway public key>", "sig": "…" }
+```
+
+Facts as one gateway has seen them, signed so the agent can show them to anyone. No score is derived.
+
 ### Account opening
 
 An agent that wants to receive opens an account. The body is signed twice, by the agent's own key and by the owner who answers for it:
@@ -138,6 +161,49 @@ An agent that wants to receive opens an account. The body is signed twice, by th
 ```
 
 A payee written as `acct:` followed by the agent's account number (lower case) means that agent.
+
+### Balance, transfer and freeze
+
+An account opening may carry `"mode": "hold"` and `"perPayment": <minor units>`. Both are covered by the agent's and the owner's signatures.
+
+```json
+{ "request": { "v": "envelope-transfer/1", "from": "<agent key>", "kind": "pay", "amount": 1200, "currency": "USD",
+               "payee": "acct:xxxx-xxxx-xxxx", "purpose": "proofreading", "memo": "", "nonce": "n_…", "at": "…" },
+  "sig": "<signature by `from`>" }
+```
+
+`kind` is `pay` or `withdraw`. A `pay` names an account (`acct:…`) or a PayPal address. A `withdraw` names no one: its payee is the literal `owner`, and the gateway sends it to the settlement address in the account's signed opening.
+
+```json
+{ "request": { "v": "envelope-freeze/1", "agent": "<agent key>", "frozen": true, "nonce": "n_…", "at": "…" },
+  "sig": "<signature by the owner>", "by": "<owner key>" }
+```
+
+A completed transfer has a receipt signed by the gateway under `envelope-transfer-receipt/1`: the request and its signature, the paying account, where the money went (an account here, or a PayPal address with the payout batch id), and the balance after.
+
+### Card, charge and cancellation
+
+A card is a signed statement by an agent with an account. It is not a credential: it contains nothing secret, and holding a copy of it grants nothing.
+
+```json
+{ "body": { "v": "envelope-card/1", "id": "card_…", "holder": "<agent key>", "label": "Lexica Pro",
+            "merchant": "acct:xxxx-xxxx-xxxx", "perCharge": 900, "maxCharges": 2, "every": 2592000,
+            "notAfter": "…", "at": "…" },
+  "sig": "<signature by `holder`>" }
+```
+
+`merchant` must be an account. `every` is the least number of seconds between two charges. A card allows between 1 and 120 charges and lives at most two years.
+
+```json
+{ "request": { "v": "envelope-charge/1", "card": "card_…", "merchant": "<merchant key>", "amount": 900,
+               "currency": "USD", "memo": "", "nonce": "n_…", "at": "…" },
+  "sig": "<signature by `merchant`>" }
+```
+
+```json
+{ "request": { "v": "envelope-card-cancel/1", "card": "card_…", "nonce": "n_…", "at": "…" },
+  "sig": "…", "by": "<the holder's key, or the key of the owner of the holder's account>" }
+```
 
 ## Rules
 
@@ -189,11 +255,70 @@ A revocation is `{ request: { v: "envelope-revoke/1", block, nonce, at }, sig, b
 
 A promise is released automatically when its time runs out, when any envelope in its chain is revoked, and when the root is closed. It is earmarked money, not escrow: the payee learns that the money exists and cannot be spent elsewhere, and gets no right to it.
 
+### Owner approval above a threshold
+
+A block's caps may carry `"approveOver": <minor units>`. It is optional; when a parent has it, every block below must have it too, at the same value or lower (`WIDENED_APPROVAL` otherwise). `split` carries it down by default.
+
+For a request whose amount is greater than the leaf's `approveOver`:
+
+- a spend is refused with `NEEDS_OWNER_APPROVAL`;
+- a promise is refused with the same code unless its `releaseBy` is the root's issuer (the owner);
+- a promise that does name the owner is admitted and reserved like any other, and appears in the owner's treasury as waiting for a signature;
+- `keep` with `action: "pay"` from the promise's maker is refused: only an acceptance signed by the owner pays it. An acceptance with `"decline": true` from the owner releases it. The maker may still release its own request.
+
+A statement of standing for such an amount reports `good: false` with `NEEDS_OWNER_APPROVAL`, so a payee sees that the agent cannot pay this on its own.
+
+### Releasing a promise on accepted work
+
+`POST /api/gateway/accept`. If a promise names `releaseBy`, an acceptance signed by exactly that key pays it, through the same path as `keep` with `action: "pay"`: the gateway re-checks revocation and that the root is open, then captures and pays out. The maker of the promise consented to this when it signed `releaseBy`. The gateway does not judge the work; it checks one signature. The acceptance's `work` fingerprint, note and time are stored and appear on the receipt as `releasedBy`.
+
+A promise without `releaseBy` can only be paid by its maker. An acceptance from any other key, a keep signature presented as an acceptance, or an acceptance pointed at a different promise is refused.
+
 ### Accounts and paying an agent
 
 `POST /api/accounts`. The gateway accepts an opening only if both signatures verify, so nobody can point another agent's account number at their own PayPal address. A later opening signed by the same agent replaces the earlier one; an older one is ignored. Two keys can never hold the same account number.
 
 When a spend or promise names an `acct:` payee, the gateway resolves it under the root lock and fixes the settlement address on the spend at that moment; a later change to the account does not redirect a payment already admitted. An account number nobody opened is refused with `PAYEE_ACCOUNT_UNKNOWN`. The payout goes to the settlement address, and the receipt records the account, the agent and where PayPal sent the money.
+
+### Balances
+
+An account in `hold` mode keeps its income. The balance is a number on the account row that only ever changes in the same transaction as one row in the ledger. Ledger rows are unique per (account, kind, reference), where the reference is the id of the spend or transfer.
+
+Income. A spend or promise whose payee is an account in `hold` mode is admitted, reserved and captured like any other. After the capture the gateway, under the account's lock, writes one `income` row with the spend's id and adds the amount to the balance. No payout is made. The receipt's `paidTo.held` names the ledger entry, and its `paypal.payoutBatchId` is null. Whether an account holds or settles is read when the payment is admitted.
+
+Transfer. The gateway checks, in order:
+
+1. shape; the signature by `from` under the transfer domain; `at` within 5 minutes; a positive whole amount in USD; a well-formed payee;
+2. `from` has an account; a named account exists and is not `from` itself;
+3. under the lock of the paying account (and of the receiving account, both taken in key order): the same signed request has not been seen; the account is not frozen; a `pay` is not over `perPayment`; the amount is not over the balance.
+
+If all hold, the balance is debited and a ledger row written. When the payee is an account in `hold` mode, the credit and its row are written in the same transaction and the transfer is `BOOKED`: PayPal is not called. Otherwise the transfer is `SENDING`, and after the transaction commits the gateway asks PayPal for a payout with the transfer id as the batch id. A network failure leaves it `SENDING`; presenting the same request again resumes it and cannot pay twice. A refusal by PayPal writes one `reversal` row and puts the amount back.
+
+A withdrawal is not subject to `perPayment`: it can only go to the owner.
+
+Freeze. Only the key in the account's `owner` field can freeze or unfreeze. A frozen account refuses every transfer; income still arrives. A freeze or unfreeze is applied only if its `at` is later than the last one applied, so an old one cannot be presented again to undo a newer one.
+
+Owner. A later account opening can change the label, settlement address, mode and cap, and needs both signatures again. It is refused if it names a different owner key, so an agent cannot give itself a new owner to escape a cap or a freeze.
+
+The books. At any time: the sum of balances equals the sum of ledger rows; that sum equals income minus payouts and withdrawals plus reversals; transfers between accounts sum to zero. `GET /api/bank` reports the three checks.
+
+### Cards
+
+Issuing. The gateway accepts a card if its shape and limits are sane, it is signed by `holder` within 5 minutes of `at`, `holder` has an account, and `merchant` is an existing account other than the holder's. The same signed card presented again returns the stored card and changes nothing. Issuing moves no money.
+
+Charging. The gateway checks, in order:
+
+1. shape; the signature by the key in `request.merchant` under the charge domain; `at` within 5 minutes; a positive whole amount in USD;
+2. the card exists; `request.merchant` is the key of the account the card is locked to (`NOT_THE_MERCHANT` otherwise);
+3. under the holder's account lock (and the merchant's, in key order, when the merchant keeps a balance): the same signed charge has not been seen; the card is not cancelled, not expired, and has charges left; the amount is not over `perCharge`; if there was an earlier charge, `every` seconds have passed since it; then the owner's rules for any movement out of the balance: not frozen, not over the cap per payment, not over the daily limit, not over the balance.
+
+If all hold, the balance is debited, the card's count goes up by one, and the money moves as for a transfer: credited at once to a merchant that keeps a balance, or paid out by PayPal to the settlement address in the merchant's signed account. A payout PayPal refuses puts the money back and gives the charge back to the card.
+
+A card is over when it is cancelled, when its last charge is made, or when `notAfter` passes. None of these can be undone; an agent that wants to go on issues a new card.
+
+Cancelling. The holder's key or the key of the owner of the holder's account. Nobody else, the merchant included.
+
+A daily limit. An account opening may carry `"perDay": <minor units>`. Payments and card charges out of the balance in the last 24 hours, net of refused payouts, may not exceed it. Withdrawals to the owner do not count.
 
 ### Checking an agent before working for it
 
@@ -214,6 +339,7 @@ Nothing is reserved, so the answer can go stale; it is valid for five minutes. I
 | Spend | Partial capture of the authorization, then Payouts | The owner is charged exactly what agents spent. PayPal refuses captures beyond the hold. |
 | Close / expire | Void authorization | The remainder goes back automatically. |
 | Set aside | Show authorization details | The fee is reserved under the same hold, and PayPal has confirmed the hold, before a payee starts work. |
+| Accept | Capture + Payout, triggered by the named key's signature | Payment follows evidence of delivery without either side holding PayPal credentials; the fingerprint of the work is bound to the PayPal ids on the receipt. |
 | Pay an agent | Payout to the account's settlement address | One agent's spending becomes another agent's income without either holding PayPal credentials. |
 | Check | Show authorization details | A payee learns from PayPal, through the gateway, that the hold is live before doing any work. |
 | Receipt | capture id, payout batch and item ids | Any PayPal transaction can be traced to its chain of authority, and re-checked with PayPal's own GET endpoints. |
@@ -223,6 +349,10 @@ Verified in the PayPal sandbox on 2026-11-11: 12 partial captures of one authori
 An authorization is a hold placed by PayPal on the payer's funding source. It is not an escrow service, lasts at most 29 days, and is honoured for 3; envelopes are limited to 28 days.
 
 ## Security notes
+
+Balances: a balance on this gateway is a claim on money that sits in the gateway's own PayPal account after a capture. That is stored value. The reference implementation runs on the PayPal sandbox only; a deployment with real money needs a licensed party to hold the funds. The owner's cap limits one payment, not a day's total, so the freeze is the control that stops a compromised agent. An account can also carry a daily limit.
+
+Cards: a card's security does not depend on keeping anything secret. A charge is authenticated by the merchant's signature, and the money can only go to the account the agent named when it signed the card. What a card does not do is check that the merchant delivered anything; within its terms the merchant can charge.
 
 - **Compromised agent**: can spend at most what is left in its own envelope, only to its listed payees and purposes, until it expires or is revoked.
 - **Stolen envelope**: useless without the holder's private key.

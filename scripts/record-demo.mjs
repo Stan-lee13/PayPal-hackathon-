@@ -153,8 +153,34 @@ await scene("result", async () => { await top(); });
 await scene("earner", async () => {
   await page.getByTestId("statement").getByRole("link", { name: /translator-agent/ }).first().click();
   await page.getByTestId("receives").waitFor(T);
-  await wait(1500);
-  await scrollTo('[data-testid="receives"]');
+  const bal = page.getByTestId("balance");
+  const said = page.getByTestId("bank-result");
+  await bal.getByTestId("ledger").getByText("Paid in from").first().waitFor(T);
+  await scrollTo('[data-testid="balance"]', "start");
+  await wait(2600);
+  await bal.getByRole("button", { name: "Pay proofreader-agent $12" }).click();
+  await said.getByText("Moved.").waitFor(T);
+  await wait(2400);
+  await bal.getByRole("button", { name: /drain to a stranger/ }).click();
+  await said.getByText("Refused.").waitFor(T);
+  await wait(2200);
+});
+
+// 4b. Its card: a subscription only one merchant can charge, that ends by itself
+await scene("card", async () => {
+  const cards = page.getByTestId("cards");
+  const said = page.getByTestId("card-result");
+  await scrollTo('[data-testid="cards"]', "start");
+  await wait(2200);
+  await cards.getByRole("button", { name: "Subscribe to Lexica Pro with its card" }).click();
+  await said.getByText(/^Charged/).waitFor(T);
+  await page.getByTestId("xenoncard").getByText("Lexica Pro").waitFor(T);
+  await wait(4200);
+  await cards.getByRole("button", { name: "A thief uses the card details" }).click();
+  await said.getByText(/NOT_THE_MERCHANT/).waitFor(T);
+  await wait(2600);
+  await cards.getByRole("button", { name: "Merchant overcharges $19" }).click();
+  await said.getByText(/OVER_CARD_LIMIT/).waitFor(T);
 });
 
 // 5. Is it good for the money?
@@ -182,7 +208,32 @@ await scene("receipt", async () => {
   await page.getByText("Signatures valid").waitFor(T);
 });
 
-// 7. Revoke the agent that was taken over, then close
+// 6a. Over the owner's threshold: the agent can only ask, and the owner signs in this browser
+await page.goto(rootUrl);
+await holdCard();
+await scene("approval", async () => {
+  await scrollTo('[data-testid="controls"]', "start");
+  await wait(600);
+  await page.getByRole("button", { name: "Agent asks for a bigger payment" }).click();
+  await page.getByTestId("approval").getByText(/asks to pay/).waitFor(T);
+  await scrollTo('[data-testid="approval"]');
+  await wait(4200);
+  await page.getByTestId("approval").getByRole("button", { name: /^Sign & pay/ }).click();
+  await page.getByText(/^You signed\./).waitFor(T);
+  await page.getByTestId("approval").waitFor({ state: "detached", timeout: 30000 });
+  await top();
+});
+
+// 6b. The owner's treasury, with the books checked against PayPal
+await scene("treasury", async () => {
+  await page.goto(`${BASE}/treasury`);
+  await page.getByTestId("totals").waitFor(T);
+  await wait(2200);
+  await page.getByRole("button", { name: "Reconcile with PayPal" }).click();
+  await page.getByTestId("books").getByText(/\d+ of \d+ match PayPal/i).waitFor(T);
+});
+
+// 7. Revoke the compromised agent, then close
 await page.goto(rootUrl);
 await holdCard();
 await scene("close", async () => {
@@ -198,9 +249,9 @@ await scene("close", async () => {
 });
 
 // 8. Numbers, then the close
-await card("<span class=\"figure\" style=\"font-size:120px\">90<span style=\"color:#8A8271\">/90</span></span>", ["attacks refused in the test corpus. None moved money.", "The try-it copy runs the whole gateway in your browser: nothing to install, nothing to configure."]);
+await card("<span class=\"figure\" style=\"font-size:120px\">163<span style=\"color:#8A8271\">/163</span></span>", ["attacks refused in the test suite. None moved money.", "Try all of it in your browser: nothing to install, nothing to configure."]);
 await scene("numbers");
-await card("Seal is an authorization.<br>Spend is a capture and a payout.<br><em>Close is a void.</em>", ["Envelope · an account an AI agent can be trusted with", "open source · github.com/Stan-lee13/PayPal-hackathon-"]);
+await card("Seal is an authorization.<br>Spend is a capture and a payout.<br><em>Close is a void.</em>", ["Envelope · accounts, cards and a treasury for AI agents, on PayPal's rails", "open source · github.com/Stan-lee13/PayPal-hackathon-"]);
 await scene("end");
 
 await ctx.close();

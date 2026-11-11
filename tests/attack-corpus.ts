@@ -11,10 +11,11 @@ import * as E from "../lib/envelope/core";
 export type AttackRow = { category: string; attack: string; refused: boolean; how: string; moneyMoved: boolean };
 
 type G = typeof import("../lib/gateway/service");
+type Bank = typeof import("../lib/gateway/bank");
 type Sim = typeof import("../lib/paypal/emulator");
 
-export async function runCorpus(deps: { G: G; sim: Sim; reset: () => Promise<void>; db: { expirePromise(id: string): Promise<void> } }): Promise<AttackRow[]> {
-  const { G, sim } = deps;
+export async function runCorpus(deps: { G: G; B: Bank; sim: Sim; reset: () => Promise<void>; balanceOf(agent: string): Promise<number>; db: { expirePromise(id: string): Promise<void> } }): Promise<AttackRow[]> {
+  const { G, B, sim } = deps;
   const rows: AttackRow[] = [];
   const EXP = () => new Date(Date.now() + 3600_000).toISOString();
   const moved = async () => (await sim.simCalls()).filter((c) => c.includes("/capture") || c.includes("/payouts")).length;
@@ -196,8 +197,46 @@ export async function runCorpus(deps: { G: G; sim: Sim; reset: () => Promise<voi
   const p3 = await promise();
   await G.revoke(await E.signRevoke(w.ada, w.locChain[1]!.body.id));
   await attack("Promise", "pay a promise after the owner revoked the agent", async () => G.keep(await E.signKeep(w.loc, p3.spend!.id, "pay")));
+  // promises that a named key can release
+  w = await world();
+  const work = await E.sha256("delivered files");
+  const named = await E.signPromise(w.locChain, w.loc, { amount: 2000, payee: w.acct, purpose: "translation", ttl: 600, releaseBy: w.ops.publicKey }).then((s) => G.promise(s));
+  const unnamed = await E.signPromise(w.locChain, w.loc, { amount: 1000, payee: w.acct, purpose: "translation", ttl: 600 }).then((s) => G.promise(s));
+  await attack("Promise", "the payee signs its own acceptance when another key was named", async () => G.accept(await E.signAccept(w.tr, named.spend!.id, { work })));
+  await attack("Promise", "an outsider signs the acceptance", async () => G.accept(await E.signAccept(w.rogue, named.spend!.id, { work })));
+  await attack("Promise", "the payee collects a promise that named no release key", async () => G.accept(await E.signAccept(w.tr, unnamed.spend!.id, { work })));
+  await attack("Promise", "a genuine acceptance pointed at a different promise", async () => { const a = await E.signAccept(w.ops, named.spend!.id, { work }); return G.accept({ ...a, request: { ...a.request, promise: unnamed.spend!.id } }); });
+  await attack("Promise", "a keep signature replayed as an acceptance", async () => { const k = await E.signKeep(w.ops, named.spend!.id, "pay"); return G.accept({ request: { v: E.ACCEPT_VERSION, promise: named.spend!.id, work: "", note: "", nonce: k.request.nonce, at: k.request.at }, sig: k.sig, by: k.by }); });
+  await attack("Promise", "an acceptance dated ten minutes ago", async () => G.accept(await E.signAccept(w.ops, named.spend!.id, { work }, new Date(Date.now() - 600_000))));
+  await attack("Promise", "release key set to something that is not a key", async () => G.promise(await E.signPromise(w.locChain, w.loc, { amount: 500, payee: w.acct, purpose: "translation", ttl: 600, releaseBy: "anyone" })));
+  await G.revoke(await E.signRevoke(w.ada, w.locChain[1]!.body.id));
+  await attack("Promise", "the named key accepts after the owner revoked the payer", async () => G.accept(await E.signAccept(w.ops, named.spend!.id, { work })));
+  w = await world();
+  const p3again = await E.signPromise(w.locChain, w.loc, { amount: 4000, payee: w.acct, purpose: "translation", ttl: 600 }).then((s) => G.promise(s));
+  void p3again;
+
   await attack("Promise", "forged note: amount edited", async () => G.verifyPromiseNote({ ...p3.note!, amount: 999999 }));
   await attack("Promise", "forged note: signed by a different key", async () => { const { sig: _s, ...body } = p3.note!; const fake = { ...body, gateway: w.rogue.publicKey }; return G.verifyPromiseNote({ ...fake, sig: await E.signDetached(w.rogue.privateKey, G.PROMISE_NOTE_VERSION, fake) }).then(async (ok) => (ok && fake.gateway !== (await G.gatewayKey()).publicKey ? "valid only under the attacker's key; a payee pins the gateway's key" : ok)); });
+
+  // owner approval above a threshold
+  {
+    await deps.reset();
+    const [ada, ops, helper] = await Promise.all([1, 2, 3].map(() => E.generateKeyPair()));
+    const caps: E.Caps = { currency: "USD", limit: 20000, perPayment: 8000, payees: ["designer@example.com"], purposes: ["design"], notAfter: EXP(), splits: 2, approveOver: 5000 };
+    const root = await E.seal(ada!, { publicKey: ops!.publicKey, label: "ops-agent" }, caps);
+    await G.registerRoot({ chain: root, principalName: "Ada", title: "Launch budget" });
+    const ask = (p: Partial<{ amount: number; releaseBy: string }> = {}) => E.signPromise(root, ops!, { amount: 7000, payee: "designer@example.com", purpose: "design", ttl: 600, ...p }).then((x) => G.promise(x));
+    await attack("Promise", "pay over the owner's approval threshold without asking", async () => G.spend(await E.signSpend(root, ops!, { amount: 5001, payee: "designer@example.com", purpose: "design" })));
+    await attack("Promise", "set the money aside to pay it oneself later", async () => ask());
+    await attack("Promise", "name a friendly agent instead of the owner as approver", async () => ask({ releaseBy: helper!.publicKey }));
+    await attack("Promise", "name oneself as approver", async () => ask({ releaseBy: ops!.publicKey }));
+    const pending = await ask({ releaseBy: ada!.publicKey });
+    await attack("Promise", "the agent pays its own request that awaits the owner", async () => G.keep(await E.signKeep(ops!, pending.spend!.id, "pay")));
+    await attack("Promise", "the agent signs the owner's approval itself", async () => G.accept(await E.signAccept(ops!, pending.spend!.id)));
+    await attack("Promise", "a sub-envelope that drops the approval threshold", async () => { const { approveOver: _d, ...without } = caps; return pay(await forge(root, ops!, helper!, { ...without, limit: 8000 } as E.Caps, (b) => { delete (b.caps as Partial<E.Caps>).approveOver; }), helper!, { amount: 8000 }); });
+    await attack("Promise", "a sub-envelope that raises the approval threshold", async () => pay(await forge(root, ops!, helper!, { approveOver: 8000, limit: 8000 }), helper!, { amount: 8000 }));
+    await attack("Promise", "split payments just under the threshold are not an attack, but one cent over is", async () => G.spend(await E.signSpend(root, ops!, { amount: 5001, payee: "designer@example.com", purpose: "design" })));
+  }
 
   // ---- 7. Accounts ---------------------------------------------------------------------------------------
   w = await world();
@@ -222,6 +261,150 @@ export async function runCorpus(deps: { G: G; sim: Sim; reset: () => Promise<voi
   await attack("Forged evidence", "statement of standing used after it expired", async () => G.verifyStanding(st, new Date(Date.now() + 6 * 60_000)));
   await attack("Forged evidence", "proof of funds asked by an impostor without the agent's key", async () => G.standing(await E.signHello(w.artChain, w.rogue, { amount: 1000, payee: "designer@example.com", purpose: "design" })));
   await attack("Forged evidence", "proof of funds for a payee the agent can't pay", async () => G.standing(await E.signHello(w.artChain, w.art, { amount: 1000, payee: "attacker@evil.example", purpose: "design" })));
+
+  // A signed request presented again with its signature written another way (same bytes, different text).
+  {
+    const sp = await E.signSpend(w.artChain, w.art, { amount: 1000, payee: "designer@example.com", purpose: "design" });
+    await G.spend(sp);
+    const last = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const i = last.indexOf(sp.sig[sp.sig.length - 1]!);
+    const spellings: Array<[string, string]> = [["base64 padding added", `${sp.sig}==`], ["a space in front", ` ${sp.sig}`], ["the other base64 alphabet", sp.sig.replace(/-/g, "+").replace(/_/g, "/") === sp.sig ? `${sp.sig}=` : sp.sig.replace(/-/g, "+").replace(/_/g, "/")], ["spare bits flipped in the last character", sp.sig.slice(0, -1) + last[i ^ 1]]];
+    for (const [how, sig] of spellings) await attack("Bad request", `replay a paid request with its signature re-spelled: ${how}`, async () => { const r = await G.spend({ ...sp, sig }); return r.duplicate ? "ignored: the same request, already paid once" : r; });
+  }
+
+  // ---- 9. Balances -------------------------------------------------------------------------------------
+  // Bea's translator-agent keeps its income (her cap: $30 a payment); Cy's proofreader-agent does too.
+  {
+    await deps.reset();
+    const [ada, ops, bea, tr, cy, pf, rogue] = await Promise.all([1, 2, 3, 4, 5, 6, 7].map(() => E.generateKeyPair()));
+    await G.openAccount(await E.signAccount(tr!, bea!, { label: "translator-agent", ownerName: "Bea", settleTo: "bea@example.com", mode: "hold", perPayment: 3000 }));
+    await G.openAccount(await E.signAccount(pf!, cy!, { label: "proofreader-agent", ownerName: "Cy", settleTo: "cy@example.com", mode: "hold" }));
+    const [me, other] = [E.accountPayee(tr!.publicKey), E.accountPayee(pf!.publicKey)];
+    const chain = await E.seal(ada!, { publicKey: ops!.publicKey, label: "ops-agent" }, { currency: "USD", limit: 20000, perPayment: 10000, payees: [me], purposes: ["translation"], notAfter: EXP(), splits: 0 });
+    await G.registerRoot({ chain, principalName: "Ada", title: "Launch budget" });
+    const income = await E.signSpend(chain, ops!, { amount: 5000, payee: me, purpose: "translation" });
+    const paidIn = await G.spend(income);
+    const bal = () => deps.balanceOf(tr!.publicKey);
+    const send = async (p: Parameters<typeof E.signTransfer>[1], by = tr!, now?: Date) => B.transfer(await E.signTransfer(by, p, now));
+    /** The attack must be refused AND leave both balances exactly where they were. */
+    const guarded = (name: string, fn: () => Promise<unknown>) => attack("Balance", name, async () => {
+      const before = [await bal(), await deps.balanceOf(pf!.publicKey)];
+      let r: unknown;
+      try { r = await fn(); } catch (e) { r = `refused: ${e instanceof Error ? e.message.slice(0, 80) : "error"}`; }
+      const after = [await bal(), await deps.balanceOf(pf!.publicKey)];
+      return before[0] === after[0] && before[1] === after[1] ? r : { status: `BALANCE CHANGED ${before} -> ${after}` };
+    });
+
+    await guarded("move another agent's balance by writing its key in the request", async () => { const t = await E.signTransfer(rogue!, { amount: 1000, payee: "mallory@evil.example" }); t.request.from = tr!.publicKey; return B.transfer(t); });
+    await guarded("raise the amount after the agent signed", async () => { const t = await E.signTransfer(tr!, { amount: 100, payee: other }); return B.transfer({ ...t, request: { ...t.request, amount: 5000 } }); });
+    await guarded("redirect a signed transfer to another payee", async () => { const t = await E.signTransfer(tr!, { amount: 100, payee: other }); return B.transfer({ ...t, request: { ...t.request, payee: "mallory@evil.example" } }); });
+    await guarded("turn a signed payment into a withdrawal", async () => { const t = await E.signTransfer(tr!, { amount: 100, payee: other }); return B.transfer({ ...t, request: { ...t.request, kind: "withdraw" } }); });
+    await guarded("a signature made for another kind of message, reused as a transfer", async () => { const t = await E.signTransfer(tr!, { amount: 100, payee: other }); return B.transfer({ ...t, sig: await E.signDetached(tr!.privateKey, E.ACCEPT_VERSION, t.request) }); });
+    await guarded("the owner moves the agent's money without the agent's key", async () => { const t = await E.signTransfer(bea!, { amount: 1000, payee: "bea@example.com" }); t.request.from = tr!.publicKey; return B.transfer(t); });
+    await guarded("spend one cent more than the balance", async () => send({ kind: "withdraw", amount: 5001 }));
+    await guarded("pay more at once than the owner allows", async () => send({ amount: 3001, payee: other }));
+    await guarded("a negative amount, to pull money in", async () => send({ amount: -1000, payee: other }));
+    await guarded("a fraction of a cent", async () => send({ amount: 10.5, payee: other }));
+    await guarded("pay itself to inflate its record", async () => send({ amount: 100, payee: me }));
+    await guarded("a transfer signed ten minutes ago", async () => send({ amount: 100, payee: other }, tr!, new Date(Date.now() - 10 * 60_000)));
+    await guarded("a transfer from a key that has no account", async () => send({ amount: 100, payee: other }, rogue!));
+    await guarded("pay an account number nobody opened", async () => send({ amount: 100, payee: E.accountPayee(rogue!.publicKey) }));
+    await guarded("credit the same income twice by presenting the payment again", async () => { const again = await G.spend(income); await G.settle(paidIn.spend!.id); return again.duplicate ? "ignored: the ledger takes one entry per payment" : { status: "CREDITED TWICE" }; });
+    await guarded("the agent swaps in an owner key of its own to drop the cap", async () => G.openAccount(await E.signAccount(tr!, rogue!, { label: "translator-agent", ownerName: "Bea", settleTo: "mine@evil.example", mode: "hold" }, new Date(Date.now() + 1000))));
+    await guarded("a stranger freezes someone's account", async () => B.freeze(await E.signFreeze(rogue!, tr!.publicKey, true)));
+    // one real transfer, then replays of it
+    const real = await E.signTransfer(tr!, { amount: 1000, payee: other, purpose: "proofreading" });
+    const done = await B.transfer(real);
+    await guarded("replay a completed transfer to move the money again", async () => { const again = await B.transfer(real); return again.duplicate && again.status === "BOOKED" ? "ignored: already booked once" : { status: "MOVED TWICE" }; });
+    await attack("Balance", "transfer receipt with the amount edited", async () => B.verifyTransferReceipt({ ...done.receipt!, request: { ...done.receipt!.request, amount: 1 } }));
+    await attack("Balance", "transfer receipt naming a different recipient", async () => B.verifyTransferReceipt({ ...done.receipt!, to: { kind: "paypal", address: "mallory@evil.example", payoutBatchId: "X", mode: "sandbox" } }));
+    // eight transfers race for a balance that covers four
+    await attack("Balance", "eight transfers at once for a balance that covers four", async () => {
+      const rs = await Promise.all((await Promise.all(Array.from({ length: 8 }, () => E.signTransfer(tr!, { amount: 1000, payee: other })))).map((t) => B.transfer(t)));
+      const ok = rs.filter((r) => r.status === "BOOKED").length;
+      return ok === 4 && (await bal()) === 0 && (await B.position()).checks.every((c) => c.ok) ? "4 booked, 4 refused INSUFFICIENT_BALANCE; the books balance" : { status: `${ok} BOOKED` };
+    });
+    // the owner freezes; then nothing leaves, and the agent cannot lift it
+    await G.spend(await E.signSpend(chain, ops!, { amount: 2000, payee: me, purpose: "translation" }));
+    await B.freeze(await E.signFreeze(bea!, tr!.publicKey, true));
+    await guarded("pay out of a frozen account", async () => send({ amount: 100, payee: other }));
+    await guarded("withdraw from a frozen account", async () => send({ kind: "withdraw", amount: 100 }));
+    await guarded("the agent lifts its owner's freeze itself", async () => B.freeze(await E.signFreeze(tr!, tr!.publicKey, false)));
+    await guarded("replay a completed transfer with its signature re-spelled", async () => { const r = await B.transfer({ ...real, sig: `${real.sig}==` }); return r.duplicate ? "ignored: already booked once" : r; });
+    await guarded("present the owner's earlier unfreeze again to lift a newer freeze", async () => {
+      const t = Date.now();
+      const old = await E.signFreeze(bea!, tr!.publicKey, false, new Date(t - 2000));
+      await B.freeze(old); await B.freeze(await E.signFreeze(bea!, tr!.publicKey, true, new Date(t - 1000)));
+      return B.freeze(old);
+    });
+    await guarded("a freeze signed by the owner, flipped to an unfreeze", async () => { const f = await E.signFreeze(bea!, tr!.publicKey, true); return B.freeze({ ...f, request: { ...f.request, frozen: false } }); });
+  }
+
+  // ---- 10. Cards ---------------------------------------------------------------------------------------
+  // translator-agent (owner Bea, $30 a payment, $60 a day) holds $90 and issues a card locked to Lexica.
+  {
+    await deps.reset();
+    const [ada, ops, bea, tr, lo, lx, go, gl, rogue] = await Promise.all([1, 2, 3, 4, 5, 6, 7, 8, 9].map(() => E.generateKeyPair()));
+    await G.openAccount(await E.signAccount(tr!, bea!, { label: "translator-agent", ownerName: "Bea", settleTo: "bea@example.com", mode: "hold", perPayment: 3000, perDay: 6000 }));
+    await G.openAccount(await E.signAccount(lx!, lo!, { label: "Lexica Pro", ownerName: "Lexica Ltd", settleTo: "billing@lexica.example", mode: "hold" }));
+    await G.openAccount(await E.signAccount(gl!, go!, { label: "Glossa", ownerName: "Glossa Inc", settleTo: "pay@glossa.example", mode: "hold" }));
+    const me = E.accountPayee(tr!.publicKey), lexica = E.accountPayee(lx!.publicKey);
+    const chain = await E.seal(ada!, { publicKey: ops!.publicKey, label: "ops-agent" }, { currency: "USD", limit: 20000, perPayment: 10000, payees: [me], purposes: ["translation"], notAfter: EXP(), splits: 0 });
+    await G.registerRoot({ chain, principalName: "Ada", title: "Launch budget" });
+    await G.spend(await E.signSpend(chain, ops!, { amount: 9000, payee: me, purpose: "translation" }));
+    const card = await B.issueCard(await E.signCard(tr!, { merchant: lexica, label: "Lexica Pro", perCharge: 900, maxCharges: 2, every: 3600, life: 7200 }));
+    const bal = () => deps.balanceOf(tr!.publicKey);
+    /** Refused AND the holder's balance is exactly where it was. */
+    const guarded = (name: string, fn: () => Promise<unknown>) => attack("Card", name, async () => {
+      const before = await bal();
+      let r: unknown;
+      try { r = await fn(); } catch (e) { r = `refused: ${e instanceof Error ? e.message.slice(0, 80) : "error"}`; }
+      return before === (await bal()) ? r : { status: `BALANCE CHANGED ${before} -> ${await bal()}` };
+    });
+    const chargeAs = async (k: E.KeyPair, amount: number, id = card.id, now?: Date) => B.charge(await E.signCharge(k, { card: id, amount }, now));
+
+    await guarded("someone who copied the card's details charges it", async () => chargeAs(rogue!, 900));
+    await guarded("another merchant charges a card locked to Lexica", async () => chargeAs(gl!, 900));
+    await guarded("a charge that names the real merchant but is signed by someone else", async () => { const c = await E.signCharge(rogue!, { card: card.id, amount: 900 }); c.request.merchant = lx!.publicKey; return B.charge(c); });
+    await guarded("the agent charges its own card to slip money past its owner's rules", async () => chargeAs(tr!, 900));
+    await guarded("the merchant charges more than the card allows", async () => chargeAs(lx!, 901));
+    await guarded("the merchant raises the amount after signing the charge", async () => { const c = await E.signCharge(lx!, { card: card.id, amount: 100 }); return B.charge({ ...c, request: { ...c.request, amount: 900 } }); });
+    await guarded("a negative charge", async () => chargeAs(lx!, -900));
+    await guarded("a charge signed ten minutes ago", async () => chargeAs(lx!, 900, card.id, new Date(Date.now() - 10 * 60_000)));
+    await guarded("a charge on a card that does not exist", async () => chargeAs(lx!, 900, "card_doesnotexist"));
+    await guarded("a signature made for a transfer, reused as a charge", async () => { const c = await E.signCharge(lx!, { card: card.id, amount: 900 }); return B.charge({ ...c, sig: await E.signDetached(lx!.privateKey, E.TRANSFER_VERSION, c.request) }); });
+    await guarded("a card signed by someone else on the agent's balance", async () => { const f = await E.signCard(rogue!, { merchant: lexica, label: "x", perCharge: 9000, maxCharges: 9, life: 3600 }); f.body.holder = tr!.publicKey; return B.issueCard(f); });
+    await guarded("the merchant widens the card after the agent signed it", async () => { const c = await E.signCard(tr!, { merchant: lexica, label: "Lexica Pro", perCharge: 900, maxCharges: 2, life: 3600 }); return B.issueCard({ ...c, body: { ...c.body, perCharge: 90000, maxCharges: 100 } }); });
+    await guarded("the merchant re-points the card at itself after the agent signed it for another", async () => { const c = await E.signCard(tr!, { merchant: lexica, label: "Lexica Pro", perCharge: 900, maxCharges: 2, life: 3600 }); return B.issueCard({ ...c, body: { ...c.body, merchant: E.accountPayee(gl!.publicKey) } }); });
+    await guarded("a card that never expires", async () => B.issueCard(await E.signCard(tr!, { merchant: lexica, label: "x", perCharge: 900, maxCharges: 2, life: 50 * 366 * 86400 })));
+    // one honest charge, then abuse of it
+    const first = await E.signCharge(lx!, { card: card.id, amount: 900, memo: "Period 1" });
+    await B.charge(first);
+    await guarded("the same signed charge presented twice", async () => { const r = await B.charge(first); return r.duplicate ? "ignored: already charged once" : r; });
+    await guarded("the same charge with its signature re-spelled", async () => B.charge({ ...first, sig: `${first.sig}==` }));
+    await guarded("a second charge inside the same billing period", async () => chargeAs(lx!, 900));
+    await guarded("the merchant cancels the agent's card for it", async () => B.cancelCard(await E.signCardCancel(lx!, card.id)));
+    await guarded("a stranger cancels the agent's card", async () => B.cancelCard(await E.signCardCancel(rogue!, card.id)));
+    // a card that allows two charges, charged five times at once
+    const burst = await B.issueCard(await E.signCard(tr!, { merchant: lexica, label: "Burst", perCharge: 500, maxCharges: 2, life: 3600 }));
+    await attack("Card", "five charges at once on a card that allows two", async () => {
+      const before = await bal();
+      const rs = await Promise.all((await Promise.all(Array.from({ length: 5 }, () => E.signCharge(lx!, { card: burst.id, amount: 500 })))).map((c) => B.charge(c)));
+      const ok = rs.filter((r) => r.status === "BOOKED").length;
+      return ok === 2 && before - (await bal()) === 1000 ? "2 charged, 3 refused CARD_USED_UP" : { status: `${ok} CHARGED` };
+    });
+    // the owner's rules outrank the card
+    const big = await B.issueCard(await E.signCard(tr!, { merchant: lexica, label: "Big", perCharge: 9000, maxCharges: 20, life: 3600 }));
+    await guarded("a card that allows more per charge than the owner allows per payment", async () => chargeAs(lx!, 3001, big.id));
+    await B.charge(await E.signCharge(lx!, { card: big.id, amount: 3000 }));
+    await guarded("card charges that would take the day over the owner's daily limit", async () => chargeAs(lx!, 2000, big.id));
+    await B.freeze(await E.signFreeze(bea!, tr!.publicKey, true));
+    await guarded("charging a card while the owner has the account frozen", async () => chargeAs(lx!, 100, big.id));
+    await B.freeze(await E.signFreeze(bea!, tr!.publicKey, false, new Date(Date.now() + 1000)));
+    await B.cancelCard(await E.signCardCancel(bea!, big.id));
+    await guarded("charging a card its owner cancelled", async () => chargeAs(lx!, 100, big.id));
+    await guarded("presenting the signed card again to bring a cancelled card back", async () => { await B.issueCard(big.signed); return chargeAs(lx!, 100, big.id); });
+  }
 
   return rows;
 }

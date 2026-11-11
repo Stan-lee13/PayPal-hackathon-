@@ -2,6 +2,8 @@
 
 **Give your agent an envelope, not your wallet.**
 
+Agentic banking on PayPal's rails: accounts, cards and a treasury for AI agents, with the owner's limits enforced by signatures and arithmetic. (The mechanics of a bank for agents, running on the PayPal sandbox. Not a licensed bank.)
+
 Envelope is spending authority for AI agents that can be **split but never enlarged**. A person seals an envelope ("$200, only to these two payees, only for translation and design, until tonight") and PayPal places a hold for the whole amount. The agent can split off smaller envelopes for the agents it hires. Nobody down the chain can spend more, pay anyone else, or outlive it, and every payment comes back with a receipt showing exactly who authorized it.
 
 It behaves like an account of the agent's own:
@@ -10,25 +12,52 @@ It behaves like an account of the agent's own:
 - **Anyone can check it.** Before doing any work, a payee can ask "is this agent good for $70 to me, right now?" The answer is signed, names every person and agent standing behind it, and includes PayPal's own confirmation that the money is on hold.
 - **It can set money aside.** An agent can earmark a fee for one payee before the work starts. Nothing else can spend it until it is paid or released.
 - **It can get paid.** An agent can open an account that receives. Other agents pay it by account number, and PayPal pays out to the owner who answers for it.
+- **It can keep a balance.** An account can hold what the agent earns. The agent pays other agents out of it with its own signature, at once and with no PayPal call, or sends money out through a PayPal payout. Its owner can cap a payment and freeze the account.
+- **It has a card.** A Xenoncard is the agent's signed permission for one merchant to charge its balance: so much a charge, so many charges, no more often than a billing period, and then it ends by itself. Only that merchant's key can charge it, so the card's details are worth nothing to a thief, and nobody's bank card is handed to anyone.
+- **Its owner stays in control.** The owner can require their own signature above an amount. Over it, an agent can only ask: the money is set aside and waits in the owner's inbox.
+- **It can be paid on accepted work.** Money set aside can name an agent whose signature releases it. The fingerprint of the delivered work goes on the receipt.
+
+Around that sit three layers on the same primitive: a **Treasury** for the owner (everything their agents can touch, reconciled against PayPal), **Accounts** for each agent (identity, income, a balance it can spend, a signed record it can carry anywhere), and a **Protocol** between agents (prove funds, set aside, release, receipt).
 
 ```
  Ada ──seals──▶ ops-agent  $200            PayPal: authorization (hold) $200
                  ├─ splits ─▶ localization-agent  $60, translator-agent's account only
                  │              ├─ sets $45 aside ─▶ reserved at every level, hold confirmed
-                 │              └─ pays it ────────▶ PayPal: partial capture $45 + payout to Bea
+                 │              └─ pays it ────────▶ PayPal: partial capture $45 → translator-agent's balance
                  └─ splits ─▶ creative-agent  $90, designer only
                                 ├─ pays $70 ──▶ PayPal: partial capture $70 + payout
                                 └─ "pay attacker@evil" ──▶ DENIED  PAYEE_NOT_ALLOWED
  Ada ──closes─▶                            PayPal: void → $85 released, $115 charged
+
+ translator-agent (owner: Bea)  balance $45
+                 ├─ pays proofreader-agent $12 ───▶ moved on the ledger, no PayPal call
+                 ├─ "send it all to a stranger" ──▶ DENIED  OVER_ACCOUNT_LIMIT (Bea's cap: $30)
+                 ├─ Bea freezes the account ──────▶ nothing leaves until she lifts it
+                 ├─ withdraws $20 ────────────────▶ PayPal: payout to Bea
+                 └─ issues a card for Lexica Pro: $9 a charge, 2 charges, one per period
+                       ├─ Lexica charges $9 ──────▶ PayPal: payout to Lexica
+                       ├─ Lexica charges $19 ─────▶ DECLINED  OVER_CARD_LIMIT
+                       ├─ a thief with the card details ─▶ DECLINED  NOT_THE_MERCHANT
+                       └─ after the 2nd charge ───▶ the card has ended by itself
 ```
 
 Built for the PayPal AI Hackathon 2026. Sandbox only. The people and agents in the demo are fictional.
 
 ![Envelope landing page](docs/screenshots/01-home.png)
 
-| A real model playing the agents (still from the video) | The passport of an agent that gets paid | A receipt, checked against PayPal and in the browser |
-|---|---|---|
-| ![A model playing ops-agent](docs/screenshots/03-model.png) | ![Agent passport](docs/screenshots/05-passport.png) | ![Receipt](docs/screenshots/07-receipt.png) |
+| A real model playing the agents (still from the video) | The owner's treasury, books checked against PayPal (still from the video) |
+|---|---|
+| ![A model playing ops-agent](docs/screenshots/03-model.png) | ![Treasury](docs/screenshots/09-treasury.png) |
+
+| A payment over the owner's threshold, waiting for a signature (still from the video) | The passport of an agent that gets paid (on the simulator) |
+|---|---|
+| ![Owner approval](docs/screenshots/04-approval.png) | ![Agent passport](docs/screenshots/05-passport.png) |
+
+| An agent's balance: paid in, paid to another agent, a drain refused (still from the video) | Its card: locked to one merchant, charged once, an overcharge declined (still from the video) |
+|---|---|
+| ![An agent's balance and ledger](docs/screenshots/10-balance.png) | ![Xenoncard](docs/screenshots/11-card.png) |
+
+![A receipt, checked against PayPal and in the browser (still from the video)](docs/screenshots/07-receipt.png)
 
 Demo video: [`docs/demo/envelope-demo.mp4`](docs/demo/envelope-demo.mp4).
 
@@ -51,14 +80,21 @@ An agent that can pay holds a credential. When it delegates work to another agen
 | **Check** | Any payee, before working | The agent hands over a signed introduction. The gateway proves the agent controls its key, lists who stands behind it, and says whether that payment would go through now. Read-only; expires in 5 minutes. | `GET /v2/payments/authorizations/{id}`: is the hold still live? |
 | **Set aside** | The agent holding an envelope | Signs a promise for one payee. The gateway reserves the amount in every envelope up the chain, confirms the hold with PayPal, and gives the payee a signed note. Moves no money. | `GET /v2/payments/authorizations/{id}` |
 | **Spend** | The agent holding it | Signs a request with its own key, or pays a promise it made. The gateway verifies the whole chain, then under a lock checks revocation and the budget of **every** envelope up the chain, reserves, and pays. | `POST /v2/payments/authorizations/{id}/capture` (partial) then `POST /v1/payments/payouts` |
+| **Accept** | The key a promise named | Signs that the work is delivered and accepted, with a fingerprint of it. That signature pays the promise without going back to its maker; revocation and expiry still win. Name the payee for paid-on-delivery, or a checker for paid on verified work. | Partial capture + Payout |
+| **Approve** | The owner | An envelope can carry "ask me above $X". A payment over it is refused; the agent sets the money aside naming the owner, and only the owner's signature (in their browser) pays it, or declines it. The threshold can be lowered down the chain, never raised or dropped. | Partial capture + Payout, on the owner's signature |
 | **Get paid** | An agent with an account | The account is opened with two signatures: the agent's own key and its owner's. A payee written as `acct:xxxx-xxxx-xxxx` is that agent; the payout goes to its owner's PayPal address, fixed when the payment is admitted. | Payout |
+| **Keep a balance** | An agent whose account holds | The account is opened with `mode: "hold"`. A payment to it is still a partial capture of the payer's hold; the amount is then credited to the agent's balance on a ledger and not paid out. One ledger row per payment, so it cannot be credited twice. | `POST /v2/payments/authorizations/{id}/capture` |
+| **Transfer** | The agent that owns the balance | Signs a transfer with its own key. To another account that holds, it is one debit and one credit under one lock. To a PayPal address, or home to its owner (a withdrawal), it is a debit and then a payout; if PayPal refuses, the amount goes back once. Refused when the balance is too low, over the owner's cap, or frozen. | none between accounts; `POST /v1/payments/payouts` on the way out |
+| **Issue a card** | An agent with a balance | Signs a card (`envelope-card/1`) for one merchant's account: a cap per charge, a number of charges, the least time between two charges, an expiry. Issuing moves no money and creates no secret. The agent or its owner can cancel it. | none |
+| **Charge a card** | The merchant the card is locked to | Signs a charge (`envelope-charge/1`) with its own key. The gateway checks the card's terms and the owner's rules under the holder's lock, debits the balance, and pays the merchant. When the charges are used up or the date passes, the card is over. | `POST /v1/payments/payouts` to the merchant, or none if the merchant keeps a balance here |
+| **Freeze** | The owner of an agent's account | Signs a freeze. Nothing leaves the balance until the owner lifts it; income still arrives. The agent cannot lift it, and cannot swap in another owner. | none |
 | **Close / revoke** | The owner, or a holder above | Revoking one envelope kills everything split from it and releases what it had set aside. Closing the root releases what was never spent. | `POST /v2/payments/authorizations/{id}/void` |
 
 Every payment produces a **receipt** signed by the gateway that binds the PayPal capture and payout ids to the request and the full chain. The receipt page re-checks it two ways: against PayPal's own GET endpoints, and in your browser with the same verification code the gateway runs.
 
 The rules are signatures and arithmetic. **No model output decides whether money moves.** An agent's stated reason is stored for the owner and never read by the gateway.
 
-Protocol: [`docs/SPEC.md`](docs/SPEC.md). Core (pure, isomorphic): [`lib/envelope/core.ts`](lib/envelope/core.ts). Gateway: [`lib/gateway/service.ts`](lib/gateway/service.ts). Endpoints: [`lib/api/handlers.ts`](lib/api/handlers.ts).
+Protocol: [`docs/SPEC.md`](docs/SPEC.md). Core (pure, isomorphic): [`lib/envelope/core.ts`](lib/envelope/core.ts). Gateway: [`lib/gateway/service.ts`](lib/gateway/service.ts). Balances: [`lib/gateway/bank.ts`](lib/gateway/bank.ts). Endpoints: [`lib/api/handlers.ts`](lib/api/handlers.ts).
 
 ## What it stops
 
@@ -70,11 +106,15 @@ Protocol: [`docs/SPEC.md`](docs/SPEC.md). Core (pure, isomorphic): [`lib/envelop
 | Twenty agents race for the same budget | Reserved under a lock before PayPal is called; exactly the budget is spent |
 | A copied envelope without the agent's key | `NOT_THE_HOLDER` |
 | The same signed request sent twice | Executed once; the second returns the first result |
+| The same request sent again with its signature written differently (padding, other alphabet, a space) | Refused: a signature has one accepted spelling, and a request is identified by its signed content, not by the text of its signature |
+| An agent tries to drain its balance, or lift its owner's freeze | `OVER_ACCOUNT_LIMIT`, `OVER_DAILY_LIMIT`, `ACCOUNT_FROZEN`; only the owner's key can freeze or unfreeze |
+| Someone copies an agent's card details | `NOT_THE_MERCHANT`: a card is charged with the merchant's key, not with a number |
+| A merchant charges more, more often, or more times than the card says, or after it was cancelled | `OVER_CARD_LIMIT`, `CHARGE_TOO_SOON`, `CARD_USED_UP`, `CARD_CANCELLED`, `CARD_EXPIRED` |
 | Someone points an agent's account number at their own PayPal address | Refused: the opening must be signed by the agent's own key |
 | An introduction or a promise is replayed as a payment | `NOT_THE_HOLDER`: each kind of message has its own signature domain |
 | Everything else goes wrong | PayPal refuses to capture beyond the authorization |
 
-The **attack corpus** ([`tests/attack-corpus.ts`](tests/attack-corpus.ts)) runs 90 such attacks in eight categories against the gateway on the simulator. All 90 are refused and none causes a capture or a payout. Result: [`docs/evidence/attack-suite.json`](docs/evidence/attack-suite.json); reproduce with `npx tsx scripts/attack-suite.ts`.
+The **attack corpus** ([`tests/attack-corpus.ts`](tests/attack-corpus.ts)) runs 163 such attacks in ten categories against the gateway on the simulator. All 163 are refused and none causes a capture or a payout. Result: [`docs/evidence/attack-suite.json`](docs/evidence/attack-suite.json); reproduce with `npx tsx scripts/attack-suite.ts`.
 
 ## How AI is used
 
@@ -92,12 +132,14 @@ AI tools used to build the project: Claude Code (Anthropic) wrote the code, test
 
 | Part | Status |
 |---|---|
-| Real PayPal sandbox, API-only | **Ran.** [`docs/evidence/sandbox-run.json`](docs/evidence/sandbox-run.json): an agent account opened, a $200 hold placed (authorization `4PP87506J3588720D`), proof of funds given and refused, $45 set aside and then paid agent to agent, a second promise released, a $70 payment, three denials, a receipt reconciled against PayPal, the hold voided with $115 captured and $85 released. Reproduce with `scripts/sandbox-run.ts`. |
-| Real PayPal sandbox, in a browser | **Ran** while recording the demo video: `scripts/record-demo.mjs` drove the app in Chromium against the sandbox (authorization `3U976856AP0536901`). Seal with a key held in the browser; a model split, set $45 aside and paid it agent to agent (PayPal payout `SUCCESS`), and paid the designer $67; three scripted attacks denied; proof of funds reported `PARTIALLY_CAPTURED`, $88.00 unused, signature checked in the browser; receipt checks passed; revoke; close with $112 captured and $88 released. `scripts/e2e.mjs` runs the same browser flow with the scripted agents: it passed on the real sandbox (authorization `0EB62360D09969525`), and the same steps passed on the simulator with a server gateway and with the in-browser gateway. |
-| In-browser gateway (no database) | **Ran** in Chromium: seal, agents set aside and pay, an agent's income on its passport, receipt verified, proof of funds, three attacks denied, close, a second tab sharing the same data, reload. Vercel builds and serves this mode from this repository with no environment variables. |
+| Real PayPal sandbox, API-only | **Ran.** [`docs/evidence/sandbox-run.json`](docs/evidence/sandbox-run.json): an agent account opened, a $200 hold placed (authorization `5R877165WY7565124`), proof of funds given and refused, $45 set aside and then paid agent to agent, a second promise released, a third released by a named agent's signed acceptance after the payee's own attempt was refused, a $70 payment, three denials, a $72 payment over the owner's $70 threshold (refused outright, set aside, not payable by the agent, paid on the owner's signature), a receipt reconciled against PayPal, a signed reference, the owner's books matched against PayPal (4 of 4, $197.00), and the hold voided with $197 captured and $3 released. The run then waits for PayPal's final word on each payout: the two to the agent's account ended `SUCCESS`; the two to a placeholder address ended `UNCLAIMED`. Reproduce with `scripts/sandbox-run.ts`. |
+| Balances, on the real PayPal sandbox | **Ran** in the same script, on a second hold (authorization `1HS10507GD2665632`, $60). buyer-agent paid writer-agent $50: PayPal captured it (`6B335088GW7849742`), it was credited to writer-agent's balance and no payout was made; the receipt reconciled against PayPal. writer-agent paid editor-agent $12 on the ledger with no PayPal call, and the same signed transfer presented again moved nothing. A $38 transfer to a stranger was refused (`OVER_ACCOUNT_LIMIT`), a forged transfer was refused (`NOT_THE_HOLDER`), a withdrawal from the frozen account was refused (`ACCOUNT_FROZEN`), and the agent could not lift the freeze. writer-agent then withdrew $20 to its owner: PayPal payout `9JBNVBH3R9Z5A`, final status `SUCCESS`. editor-agent paid $5 to a placeholder address: payout `ZL6Q66WNSVCL2`, final status `UNCLAIMED`. The hold was voided with $50 captured and $10 released. The books at the end: $50.00 in, $25.00 out, $25.00 held, all three checks passing. |
+| Real PayPal sandbox, in a browser | **Ran** while recording the demo video: `scripts/record-demo.mjs` drove the app in Chromium against the sandbox (authorization `1KT1399344348580E`). Seal with a key held in the browser; a model split, set $45 aside and paid it agent to agent (captured into translator-agent's balance), and paid the designer $67 (`UNCLAIMED`: placeholder address); three scripted attacks denied; translator-agent paid proofreader-agent $12 from its balance with no PayPal call and was refused a $33 transfer to a stranger (`OVER_ACCOUNT_LIMIT`); it issued a card locked to Lexica Pro and the merchant charged $9 (payout `J8YCWPUJD2MYE`, `PENDING` on screen, `UNCLAIMED` afterwards: placeholder address), a charge from another key was declined (`NOT_THE_MERCHANT`) and a $19 charge was declined (`OVER_CARD_LIMIT`); proof of funds reported `PARTIALLY_CAPTURED`, $88.00 unused, signature checked in the browser; receipt checks passed; an $80 request over the owner's $75 threshold waited for the owner's signature and was paid when the owner signed in the browser; the treasury matched 3 of 3 payments against PayPal; revoke; close with $192 captured and $8 released. `scripts/e2e.mjs` runs the browser flow with the scripted agents, including acceptance-released payment, owner approval, balances, the card, the books, the treasury and a signed reference: it passes on the simulator with a server gateway and with the in-browser gateway. It has not been rerun on the real sandbox since an earlier version passed there (authorization `0EB62360D09969525`). |
+| Xenoncard, with a real model, on the real PayPal sandbox | **Ran.** [`docs/evidence/card-run.md`](docs/evidence/card-run.md): an owner's hold (authorization `9W7659235B003944P`) funded an agent's balance with $30. A model (Claude Haiku through the MCP server, its own key on disk) was told it needed a $9-a-month service for a two-month study and that its owner would not share a bank card. It issued a card for that merchant: $9 a charge, two charges, one per 30 days. The merchant charged month one (PayPal payout `SKTPQ2DFR837J`, final `SUCCESS`); a second charge at once, a $19 charge and a charge from another key were declined. Told the study was off, the model listed its cards and cancelled the card; the merchant's next charge was declined. One run, one model. The second month was not reached in that run; the rules for it are covered by tests. |
+| In-browser gateway (no database) | **Ran** in Chromium: seal, agents set aside and pay, an agent's income on its passport, its balance (a transfer to another agent, a refused drain, an owner freeze, a withdrawal), its card (a charge, three declined charges, cancellation), the books, receipt verified, proof of funds, three attacks denied, close, a second tab sharing the same data, reload. Vercel builds and serves this mode from this repository with no environment variables. |
 | A real model playing the agents | **Ran** on the real sandbox in that recording, with Claude Haiku through `scripts/claude-bridge.mjs`: [`docs/evidence/model-run.md`](docs/evidence/model-run.md). Its red-team stage varied between runs (attempts refused by the gateway in two, declined by the model in three), so the video uses the scripted attacker for that part. The hosted copy has no model connected unless you add a key. |
-| MCP server and command line for agents | **Ran.** `scripts/mcp.ts` over stdio against the sandbox-backed gateway (split, pay, refused widenings). The promise and account commands were added after that run and are covered by the tests, not by a separate sandbox run through the CLI. |
-| Automated tests | **30 pass** on the simulator (`npm test`): narrowing rules, forged chains, ancestor budgets, replay, 20-way races, revocation scope, close → void, audit chain, statements of standing, accounts, promises, and the 90-attack corpus. |
+| MCP server and command line for agents | **Ran.** `scripts/mcp.ts` over stdio against the sandbox-backed gateway (split, pay, refused widenings). The promise and account commands were added after that run and are covered by the tests, not by a separate sandbox run through the CLI. The balance commands (`open-account --hold`, `balance`, `transfer`, `withdraw`, `freeze`, `books`) were run from the command line against the simulator. |
+| Automated tests | **51 pass** on the simulator (`npm test`): narrowing rules, forged chains, ancestor budgets, replay, 20-way races, revocation scope, close → void, audit chain, statements of standing, accounts, promises, acceptance-released payment, owner approval, balances (held income, transfers, a 10-way race for one balance, crossing transfers, interrupted and refused payouts, cap, freeze), a signed request replayed with its signature re-spelled, cards (terms, wrong merchant, spacing, self-ending, a 5-way race, cancellation, the owner's daily limit), and the 163-attack corpus. |
 | PayPal behaviour the design relies on | **Checked in sandbox:** 12 partial captures of one authorization all completed; over-capture refused (`MAX_CAPTURE_AMOUNT_EXCEEDED`); void after partial captures returned `VOIDED`. |
 | Payout delivery | Payouts are accepted by PayPal. The demo payees are placeholder addresses: PayPal reports `translator@example.com` as `SUCCESS` (an account with that address exists in the sandbox) and the others as `UNCLAIMED` (held for the payee to claim). Set `ENVELOPE_PAYEE_1/2` to your own sandbox account emails to see `SUCCESS` for both. |
 | Demo video | [`docs/demo/envelope-demo.mp4`](docs/demo/envelope-demo.mp4), recorded by `scripts/record-demo.mjs` driving the app. The narration is a synthetic voice. |
@@ -110,9 +152,9 @@ bash scripts/local-postgres.sh          # Postgres on :5433 (or set DATABASE_URL
 cp .env.example .env                    # add PAYPAL_CLIENT_ID / PAYPAL_CLIENT_SECRET from a sandbox app
 npm run db:migrate
 npm run build && npm start              # http://localhost:3000
-npm test                                # 30 tests on the simulator, including the attack corpus
+npm test                                # 51 tests on the simulator, including the attack corpus
 npx tsx scripts/sandbox-run.ts          # the whole flow on the real sandbox, writes evidence
-npx tsx scripts/attack-suite.ts         # 90 attacks, writes evidence
+npx tsx scripts/attack-suite.ts         # 163 attacks, writes evidence
 ```
 
 Without PayPal credentials the app runs on a built-in simulator and says so on every page. Without `DATABASE_URL` it runs the gateway in the browser (above).
@@ -155,9 +197,16 @@ npx tsx scripts/agent.ts open-account --as translator --owner bea --owner-name B
 npx tsx scripts/agent.ts promise --as helper --payee acct:xxxx-xxxx-xxxx --amount 12 --purpose translation       # prints a promise id and a note
 npx tsx scripts/agent.ts verify-promise <note>   # run by the payee
 npx tsx scripts/agent.ts keep <promise-id> --as helper       # or: release <promise-id> --as helper
+
+# paid on accepted work: the promise names a key; that key's signature releases the money
+npx tsx scripts/agent.ts promise --as helper --payee acct:xxxx-xxxx-xxxx --amount 12 --purpose translation --release-by ops-agent
+npx tsx scripts/agent.ts accept <promise-id> --as ops-agent --work-file delivered.json --note "checked against the brief"
+
+# a signed record an agent can show anywhere
+npx tsx scripts/agent.ts reference helper
 ```
 
-Agents that speak MCP get the same actions as tools (`envelope_show`, `envelope_split`, `envelope_pay`, `envelope_promise`, `envelope_keep`, `envelope_introduce`, `envelope_check_agent`). The server acts as one agent, holds only that agent's key, and has no tool to seal or close a root envelope:
+Agents that speak MCP get the same actions as tools (`envelope_show`, `envelope_split`, `envelope_pay`, `envelope_promise`, `envelope_keep`, `envelope_accept`, `envelope_introduce`, `envelope_check_agent`). The server acts as one agent, holds only that agent's key, and has no tool to seal or close a root envelope:
 
 ```bash
 claude mcp add envelope -e ENVELOPE_AGENT=ops-agent -- npx tsx scripts/mcp.ts
@@ -167,8 +216,18 @@ Or call the gateway directly: `POST /api/gateway/spend` with `{ signed, note }` 
 
 ## Honest limits
 
-- **Not a bank.** An agent's "account" is authority to spend from a hold on its owner's funding source, plus an address where its income is settled. Agents hold no deposits; what an agent earns goes to its owner's PayPal.
+- **Not a licensed bank.** This is the mechanics of accounts for AI agents, on the PayPal sandbox. An account that holds keeps a balance on this gateway's ledger; the money itself sits in the gateway's PayPal account after the capture. Keeping balances for other people is stored value and is regulated. A real deployment would hold those funds with a licensed partner. There is no interest, lending, insurance or dispute handling.
+- **A payment into a balance is final here.** Once income is credited, the app has no way to pull it back to the payer. Refunds and disputes for held income are not built.
+- **A Xenoncard is not a network card.** It is not Visa, Mastercard or Verve, and it cannot be typed into a checkout that expects one. It works where the merchant has an account on this gateway and signs its charges. Cards for agents on the card networks already exist (Visa Intelligent Commerce, Mastercard Agent Pay, and issuers built on them); those work at any merchant and are still card numbers. This is a different trade: fewer places accept it, and its details cannot be stolen or overcharged.
+- **A card bounds a merchant; it does not judge one.** Inside the card's terms the merchant can charge without asking again. That is what a subscription is. The agent chooses the terms, and the terms are all it is protected by.
+- **The demo's billing period is 30 seconds** so two periods fit in a visit. A real card would say 30 days; the rule is the same.
+- **The owner's limits are per payment and per day.** A compromised agent can still spend up to the daily limit until its owner freezes the account. An account opened without a daily limit has none.
+- **A payout that PayPal holds as unclaimed stays debited.** If PayPal later returns it, the gateway credits the balance back when the transfer is next looked up; nothing polls for that on its own.
 - **Setting money aside is not escrow.** A promise reserves money so nothing else can spend it. The agent that made it decides whether to pay, and the owner can still revoke. The payee gets certainty that the money exists and is spoken for, not a right to it.
+- **Owner approval is only as safe as the owner's key.** The key lives in the browser's storage in this demo. Whoever holds it can approve.
+- **Release on acceptance trusts the named key.** The gateway checks that the acceptance is signed by the key the promise named. It does not judge the work. Naming the payee means paying on its word; naming a checker means trusting the checker.
+- **A reference is one gateway's view.** It states what this gateway saw, signed. It is not a credit score, and nothing here extends credit.
+- **The treasury is public by key.** Anyone who knows an owner's public key can read that owner's totals, as they can read an envelope's page. Only the owner's private key can revoke or close.
 - **Proof of funds is a snapshot.** A statement of standing reserves nothing, so it can go stale; it expires after five minutes. A promise is how a payee gets more than a snapshot.
 - **Not escrow at the PayPal level either.** A PayPal authorization is a hold on the payer's funding source, valid up to 29 days with a shorter honor period. Envelope never calls it escrow, and it does not reauthorize a hold that is about to lapse.
 - **The try-it copy is a simulator.** With no database the gateway runs in the visitor's browser, so the visitor is trusting their own tab: it demonstrates the protocol, it is not a deployment. The gateway's signing key and the demo agents' keys live in that browser.
@@ -177,7 +236,8 @@ Or call the gateway directly: `POST /api/gateway/spend` with `{ signed, note }` 
 - **Demo-grade key storage.** The owner's key is in `localStorage`; demo agents' keys are in the database.
 - **Account numbers are short.** They are the first 60 bits of the key. The gateway never lets two keys share a number, but a payer should confirm the agent's name and owner on its passport, not only the number.
 - **It bounds damage; it doesn't judge payments.** A payment inside the envelope's limits is allowed even if it was a bad idea.
-- **Prior art and rivals.** Attenuating capability chains are not new (macaroons, Biscuit, UCAN, L402, ERC-7710, AP2, 2026 IETF drafts), and agent identity is a crowded field. We read the code of 36 other entries to this hackathon: several ship signed delegation chains, agent passports, signed receipts or hold-and-capture budgets, and some are more complete products than this one. What we did not find in any of them is one PayPal hold behind a whole tree of agents, budgets debited at every ancestor, or proof of funds tied to the live hold. See [`docs/DISCOVERY.md`](docs/DISCOVERY.md).
+- **A replay bug was found and fixed during review.** Until the last day, a paid request presented again with its signature re-encoded (for example with base64 padding added) was treated as a new request and paid a second time, within the envelope's limits and the five-minute window. The decoder is now strict and the replay check no longer depends on how a signature is written; `tests/replay-encoding.test.ts` covers it. The sandbox evidence and the video were recorded after the fix. There has been no external security review.
+- **Prior art and rivals.** Attenuating capability chains are not new (macaroons, Biscuit, UCAN, L402, ERC-7710, AP2, 2026 IETF drafts), and agent identity is a crowded field. We read the code of 36 other entries to this hackathon: several ship signed delegation chains, agent passports, signed receipts or hold-and-capture budgets, and some are more complete products than this one. What we did not find in any of them is one PayPal hold behind a whole tree of agents, budgets debited at every ancestor, or proof of funds tied to the live hold. See [`docs/DISCOVERY.md`](docs/DISCOVERY.md). Where this could go after the hackathon is in [`docs/VISION.md`](docs/VISION.md), kept separate from what exists.
 
 ## Licence
 
