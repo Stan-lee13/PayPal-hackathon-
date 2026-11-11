@@ -119,6 +119,17 @@ export async function applyPayPalEvent(ev: PayPalEventBody, source: "webhook" | 
   const [fresh] = await db.insert(paypalEvents).values({ id: ev.id, type, source, resourceId, outcome: "received" }).onConflictDoNothing().returning();
   if (!fresh) return { event: ev.id, type, duplicate: true, subject: null, outcome: "already applied" };
 
+  try {
+    return await applyFresh(ev, type, r);
+  } catch (e) {
+    // Could not finish (PayPal or the database hiccuped): forget the event so that PayPal's redelivery, or the next read of its feed, tries again.
+    await db.delete(paypalEvents).where(eq(paypalEvents.id, ev.id)).catch(() => undefined);
+    throw e;
+  }
+}
+
+async function applyFresh(ev: PayPalEventBody, type: string, r: Loose): Promise<EventOutcome> {
+  const db = getDb();
   const ours = [r.invoice_id, r.payout_item?.sender_item_id, r.sender_batch_id, r.batch_header?.sender_batch_header?.sender_batch_id].map(str).filter((x): x is string => Boolean(x));
   const batch = str(r.payout_batch_id) ?? str(r.batch_header?.payout_batch_id);
   const isHold = type.startsWith("PAYMENT.AUTHORIZATION.");
