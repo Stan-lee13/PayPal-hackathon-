@@ -1,21 +1,3 @@
-CREATE TABLE "ai_cache" (
-	"key" text PRIMARY KEY NOT NULL,
-	"purpose" text NOT NULL,
-	"value" jsonb NOT NULL,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL
-);
---> statement-breakpoint
-CREATE TABLE "ai_usage" (
-	"id" bigserial PRIMARY KEY NOT NULL,
-	"purpose" text NOT NULL,
-	"model" text NOT NULL,
-	"input_tokens" integer NOT NULL,
-	"output_tokens" integer NOT NULL,
-	"cache_read_tokens" integer DEFAULT 0 NOT NULL,
-	"cost_micro_usd" bigint NOT NULL,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL
-);
---> statement-breakpoint
 CREATE TABLE "audit_log" (
 	"id" bigserial PRIMARY KEY NOT NULL,
 	"scope_id" text NOT NULL,
@@ -69,18 +51,6 @@ CREATE TABLE "gateway_keys" (
 	"public_key" text NOT NULL,
 	"private_jwk" jsonb NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
-);
---> statement-breakpoint
-CREATE TABLE "paypal_events" (
-	"id" text PRIMARY KEY NOT NULL,
-	"paypal_event_id" text NOT NULL,
-	"event_type" text NOT NULL,
-	"resource_id" text,
-	"verification" text NOT NULL,
-	"payload" jsonb NOT NULL,
-	"processing_status" text DEFAULT 'RECEIVED' NOT NULL,
-	"received_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "paypal_events_paypal_event_id_unique" UNIQUE("paypal_event_id")
 );
 --> statement-breakpoint
 CREATE TABLE "rate_limits" (
@@ -137,7 +107,6 @@ CREATE TABLE "spends" (
 );
 --> statement-breakpoint
 ALTER TABLE "blocks" ADD CONSTRAINT "blocks_root_id_roots_id_fk" FOREIGN KEY ("root_id") REFERENCES "public"."roots"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-CREATE INDEX "ai_usage_created" ON "ai_usage" USING btree ("created_at");--> statement-breakpoint
 CREATE INDEX "audit_subject" ON "audit_log" USING btree ("subject_id","seq");--> statement-breakpoint
 CREATE UNIQUE INDEX "audit_chain_seq" ON "audit_log" USING btree ("scope_id",coalesce("subject_id", '-'),"seq");--> statement-breakpoint
 CREATE INDEX "blocks_root" ON "blocks" USING btree ("root_id","depth");--> statement-breakpoint

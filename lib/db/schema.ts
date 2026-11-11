@@ -5,7 +5,7 @@
  * Money is always integer minor units.
  */
 import { sql } from "drizzle-orm";
-import { bigint, bigserial, index, integer, jsonb, pgTable, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
+import { bigserial, index, integer, jsonb, pgTable, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
 import type { Block, Caps, SignedSpend, Violation } from "../envelope/core";
 
 const ts = (name: string) => timestamp(name, { withTimezone: true, mode: "date" });
@@ -120,17 +120,6 @@ export const demoKeys = pgTable("demo_keys", {
   createdAt: ts("created_at").notNull().defaultNow(),
 }, (t) => [uniqueIndex("demo_keys_root_label").on(t.rootId, t.label)]);
 
-export const paypalEvents = pgTable("paypal_events", {
-  id: text("id").primaryKey(),
-  paypalEventId: text("paypal_event_id").notNull().unique(),
-  eventType: text("event_type").notNull(),
-  resourceId: text("resource_id"),
-  verification: text("verification", { enum: ["SUCCESS", "SIMULATED"] }).notNull(),
-  payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),
-  processingStatus: text("processing_status", { enum: ["RECEIVED", "PROCESSED", "FAILED", "IGNORED"] }).notNull().default("RECEIVED"),
-  receivedAt: ts("received_at").notNull().defaultNow(),
-});
-
 /** Tamper-evident trail: one SHA-256 chain per root envelope (`scopeId` = principal key, `subjectId` = root id). */
 export const auditLog = pgTable("audit_log", {
   id: bigserial("id", { mode: "number" }).primaryKey(),
@@ -146,24 +135,6 @@ export const auditLog = pgTable("audit_log", {
   prevHash: text("prev_hash").notNull(),
   hash: text("hash").notNull(),
 }, (t) => [index("audit_subject").on(t.subjectId, t.seq), uniqueIndex("audit_chain_seq").on(t.scopeId, sql`coalesce(${t.subjectId}, '-')`, t.seq)]);
-
-export const aiUsage = pgTable("ai_usage", {
-  id: bigserial("id", { mode: "number" }).primaryKey(),
-  purpose: text("purpose").notNull(),
-  model: text("model").notNull(),
-  inputTokens: integer("input_tokens").notNull(),
-  outputTokens: integer("output_tokens").notNull(),
-  cacheReadTokens: integer("cache_read_tokens").notNull().default(0),
-  costMicroUsd: bigint("cost_micro_usd", { mode: "number" }).notNull(),
-  createdAt: ts("created_at").notNull().defaultNow(),
-}, (t) => [index("ai_usage_created").on(t.createdAt)]);
-
-export const aiCache = pgTable("ai_cache", {
-  key: text("key").primaryKey(),
-  purpose: text("purpose").notNull(),
-  value: jsonb("value").$type<Record<string, unknown>>().notNull(),
-  createdAt: ts("created_at").notNull().defaultNow(),
-});
 
 export const emulatorState = pgTable("emulator_state", {
   id: text("id").primaryKey(),

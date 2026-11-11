@@ -1,8 +1,8 @@
 @import "tailwindcss";
 
 /* ---------------------------------------------------------------------------
-   MergePay. Tokens first; components read tokens only.
-   One colour per invoice state, used consistently: draft · sent · paid · merged · blocked.
+   Envelope. Tokens first; components read tokens only.
+   One colour per state, used consistently: neutral · in flight · paid · authority · denied.
    --------------------------------------------------------------------------- */
 :root {
   --bg: #F6F6F3;
@@ -115,7 +115,7 @@ button, a, summary, label, input[type="checkbox"], input[type="radio"] { touch-a
 .kbd { font-family: var(--font-mono); font-size: .8em; padding: .05em .4em; border-radius: 5px; background: var(--sunken); border: 1px solid var(--rule); }
 .code { background: var(--code-bg); color: var(--code-ink); font-family: var(--font-mono); font-size: .82rem; line-height: 1.6; border-radius: 10px; }
 
-/* Invoice states */
+/* States */
 .chip { display: inline-flex; align-items: center; gap: .35rem; padding: .12rem .55rem; border-radius: 999px; font-size: .74rem; font-weight: 600; letter-spacing: .02em; white-space: nowrap; }
 .chip::before { content: ""; width: .45rem; height: .45rem; border-radius: 999px; background: currentColor; }
 .chip-DRAFT { color: var(--draft); background: var(--draft-wash); }
@@ -124,6 +124,24 @@ button, a, summary, label, input[type="checkbox"], input[type="radio"] { touch-a
 .chip-MERGED { color: var(--merged); background: var(--merged-wash); }
 .chip-MERGE_BLOCKED { color: var(--blocked); background: var(--blocked-wash); }
 .chip-CANCELLED { color: var(--draft); background: var(--draft-wash); text-decoration: line-through; }
+.chip-DENIED, .chip-FAILED { color: var(--danger); background: var(--danger-wash); }
+.chip-UNCLAIMED, .chip-PAYOUT_PENDING, .chip-RESERVED, .chip-CAPTURED { color: var(--sent); background: var(--sent-wash); }
+.chip-ACTIVE { color: var(--paid); background: var(--paid-wash); }
+.chip-CLOSED, .chip-REVOKED { color: var(--draft); background: var(--draft-wash); }
+
+/* Budget bar */
+.bar { height: 8px; border-radius: 999px; background: var(--sunken); overflow: hidden; display: flex; }
+.bar > i { display: block; height: 100%; transition: width 500ms var(--ease-out); }
+.bar-spent { background: var(--paid); }
+.bar-reserved { background: var(--sent); }
+.bar-released { background: var(--draft); opacity: .45; }
+
+/* Envelope cards nest like real envelopes */
+.env { border: 1px solid var(--hairline); border-radius: 12px; background: var(--raised); box-shadow: var(--shadow-sm); position: relative; }
+.env::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 3px; border-radius: 12px 12px 0 0; background: var(--accent); opacity: .8; }
+.env-dead { opacity: .55; }
+.env-dead::before { background: var(--draft); }
+.env-children { margin-left: 1.25rem; padding-left: 1rem; border-left: 2px dashed var(--rule); }
 
 /* Timeline */
 .step { position: relative; padding-left: 1.75rem; }

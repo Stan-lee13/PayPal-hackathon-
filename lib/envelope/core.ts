@@ -182,13 +182,16 @@ export async function seal(principal: KeyPair, holder: { publicKey: string; labe
   return [{ body, sig: await sign(principal.privateKey, BLOCK_VERSION, body) }];
 }
 
+/** Minor units as a readable amount, for messages only. */
+export const money = (minor: number, currency = "USD") => `${currency === "USD" ? "$" : ""}${(minor / 100).toFixed(2)}${currency === "USD" ? "" : " " + currency}`;
+
 /** Ways `child` is wider than `parent`. Empty = a valid narrowing. */
 export function narrowingViolations(parent: Caps, child: Caps, at: string | null = null): Violation[] {
   const v: Violation[] = [];
   const add = (code: Reason, detail: string) => v.push({ code, at, detail });
   if (child.currency !== parent.currency) add("CURRENCY_CHANGED", `${parent.currency} → ${child.currency}`);
-  if (child.limit > parent.limit) add("WIDENED_LIMIT", `limit ${child.limit} is more than the parent's ${parent.limit}`);
-  if (child.perPayment > parent.perPayment) add("WIDENED_PER_PAYMENT", `per-payment ${child.perPayment} is more than the parent's ${parent.perPayment}`);
+  if (child.limit > parent.limit) add("WIDENED_LIMIT", `limit ${money(child.limit, parent.currency)} is more than the parent's ${money(parent.limit, parent.currency)}`);
+  if (child.perPayment > parent.perPayment) add("WIDENED_PER_PAYMENT", `per-payment cap ${money(child.perPayment, parent.currency)} is more than the parent's ${money(parent.perPayment, parent.currency)}`);
   if (parent.payees !== null && (child.payees === null || child.payees.some((p) => !parent.payees!.includes(p)))) add("WIDENED_PAYEES", "adds payees the parent doesn't allow");
   if (parent.purposes !== null && (child.purposes === null || child.purposes.some((p) => !parent.purposes!.includes(p)))) add("WIDENED_PURPOSES", "adds purposes the parent doesn't allow");
   if (Date.parse(child.notAfter) > Date.parse(parent.notAfter)) add("EXTENDED_EXPIRY", "expires later than the parent");
@@ -272,7 +275,7 @@ export async function verifySpend(s: SignedSpend, now = new Date()): Promise<{ o
   if (!Number.isSafeInteger(r.amount) || r.amount <= 0) add("BAD_AMOUNT", "amount must be a positive whole number of minor units");
   const c = chain.caps;
   if (r.currency !== c.currency) add("WRONG_CURRENCY", `this envelope is in ${c.currency}`);
-  if (r.amount > c.perPayment) add("OVER_PER_PAYMENT", `${r.amount} is over the per-payment cap of ${c.perPayment}`);
+  if (r.amount > c.perPayment) add("OVER_PER_PAYMENT", `${money(r.amount, c.currency)} is over the per-payment cap of ${money(c.perPayment, c.currency)}`);
   if (c.payees !== null && !c.payees.includes(r.payee)) add("PAYEE_NOT_ALLOWED", `${r.payee} is not a payee this envelope allows`);
   if (c.purposes !== null && !c.purposes.includes(r.purpose)) add("PURPOSE_NOT_ALLOWED", `"${r.purpose}" is not a purpose this envelope allows`);
   return { ok: violations.length === 0, violations, chain };

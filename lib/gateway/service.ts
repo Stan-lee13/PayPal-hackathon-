@@ -182,8 +182,8 @@ export async function spend(signed: E.SignedSpend, agentNote?: string): Promise<
           const left = row.caps.limit - row.spentMinor - row.reservedMinor;
           if (r.amount > left) {
             reasons.push(i === chain.length - 1
-              ? { code: "OVER_ENVELOPE_LIMIT", at: row.id, detail: `${row.holderLabel} has ${left} left of ${row.caps.limit}` }
-              : { code: "OVER_ANCESTOR_LIMIT", at: row.id, detail: `${row.holderLabel}'s envelope (an ancestor) has ${left} left of ${row.caps.limit}` });
+              ? { code: "OVER_ENVELOPE_LIMIT", at: row.id, detail: `${row.holderLabel} has ${E.money(left, row.caps.currency)} left of ${E.money(row.caps.limit, row.caps.currency)}` }
+              : { code: "OVER_ANCESTOR_LIMIT", at: row.id, detail: `${row.holderLabel}'s envelope, above this one, has ${E.money(left, row.caps.currency)} left of ${E.money(row.caps.limit, row.caps.currency)}` });
           }
         }
       }

@@ -6,8 +6,8 @@ const sans = IBM_Plex_Sans({ subsets: ["latin", "latin-ext"], weight: ["400", "5
 const mono = IBM_Plex_Mono({ subsets: ["latin"], weight: ["400", "500", "600"], variable: "--font-plex-mono", display: "swap" });
 
 export const metadata: Metadata = {
-  title: { default: "MergePay — get paid before you merge", template: "%s · MergePay" },
-  description: "Bill a client for a pull request from your editor with a PayPal invoice. The PR merges the moment PayPal confirms the payment.",
+  title: { default: "Envelope — give your agent an envelope, not your wallet", template: "%s · Envelope" },
+  description: "Spending authority for AI agents that can be split for sub-agents but never enlarged, backed by a PayPal hold and enforced at the money boundary.",
 };
 
 export const viewport: Viewport = { width: "device-width", initialScale: 1, themeColor: [{ media: "(prefers-color-scheme: light)", color: "#F6F6F3" }, { media: "(prefers-color-scheme: dark)", color: "#0B0C0F" }] };
