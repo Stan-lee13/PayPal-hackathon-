@@ -85,7 +85,8 @@ await page.goBack();
 
 await page.getByRole("button", { name: "Close envelope & release the hold" }).click();
 await page.getByText(/You closed the envelope\. PayPal released \$\d+\.\d\d of the hold/).waitFor(T);
-await page.getByText("Closed").first().waitFor();
+await page.getByText("Closed", { exact: true }).first().waitFor(T);
+await page.getByText("VOIDED").first().waitFor(T).catch(() => {});
 step(await page.getByText(/You closed the envelope/).innerText());
 await page.screenshot({ path: `${OUT}/08-closed.png`, fullPage: true });
 

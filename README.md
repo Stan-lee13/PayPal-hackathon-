@@ -18,6 +18,14 @@ It behaves like an account of the agent's own. Each agent has an account number 
 
 Built for the PayPal AI Hackathon 2026. Sandbox only. The people and agents in the demo are fictional.
 
+![Envelope landing page](docs/screenshots/01-home.png)
+
+| An agent's passport and a payee's proof-of-funds check | A receipt, checked against PayPal and in the browser |
+|---|---|
+| ![Agent passport](docs/screenshots/05-passport.png) | ![Receipt](docs/screenshots/07-receipt.png) |
+
+Demo video: [`docs/demo/envelope-demo.mp4`](docs/demo/envelope-demo.mp4).
+
 ## The problem
 
 An agent that can pay holds a credential. When it delegates work to another agent, it either hands over the same credential or becomes a bottleneck approving every payment. Flat spending limits don't compose: an orchestrator with a $500 limit that calls five sub-agents has five $500 problems. And afterwards nobody can answer the questions that matter: who authorized this dollar, under what limits, and how bad could it have been?
@@ -62,7 +70,7 @@ Protocol: [`docs/SPEC.md`](docs/SPEC.md). Core (pure, isomorphic): [`lib/envelop
 | Automated tests | **21 pass** on the built-in PayPal simulator (`npm test`): narrowing rules, forged chains, ancestor budgets, replay, a 20-way race, revocation scope, close → void, audit chain, statements of standing, and that an introduction cannot be replayed as a payment. |
 | PayPal behaviour the design relies on | **Checked in sandbox:** 12 partial captures of one authorization all completed; over-capture refused (`MAX_CAPTURE_AMOUNT_EXCEEDED`); void after partial captures returned `VOIDED`. |
 | Payout delivery | Payouts are accepted by PayPal. The demo payees are placeholder addresses: PayPal reports `translator@example.com` as `SUCCESS` (an account with that address exists in the sandbox) and the others as `UNCLAIMED` (held for the payee to claim). Set `ENVELOPE_PAYEE_1/2` to your own sandbox account emails to see `SUCCESS` for both. |
-| Demo video | [`docs/demo/envelope-demo.mp4`](docs/demo/envelope-demo.mp4) (2:24), recorded by `scripts/record-demo.mjs` driving the app on the real sandbox. |
+| Demo video | [`docs/demo/envelope-demo.mp4`](docs/demo/envelope-demo.mp4) (2:34), recorded by `scripts/record-demo.mjs` driving the app on the real sandbox. |
 | Hosted deployment | Not deployed. Run it locally (below). |
 
 ## Run it
