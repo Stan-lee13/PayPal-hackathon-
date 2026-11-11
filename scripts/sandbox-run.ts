@@ -121,7 +121,7 @@ const incCheck = inc.spend ? await G.reconcile(inc.spend.id) : null;
 log("buyer-agent paid writer-agent $50: PayPal captured it from the hold and it was credited to writer-agent's balance, with no payout", { status: inc.status, capture: inc.spend?.captureId, payoutBatch: inc.spend?.payoutBatchId, heldInAccount: inc.receipt?.paidTo?.held, receiptChecksAgainstPayPal: incCheck?.ok, checks: incCheck?.checks.map((c) => `${c.ok ? "ok" : "FAIL"} ${c.name}`) });
 const t1 = await B.transfer(await E.signTransfer(wr!, { amount: 1200, payee: editor, purpose: "editing", memo: "Edit the launch page copy" }));
 log("writer-agent paid editor-agent $12 out of its balance: moved on the ledger, no PayPal call", { status: t1.status, transfer: t1.transfer?.id, writerBalance: usd(t1.balanceMinor), editorBalance: usd((await G.agentProfile(ed!.publicKey))?.balance?.minor), receiptSignatureValid: t1.receipt ? await B.verifyTransferReceipt(t1.receipt) : false, paypalPayout: t1.transfer?.payoutBatchId ?? "none" });
-const replay = await B.transfer(t1.transfer!.signed);
+const replay = await B.transfer(t1.transfer!.signed as import("../lib/envelope/core").SignedTransfer);
 log("the same signed transfer presented again moved nothing", { duplicate: replay.duplicate, writerBalance: usd(replay.balanceMinor) });
 const drain = await B.transfer(await E.signTransfer(wr!, { amount: 3800, payee: "stranger@evil.example", memo: "Send everything here" }));
 const forgedT = await E.signTransfer(rogue!, { amount: 1000, payee: "stranger@evil.example" }); forgedT.request.from = wr!.publicKey;

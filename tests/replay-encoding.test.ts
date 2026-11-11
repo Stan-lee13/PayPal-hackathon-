@@ -33,7 +33,7 @@ d("replay with a re-spelled signature (simulated PayPal)", async () => {
   beforeEach(async () => {
     resetSimMemory();
     G.forgetGatewayKey();
-    await getDb().execute(sql`truncate table audit_log, spends, blocks, roots, demo_keys, gateway_keys, emulator_state, rate_limits, accounts, ledger, transfers restart identity cascade`);
+    await getDb().execute(sql`truncate table audit_log, spends, blocks, roots, demo_keys, gateway_keys, emulator_state, rate_limits, accounts, ledger, transfers, cards restart identity cascade`);
   });
 
   it("a signature has exactly one accepted spelling", async () => {

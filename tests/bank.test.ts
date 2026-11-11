@@ -44,7 +44,7 @@ d("agent balances (simulated PayPal)", async () => {
   beforeEach(async () => {
     resetSimMemory();
     G.forgetGatewayKey();
-    await getDb().execute(sql`truncate table audit_log, spends, blocks, roots, demo_keys, gateway_keys, emulator_state, rate_limits, accounts, ledger, transfers restart identity cascade`);
+    await getDb().execute(sql`truncate table audit_log, spends, blocks, roots, demo_keys, gateway_keys, emulator_state, rate_limits, accounts, ledger, transfers, cards restart identity cascade`);
   });
 
   it("income to an account that holds is captured from the payer's hold and credited once, with no payout", async () => {

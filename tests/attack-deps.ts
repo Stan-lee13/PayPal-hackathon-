@@ -13,7 +13,7 @@ export async function corpusDeps() {
     reset: async () => {
       resetSimMemory();
       G.forgetGatewayKey();
-      await getDb().execute(sql`truncate table audit_log, spends, blocks, roots, demo_keys, gateway_keys, emulator_state, rate_limits, accounts, ledger, transfers restart identity cascade`);
+      await getDb().execute(sql`truncate table audit_log, spends, blocks, roots, demo_keys, gateway_keys, emulator_state, rate_limits, accounts, ledger, transfers, cards restart identity cascade`);
     },
     db: { expirePromise: async (id: string) => { await getDb().update(schema.spends).set({ promiseExpiresAt: new Date(Date.now() - 1000) }).where(eq(schema.spends.id, id)); } },
   };

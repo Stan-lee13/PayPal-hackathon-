@@ -36,6 +36,13 @@
       "when": 1794407587776,
       "tag": "0004_short_blizzard",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1794410737401,
+      "tag": "0005_lumpy_christian_walker",
+      "breakpoints": true
     }
   ]
 }

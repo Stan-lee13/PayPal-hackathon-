@@ -599,7 +599,7 @@ export async function openAccount(signed: E.SignedAccount): Promise<Account> {
   // The owner answers for the account, caps it and can freeze it: an agent must not be able to swap in an owner key of its own.
   if (clash && clash.owner !== b.owner) throw new UserFacingError("This account already has an owner. Only that owner can co-sign a change to it.", 409);
   if (clash && Date.parse(clash.signed.body.at) >= Date.parse(b.at)) return clash;
-  const values = { account, label: b.label, owner: b.owner, ownerName: b.ownerName || "Owner", settleTo: b.settleTo, signed, mode: b.mode === "hold" ? "hold" as const : "settle" as const, perPaymentMinor: b.perPayment ?? null };
+  const values = { account, label: b.label, owner: b.owner, ownerName: b.ownerName || "Owner", settleTo: b.settleTo, signed, mode: b.mode === "hold" ? "hold" as const : "settle" as const, perPaymentMinor: b.perPayment ?? null, perDayMinor: b.perDay ?? null };
   const [row] = await db.insert(accounts).values({ agent: b.agent, ...values }).onConflictDoUpdate({ target: accounts.agent, set: values }).returning();
   await audit(db, { scopeId: b.owner, subjectId: `acct:${account}`, actor: "principal", action: clash ? "account.updated" : "account.opened", ref: account, outcome: "OK", detail: { agent: b.label, owner: b.ownerName } });
   return row!;
@@ -789,7 +789,7 @@ export async function agentProfile(key: string) {
     receives: acct ? { payee: E.accountPayee(key), owner: { label: acct.ownerName, key: acct.owner }, settlesTo: maskEmail(acct.settleTo), openedAt: acct.openedAt.toISOString(), holds: acct.mode === "hold" } : null,
     /** Set when the account keeps a balance (or still has one). */
     balance: acct && (acct.mode === "hold" || acct.balanceMinor > 0) ? {
-      minor: acct.balanceMinor, frozen: Boolean(acct.frozenAt), perPaymentMinor: acct.perPaymentMinor,
+      minor: acct.balanceMinor, frozen: Boolean(acct.frozenAt), perPaymentMinor: acct.perPaymentMinor, perDayMinor: acct.perDayMinor,
       ledger: (await db.select().from(ledger).where(eq(ledger.agent, key)).orderBy(desc(ledger.id)).limit(30)).map((l) => ({ id: l.id, kind: l.kind, ref: l.ref, deltaMinor: l.deltaMinor, balanceAfterMinor: l.balanceAfterMinor, counterparty: l.counterparty && l.counterparty.includes("@") ? maskEmail(l.counterparty) : l.counterparty, memo: l.memo, at: l.createdAt.toISOString() })),
     } : null,
     record: {
