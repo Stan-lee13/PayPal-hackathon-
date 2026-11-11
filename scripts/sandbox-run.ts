@@ -13,6 +13,7 @@ const { paypalMode } = await import("../lib/paypal/client");
 if (paypalMode() !== "sandbox") throw new Error("Set PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET (sandbox) first; this script refuses to run on the simulator.");
 const E = await import("../lib/envelope/core");
 const G = await import("../lib/gateway/service");
+const B = await import("../lib/gateway/bank");
 const { closeDb } = await import("../lib/db");
 const { getPayPal } = await import("../lib/paypal/client");
 const { getAuthorization } = await import("../lib/paypal/payments");
@@ -101,6 +102,55 @@ const earner = await G.agentProfile(tr!.publicKey);
 log("translator-agent's record", { earned: `$${((earner?.record.receivedMinor ?? 0) / 100).toFixed(2)}`, timesPaid: earner?.record.received, holdsAnEnvelope: (earner?.accounts.length ?? 0) > 0 });
 const payer = await G.agentProfile(loc!.publicKey);
 log("localization-agent's record", { promisesKept: payer?.record.promisesKept, promisesReleasedOrLapsed: payer?.record.promisesLapsed });
+
+// ---------------------------------------------------------------------------------------------------
+// Balances. A second envelope pays an agent whose account KEEPS its income. That agent then pays
+// another agent out of its balance, is stopped from overpaying, is frozen by its owner, and withdraws.
+// ---------------------------------------------------------------------------------------------------
+const usd = (n: number | null | undefined) => `$${((n ?? 0) / 100).toFixed(2)}`;
+const [dee, buyer, wr, cy, ed, rogue] = await Promise.all([1, 2, 3, 4, 5, 6].map(() => E.generateKeyPair()));
+const wAcct = await G.openAccount(await E.signAccount(wr!, bea!, { label: "writer-agent", ownerName: "Bea", settleTo: translatorPayPal, mode: "hold", perPayment: 3000 }));
+await G.openAccount(await E.signAccount(ed!, cy!, { label: "editor-agent", ownerName: "Cy", settleTo: designer, mode: "hold" }));
+const [writer, editor] = [E.accountPayee(wr!.publicKey), E.accountPayee(ed!.publicKey)];
+log("writer-agent and editor-agent opened accounts that keep their income", { writer, editor, writerMayPayAtOnce: usd(wAcct.perPaymentMinor), setBy: "Bea, its owner", withdrawsTo: G.maskEmail(wAcct.settleTo) });
+const chain2 = await E.seal(dee!, { publicKey: buyer!.publicKey, label: "buyer-agent" }, { currency: "USD", limit: 6000, perPayment: 6000, payees: [writer], purposes: ["writing"], notAfter, splits: 0 });
+const root2 = await G.registerRoot({ chain: chain2, principalName: "Dee (sandbox)", title: "Copy budget" });
+log("a second owner sealed $60 for buyer-agent: PayPal hold placed", { root: root2.id, order: root2.paypalOrderId, authorization: root2.authorizationId });
+const inc = await G.spend(await E.signSpend(chain2, buyer!, { amount: 5000, payee: writer, purpose: "writing", memo: "Launch page copy" }));
+const incCheck = inc.spend ? await G.reconcile(inc.spend.id) : null;
+log("buyer-agent paid writer-agent $50: PayPal captured it from the hold and it was credited to writer-agent's balance, with no payout", { status: inc.status, capture: inc.spend?.captureId, payoutBatch: inc.spend?.payoutBatchId, heldInAccount: inc.receipt?.paidTo?.held, receiptChecksAgainstPayPal: incCheck?.ok, checks: incCheck?.checks.map((c) => `${c.ok ? "ok" : "FAIL"} ${c.name}`) });
+const t1 = await B.transfer(await E.signTransfer(wr!, { amount: 1200, payee: editor, purpose: "editing", memo: "Edit the launch page copy" }));
+log("writer-agent paid editor-agent $12 out of its balance: moved on the ledger, no PayPal call", { status: t1.status, transfer: t1.transfer?.id, writerBalance: usd(t1.balanceMinor), editorBalance: usd((await G.agentProfile(ed!.publicKey))?.balance?.minor), receiptSignatureValid: t1.receipt ? await B.verifyTransferReceipt(t1.receipt) : false, paypalPayout: t1.transfer?.payoutBatchId ?? "none" });
+const replay = await B.transfer(t1.transfer!.signed);
+log("the same signed transfer presented again moved nothing", { duplicate: replay.duplicate, writerBalance: usd(replay.balanceMinor) });
+const drain = await B.transfer(await E.signTransfer(wr!, { amount: 3800, payee: "stranger@evil.example", memo: "Send everything here" }));
+const forgedT = await E.signTransfer(rogue!, { amount: 1000, payee: "stranger@evil.example" }); forgedT.request.from = wr!.publicKey;
+const forgedR = await B.transfer(forgedT);
+log("a compromised writer-agent tried to send its whole balance to a stranger; a stranger tried to move it with a forged signature: both refused", { drain: drain.status, drainReasons: drain.reasons.map((r) => r.code), forged: forgedR.status, forgedReasons: forgedR.reasons.map((r) => r.code), writerBalance: usd(drain.balanceMinor) });
+await B.freeze(await E.signFreeze(bea!, wr!.publicKey, true));
+const frozen = await B.transfer(await E.signTransfer(wr!, { kind: "withdraw", amount: 500 }));
+let selfUnfreeze = "refused";
+try { await B.freeze(await E.signFreeze(wr!, wr!.publicKey, false)); selfUnfreeze = "NOT REFUSED"; } catch (e) { selfUnfreeze = `refused: ${e instanceof Error ? e.message : e}`; }
+await B.freeze(await E.signFreeze(bea!, wr!.publicKey, false));
+log("Bea froze writer-agent's account: nothing could leave, and the agent could not lift the freeze; then Bea lifted it", { whileFrozen: frozen.status, reasons: frozen.reasons.map((r) => r.code), agentTriedToUnfreeze: selfUnfreeze });
+const wd = await B.transfer(await E.signTransfer(wr!, { kind: "withdraw", amount: 2000, memo: "Earnings to Bea" }));
+log("writer-agent withdrew $20 to its owner: a real PayPal payout", { status: wd.status, payoutBatch: wd.transfer?.payoutBatchId, payoutStatus: wd.transfer?.payoutStatus, sentTo: wd.transfer?.payoutTo ? G.maskEmail(wd.transfer.payoutTo) : null, writerBalance: usd(wd.balanceMinor), reasons: wd.reasons.map((r) => r.code) });
+const out2 = await B.transfer(await E.signTransfer(ed!, { amount: 500, payee: designer, purpose: "design", memo: "Header image" }));
+log("editor-agent paid $5 of what it was paid to a PayPal address: a real PayPal payout", { status: out2.status, payoutBatch: out2.transfer?.payoutBatchId, payoutStatus: out2.transfer?.payoutStatus, editorBalance: usd(out2.balanceMinor), reasons: out2.reasons.map((r) => r.code) });
+const { root: closed2 } = await G.revoke(await E.signRevoke(dee!, root2.id));
+log("the second owner closed the envelope: PayPal released what was not spent", { captured: usd(closed2.capturedMinor), released: usd(closed2.releasedMinor), authorizationStatus: (await getAuthorization(pp, root2.authorizationId!)).status });
+const pos = await B.position();
+log("the books", { paidIn: usd(pos.totals.capturedInMinor), paidOut: usd(pos.totals.paidOutMinor), heldForAgents: usd(pos.totals.balancesMinor), movedBetweenAgents: usd(pos.totals.bookTransferredMinor), balances: Object.fromEntries(pos.accounts.filter((a) => a.mode === "hold").map((a) => [a.label, usd(a.balanceMinor)])), checks: pos.checks.map((c) => `${c.ok ? "ok" : "FAIL"} ${c.name}`) });
+for (const t of [wd, out2]) if (t.transfer?.payoutBatchId) {
+  let u = (await B.syncTransfer(t.transfer.id))!;
+  const seen = [u.payoutStatus];
+  for (let i = 0; i < 12 && (u.payoutStatus === "PENDING" || u.payoutStatus === null); i++) {
+    await new Promise((r) => setTimeout(r, 5000));
+    u = (await B.syncTransfer(t.transfer.id))!;
+    if (seen[seen.length - 1] !== u.payoutStatus) seen.push(u.payoutStatus);
+  }
+  log("payout from a balance, as PayPal reports it", { transfer: u.id, kind: u.kind, sentTo: u.payoutTo ? G.maskEmail(u.payoutTo) : null, statusesSeen: seen, final: u.payoutStatus, status: u.status, meaning: u.payoutStatus === "SUCCESS" ? "delivered to the PayPal account" : u.payoutStatus === "UNCLAIMED" ? "accepted by PayPal and held for the receiver, who has no PayPal account at that address (placeholder address)" : "not final yet" });
+}
 
 // A capture is not a delivered payout. PayPal processes payouts asynchronously, so ask again until each
 // one leaves PENDING (or a minute passes) and record what PayPal finally says.
