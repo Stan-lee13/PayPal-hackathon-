@@ -9,6 +9,8 @@ export async function corpusDeps() {
   const { resetSimMemory } = await import("../lib/sim/store");
   return {
     G, B, sim,
+    read: async (path: string, params: Record<string, string>, body: unknown) => { const { handlers } = await import("../lib/api/handlers"); return handlers[path]!({ params, body }); },
+    capturedOf: async (rootId: string) => (await getDb().query.roots.findFirst({ where: eq(schema.roots.id, rootId) }))?.capturedMinor ?? -1,
     balanceOf: async (agent: string) => (await getDb().query.accounts.findFirst({ where: eq(schema.accounts.agent, agent) }))?.balanceMinor ?? -1,
     reset: async () => {
       resetSimMemory();

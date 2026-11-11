@@ -14,7 +14,7 @@ type G = typeof import("../lib/gateway/service");
 type Bank = typeof import("../lib/gateway/bank");
 type Sim = typeof import("../lib/paypal/emulator");
 
-export async function runCorpus(deps: { G: G; B: Bank; sim: Sim; reset: () => Promise<void>; balanceOf(agent: string): Promise<number>; db: { expirePromise(id: string): Promise<void> } }): Promise<AttackRow[]> {
+export async function runCorpus(deps: { G: G; B: Bank; sim: Sim; reset: () => Promise<void>; balanceOf(agent: string): Promise<number>; capturedOf(rootId: string): Promise<number>; read(path: string, params: Record<string, string>, body: unknown): Promise<{ status?: number; body: unknown }>; db: { expirePromise(id: string): Promise<void> } }): Promise<AttackRow[]> {
   const { G, B, sim } = deps;
   const rows: AttackRow[] = [];
   const EXP = () => new Date(Date.now() + 3600_000).toISOString();
@@ -404,6 +404,49 @@ export async function runCorpus(deps: { G: G; B: Bank; sim: Sim; reset: () => Pr
     await B.cancelCard(await E.signCardCancel(bea!, big.id));
     await guarded("charging a card its owner cancelled", async () => chargeAs(lx!, 100, big.id));
     await guarded("presenting the signed card again to bring a cancelled card back", async () => { await B.issueCard(big.signed); return chargeAs(lx!, 100, big.id); });
+  }
+
+  // ---- 11. The books -----------------------------------------------------------------------------------
+  // Not theft by an agent, but ways the gateway's own record could drift from what PayPal did, or be read by the wrong person.
+  {
+    w = await world();
+    const same = await E.signSpend(w.artChain, w.art, { amount: 2500, payee: "designer@example.com", purpose: "design" });
+    await attack("Books", "the same signed request arriving eight times at once", async () => {
+      const rs = await Promise.all(Array.from({ length: 8 }, () => G.spend(same)));
+      const captured = await deps.capturedOf(w.root.id);
+      return rs.every((r) => r.status === "PAID") && captured === 2500 ? "paid once; the envelope's books show one capture of $25.00" : { status: `BOOKS SHOW ${captured}` };
+    }, 2);
+    await sim.simNextCapturePending();
+    await attack("Books", "pay out against a capture PayPal has not completed", async () => {
+      const r = await G.spend(await E.signSpend(w.artChain, w.art, { amount: 1000, payee: "designer@example.com", purpose: "design" }));
+      return r.status === "CAPTURED" && !r.receipt ? "held: nothing is paid out until PayPal reports the capture completed" : { status: `PAID OUT WHILE PENDING (${r.status})` };
+    }, 1);
+    w = await world();
+    await sim.simRefuseRefunds(true);
+    const refusedChain = await E.split(w.rootChain, w.ops, { publicKey: w.rogue.publicKey, label: "helper" }, { ...w.base, limit: 5000, perPayment: 5000, payees: ["designer@example.com"], purposes: ["design"], splits: 0 });
+    void refusedChain;
+    await attack("Books", "a payout PayPal refuses, whose refund PayPal also refuses, frees the budget for re-use", async () => {
+      // the envelope allows designer@example.com only, so the refusal is forced through the account route: an agent account that settles to an address PayPal rejects
+      const [o, a] = await Promise.all([1, 2].map(() => E.generateKeyPair()));
+      await G.openAccount(await E.signAccount(a!, o!, { label: "blocked-agent", ownerName: "O", settleTo: "refused@example.com" }));
+      const payee = E.accountPayee(a!.publicKey);
+      const chain = await E.seal(w.ada, { publicKey: w.ops.publicKey, label: "ops-agent" }, { currency: "USD", limit: 5000, perPayment: 5000, payees: [payee], purposes: ["design"], notAfter: EXP(), splits: 0 });
+      const root = await G.registerRoot({ chain, principalName: "Ada", title: "Second budget" });
+      const r = await G.spend(await E.signSpend(chain, w.ops, { amount: 5000, payee, purpose: "design" }));
+      const again = await G.spend(await E.signSpend(chain, w.ops, { amount: 5000, payee, purpose: "design" }));
+      const captured = await deps.capturedOf(root.id);
+      return r.status === "REFUND_DUE" && again.status === "DENIED" && captured === 5000 ? "parked as REFUND_DUE: the capture stays in the books and the budget stays used" : { status: `${r.status} / ${again.status} / books ${captured}` };
+    }, 1);
+    await sim.simRefuseRefunds(false);
+    // an owner's books are for the owner
+    w = await world();
+    const path = "POST /api/treasury/:principal", params = { principal: w.ada.publicKey };
+    const refusedRead = async (body: unknown) => { const r = await deps.read(path, params, body); return r.status === 401 ? "refused: a treasury is shown only to its owner" : { status: `READ (${r.status ?? 200})` }; };
+    await attack("Books", "read an owner's treasury knowing only their public key", async () => refusedRead({}));
+    await attack("Books", "read it with a request signed by somebody else", async () => refusedRead({ signed: await E.signRead(w.rogue, "treasury", w.ada.publicKey) }));
+    await attack("Books", "read it with somebody else's signature and the owner's key written in", async () => { const s = await E.signRead(w.rogue, "treasury", w.ada.publicKey); s.by = w.ada.publicKey; return refusedRead({ signed: s }); });
+    await attack("Books", "replay the owner's read request ten minutes later", async () => refusedRead({ signed: await E.signRead(w.ada, "treasury", w.ada.publicKey, new Date(Date.now() - 10 * 60_000)) }));
+    await attack("Books", "use the owner's signature on another message as a read request", async () => { const rv = await E.signRevoke(w.ada, w.root.id); return refusedRead({ signed: { request: rv.request, sig: rv.sig, by: w.ada.publicKey } }); });
   }
 
   return rows;

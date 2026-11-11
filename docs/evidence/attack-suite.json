@@ -1,9 +1,9 @@
 {
-  "ranAt": "2026-11-11T15:33:18.260Z",
+  "ranAt": "2026-11-11T18:25:58.339Z",
   "paypal": "built-in simulator",
   "summary": {
-    "attacks": 163,
-    "refused": 163,
+    "attacks": 171,
+    "refused": 171,
     "movedMoney": 0
   },
   "byCategory": {
@@ -55,6 +55,11 @@
     "Card": {
       "attacks": 25,
       "refused": 25,
+      "movedMoney": 0
+    },
+    "Books": {
+      "attacks": 8,
+      "refused": 8,
       "movedMoney": 0
     }
   },
@@ -1198,6 +1203,62 @@
       "attack": "presenting the signed card again to bring a cancelled card back",
       "refused": true,
       "how": "CARD_CANCELLED",
+      "moneyMoved": false
+    },
+    {
+      "category": "Books",
+      "attack": "the same signed request arriving eight times at once",
+      "refused": true,
+      "how": "paid once; the envelope's books show one capture of $25.00",
+      "moneyMoved": false
+    },
+    {
+      "category": "Books",
+      "attack": "pay out against a capture PayPal has not completed",
+      "refused": true,
+      "how": "held: nothing is paid out until PayPal reports the capture completed",
+      "moneyMoved": false
+    },
+    {
+      "category": "Books",
+      "attack": "a payout PayPal refuses, whose refund PayPal also refuses, frees the budget for re-use",
+      "refused": true,
+      "how": "parked as REFUND_DUE: the capture stays in the books and the budget stays used",
+      "moneyMoved": false
+    },
+    {
+      "category": "Books",
+      "attack": "read an owner's treasury knowing only their public key",
+      "refused": true,
+      "how": "refused: a treasury is shown only to its owner",
+      "moneyMoved": false
+    },
+    {
+      "category": "Books",
+      "attack": "read it with a request signed by somebody else",
+      "refused": true,
+      "how": "refused: a treasury is shown only to its owner",
+      "moneyMoved": false
+    },
+    {
+      "category": "Books",
+      "attack": "read it with somebody else's signature and the owner's key written in",
+      "refused": true,
+      "how": "refused: a treasury is shown only to its owner",
+      "moneyMoved": false
+    },
+    {
+      "category": "Books",
+      "attack": "replay the owner's read request ten minutes later",
+      "refused": true,
+      "how": "refused: a treasury is shown only to its owner",
+      "moneyMoved": false
+    },
+    {
+      "category": "Books",
+      "attack": "use the owner's signature on another message as a read request",
+      "refused": true,
+      "how": "refused: a treasury is shown only to its owner",
       "moneyMoved": false
     }
   ]

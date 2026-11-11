@@ -4,6 +4,7 @@ import { clientIp, json, sameOrigin } from "../http";
 import { rateLimit } from "../security/rate-limit";
 import { handlers, run } from "./handlers";
 
+const MAX_BODY_BYTES = 128 * 1024;
 type Opts = { limit?: [name: string, max: number, windowSec: number]; global?: [name: string, max: number, windowSec: number]; sameOrigin?: boolean };
 
 export function route(key: keyof typeof handlers & string, opts: Opts = {}) {
@@ -19,7 +20,11 @@ export function route(key: keyof typeof handlers & string, opts: Opts = {}) {
       return json({ error: "The gateway's database is not reachable." }, 503);
     }
     let body: unknown = undefined;
-    if (hasBody) { try { body = await req.json(); } catch { return json({ error: "Send JSON." }, 400); } }
+    if (hasBody) {
+      // A signed envelope with a full chain is a few kilobytes. Nothing legitimate is close to this.
+      if (Number(req.headers.get("content-length") ?? 0) > MAX_BODY_BYTES) return json({ error: "Request too large." }, 413);
+      try { const text = await req.text(); if (text.length > MAX_BODY_BYTES) return json({ error: "Request too large." }, 413); body = JSON.parse(text); } catch { return json({ error: "Send JSON." }, 400); }
+    }
     const out = await run(handler, { params: (await ctx.params) ?? {}, body });
     return json(out.body, out.status);
   };
