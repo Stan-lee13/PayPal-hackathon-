@@ -23,6 +23,7 @@ import { newId } from "../ids";
 import { formatMoney } from "../money";
 import * as E from "../envelope/core";
 import { getPayPal, PayPalApiError, paypalMode } from "../paypal/client";
+import "../paypal/journal"; // every PayPal call made through this gateway is recorded, whoever loads it
 import { authorizeHold, capturePart, getAuthorization, getCapture, getPayout, payout, refundCapture, voidAuthorization } from "../paypal/payments";
 import { openJwk, sealJwk } from "../keystore";
 import { audit } from "../services/audit";
@@ -40,7 +41,7 @@ export const isHeld = (s: Pick<Spend, "payeeAgent" | "payoutTo">) => Boolean(s.p
 export const HELD = "HELD_IN_ACCOUNT" as const;
 /** PayPal accepted the capture but has not completed it. Nothing is paid out against it until it has. */
 export const AWAITING_CAPTURE = "AWAITING_CAPTURE" as const;
-const trail = (root: Pick<Root, "principal" | "id">, actor: Parameters<typeof audit>[1]["actor"], action: string, outcome: Parameters<typeof audit>[1]["outcome"], ref: string | null, detail: Record<string, unknown> = {}) =>
+export const trail = (root: Pick<Root, "principal" | "id">, actor: Parameters<typeof audit>[1]["actor"], action: string, outcome: Parameters<typeof audit>[1]["outcome"], ref: string | null, detail: Record<string, unknown> = {}) =>
   audit(getDb(), { scopeId: root.principal, subjectId: root.id, actor, action, ref, outcome, detail });
 
 // ---------------------------------------------------------------------------
@@ -554,10 +555,23 @@ async function closeRoot(root: Root, reason: string, by: string): Promise<Root> 
     } catch (e) {
       // Fully captured holds can't be voided (nothing is left to release); anything else is worth knowing about.
       const issue = e instanceof PayPalApiError ? e.issue ?? e.paypalName : String(e).slice(0, 120);
-      await trail(root, "paypal", "hold.release_failed", issue === "PREVIOUSLY_CAPTURED" || issue === "AUTHORIZATION_ALREADY_CAPTURED" ? "INFO" : "FAILED", closed.authorizationId, { issue });
+      await trail(root, "paypal", "hold.release_failed", ["PREVIOUSLY_CAPTURED", "AUTHORIZATION_ALREADY_CAPTURED", "PREVIOUSLY_VOIDED", "AUTHORIZATION_VOIDED"].includes(issue) ? "INFO" : "FAILED", closed.authorizationId, { issue });
     }
   }
   return closed;
+}
+
+/**
+ * PayPal says something happened to a hold. Ask it directly, and if the hold is gone (voided outside
+ * the gateway, or lapsed) while the envelope is still open, close the envelope: nothing backs it.
+ */
+export async function checkHold(rootId: string): Promise<{ root: Root; hold: string | null; closed: boolean } | null> {
+  const root = await getDb().query.roots.findFirst({ where: eq(roots.id, rootId) });
+  if (!root?.authorizationId) return root ? { root, hold: null, closed: false } : null;
+  const auth = await getAuthorization(getPayPal(), root.authorizationId).catch(() => null);
+  if (!auth || root.status !== "ACTIVE" || !["VOIDED", "EXPIRED", "DENIED"].includes(auth.status)) return { root, hold: auth?.status ?? null, closed: false };
+  await trail(root, "paypal", "hold.gone", "INFO", root.authorizationId, { status: auth.status });
+  return { root: await closeRoot(root, `PayPal reports the hold ${auth.status}`, "paypal"), hold: auth.status, closed: true };
 }
 
 // ---------------------------------------------------------------------------

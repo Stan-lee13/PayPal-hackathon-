@@ -1,0 +1,29 @@
+{
+  "name": "@envelope/sdk",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Give an AI agent bounded spending authority of its own, backed by a PayPal hold: sign, split, pay, set aside, get paid, and verify receipts. Talks only to an Envelope gateway.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/types/sdk/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/types/sdk/src/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "prepack": "node build.mjs"
+  }
+}

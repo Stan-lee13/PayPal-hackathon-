@@ -43,6 +43,13 @@
       "when": 1794410737401,
       "tag": "0005_lumpy_christian_walker",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1794431727853,
+      "tag": "0006_handy_slipstream",
+      "breakpoints": true
     }
   ]
 }

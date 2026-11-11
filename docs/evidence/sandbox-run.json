@@ -1,36 +1,36 @@
 {
-  "ranAt": "2026-11-11T18:47:46.089Z",
+  "ranAt": "2026-11-11T21:42:49.757Z",
   "paypalMode": "sandbox",
   "note": "Real PayPal sandbox API calls. A completed capture and a delivered payout are different things: each payout's final status from PayPal is recorded at the end. Payee addresses without a sandbox account are reported by PayPal as UNCLAIMED.",
   "steps": [
     {
       "step": "translator-agent opened an account that can receive",
-      "at": "2026-11-11T18:46:51.181Z",
-      "account": "98R2-NXQW-500W",
-      "payAs": "acct:98r2-nxqw-500w",
+      "at": "2026-11-11T21:39:53.338Z",
+      "account": "32KT-BH3F-ARCX",
+      "payAs": "acct:32kt-bh3f-arcx",
       "answersForIt": "Bea",
       "settlesTo": "t•••@example.com"
     },
     {
       "step": "sealed: PayPal hold placed",
-      "at": "2026-11-11T18:46:55.202Z",
-      "root": "env_53wAXe5phB6_BfK7",
-      "order": "1NN35463A5926823W",
-      "authorization": "4E1166380C2106431",
+      "at": "2026-11-11T21:39:57.060Z",
+      "root": "env_VlX7ZAVkpb03SMyT",
+      "order": "1R307002FP010770X",
+      "authorization": "1UE178811T9879949",
       "held": "$200.00",
       "status": "CREATED"
     },
     {
       "step": "split offline into two sub-envelopes",
-      "at": "2026-11-11T18:46:55.234Z",
+      "at": "2026-11-11T21:39:57.087Z",
       "localization": "$60 · translator-agent's account only",
       "creative": "$90 · designer only"
     },
     {
       "step": "proof of funds: the designer checked creative-agent before working",
-      "at": "2026-11-11T18:46:55.870Z",
+      "at": "2026-11-11T21:39:57.509Z",
       "good": true,
-      "account": "PMDE-DSVK-SB7K",
+      "account": "H6KX-PSSC-R2JH",
       "standsBehindIt": "Ada (sandbox) → ops-agent",
       "paypalHold": "CREATED",
       "unusedOnHold": "$200.00",
@@ -39,7 +39,7 @@
     },
     {
       "step": "proof of funds refused for a payee that is not on the envelope",
-      "at": "2026-11-11T18:46:56.479Z",
+      "at": "2026-11-11T21:39:57.891Z",
       "good": false,
       "reasons": [
         "PAYEE_NOT_ALLOWED"
@@ -47,17 +47,17 @@
     },
     {
       "step": "localization-agent set $45 aside for translator-agent (no money moved)",
-      "at": "2026-11-11T18:46:57.099Z",
+      "at": "2026-11-11T21:39:58.375Z",
       "status": "PROMISED",
-      "promise": "pr_kQIdj5OXJ4IsGxij",
-      "heldUntil": "2026-11-11T19:01:56.496Z",
+      "promise": "pr_VfIKvBMUsszEDrvF",
+      "heldUntil": "2026-11-11T21:54:57.907Z",
       "paypalHold": "CREATED",
       "noteSignatureValid": true,
       "standsBehindThePayer": "Ada (sandbox) → ops-agent"
     },
     {
       "step": "the money set aside can't be spent on anything else",
-      "at": "2026-11-11T18:46:57.121Z",
+      "at": "2026-11-11T21:39:58.395Z",
       "status": "DENIED",
       "reasons": [
         "OVER_ENVELOPE_LIMIT"
@@ -65,43 +65,43 @@
     },
     {
       "step": "translator-agent delivered; localization-agent paid the $45 it had set aside",
-      "at": "2026-11-11T18:47:00.055Z",
+      "at": "2026-11-11T21:40:01.074Z",
       "status": "PAYOUT_PENDING",
-      "capture": "8RF68442F9493582T",
-      "payoutBatch": "U37JVZRBRFH7L",
-      "payoutItem": "5DQ5Y236Q7M4Q",
-      "paidToAccount": "98R2-NXQW-500W",
+      "capture": "7F559524U14284623",
+      "payoutBatch": "4Z3BU4QUWNPPU",
+      "payoutItem": "67A6TKUYJ6432",
+      "paidToAccount": "32KT-BH3F-ARCX",
       "settledTo": "t•••@example.com",
       "reasons": []
     },
     {
       "step": "a second $10 was set aside, then released: it went back into the envelope",
-      "at": "2026-11-11T18:47:00.664Z",
+      "at": "2026-11-11T21:40:01.554Z",
       "promised": "PROMISED",
       "afterRelease": "LAPSED"
     },
     {
       "step": "$10 set aside, payable on ops-agent's acceptance; the payee could not release it itself; ops-agent's signature did",
-      "at": "2026-11-11T18:47:04.437Z",
+      "at": "2026-11-11T21:40:05.862Z",
       "promised": "PROMISED",
       "payeeTriedToReleaseIt": "refused: This promise names a different key as the one that can release it.",
       "status": "PAYOUT_PENDING",
-      "capture": "89510119HB001553H",
-      "payoutBatch": "XRFDW6J9YM2DN",
+      "capture": "16798729522521506",
+      "payoutBatch": "Z3TZY4F4UQX6S",
       "workFingerprintOnReceipt": "6cdc6d59f6a777e65682542483afecc0bef7d6ac1593bf3b51d1291afd61784c",
       "receiptSignatureValid": true
     },
     {
       "step": "creative-agent paid $70",
-      "at": "2026-11-11T18:47:07.581Z",
+      "at": "2026-11-11T21:40:08.761Z",
       "status": "PAYOUT_PENDING",
-      "capture": "38F17505A4920411U",
-      "payoutBatch": "89BZVTVPCSL48",
+      "capture": "7UT94136WP214620M",
+      "payoutBatch": "EKMGREA33JUYQ",
       "reasons": []
     },
     {
       "step": "compromised creative-agent → attacker: denied",
-      "at": "2026-11-11T18:47:07.599Z",
+      "at": "2026-11-11T21:40:08.782Z",
       "status": "DENIED",
       "reasons": [
         "PAYEE_NOT_ALLOWED"
@@ -109,7 +109,7 @@
     },
     {
       "step": "creative-agent over its envelope ($70 + $25 > $90): denied",
-      "at": "2026-11-11T18:47:07.619Z",
+      "at": "2026-11-11T21:40:08.808Z",
       "status": "DENIED",
       "reasons": [
         "OVER_ENVELOPE_LIMIT"
@@ -117,7 +117,7 @@
     },
     {
       "step": "a $72 payment is over the $70 the owner asked to sign for: refused outright, then set aside, the agent could not pay it itself, and the owner's signature paid it",
-      "at": "2026-11-11T18:47:11.623Z",
+      "at": "2026-11-11T21:40:12.643Z",
       "direct": "DENIED",
       "directReasons": [
         "NEEDS_OWNER_APPROVAL"
@@ -126,13 +126,13 @@
       "agentTriedToPayItself": "refused: This payment is over the owner's approval threshold: only the owner's signature can pay it.",
       "waitingInOwnersInbox": 1,
       "afterOwnerSigned": "PAYOUT_PENDING",
-      "capture": "85947857CS6858337",
-      "payoutBatch": "YKCA4WZ4WGDV2",
+      "capture": "5E608978AP812332V",
+      "payoutBatch": "DBGP6UBYQSJVJ",
       "signedByOwnerOnReceipt": true
     },
     {
       "step": "receipt reconciled against PayPal",
-      "at": "2026-11-11T18:47:12.672Z",
+      "at": "2026-11-11T21:40:13.697Z",
       "ok": true,
       "checks": [
         {
@@ -146,28 +146,28 @@
         {
           "name": "PayPal capture exists for exactly this amount",
           "ok": true,
-          "detail": "8RF68442F9493582T · COMPLETED · $45.00"
+          "detail": "7F559524U14284623 · COMPLETED · $45.00"
         },
         {
           "name": "PayPal capture carries this spend's id",
           "ok": true,
-          "detail": "pr_kQIdj5OXJ4IsGxij"
+          "detail": "pr_VfIKvBMUsszEDrvF"
         },
         {
           "name": "PayPal payout went to the payee the agent signed for",
           "ok": true,
-          "detail": "U37JVZRBRFH7L · PENDING · translator@example.com"
+          "detail": "4Z3BU4QUWNPPU · PENDING · translator@example.com"
         },
         {
           "name": "The hold belongs to this envelope",
           "ok": true,
-          "detail": "4E1166380C2106431 · PARTIALLY_CAPTURED"
+          "detail": "1UE178811T9879949 · PARTIALLY_CAPTURED"
         }
       ]
     },
     {
       "step": "owner revoked creative-agent; its next spend is denied",
-      "at": "2026-11-11T18:47:12.700Z",
+      "at": "2026-11-11T21:40:13.725Z",
       "status": "DENIED",
       "reasons": [
         "OVER_ANCESTOR_LIMIT",
@@ -176,14 +176,14 @@
     },
     {
       "step": "owner closed the envelope: PayPal released the rest of the hold",
-      "at": "2026-11-11T18:47:15.079Z",
+      "at": "2026-11-11T21:40:15.644Z",
       "captured": 19700,
       "released": 300,
       "authorizationStatus": "VOIDED"
     },
     {
       "step": "localization-agent's record, signed by the gateway as a reference",
-      "at": "2026-11-11T18:47:15.097Z",
+      "at": "2026-11-11T21:40:15.668Z",
       "facts": {
         "paymentsSettled": 2,
         "paidMinor": 5500,
@@ -202,45 +202,45 @@
     },
     {
       "step": "treasury: the owner's books checked against PayPal",
-      "at": "2026-11-11T18:47:18.010Z",
+      "at": "2026-11-11T21:40:18.263Z",
       "paymentsChecked": 4,
       "matchPayPal": 4,
       "matched": "$197.00"
     },
     {
       "step": "translator-agent's record",
-      "at": "2026-11-11T18:47:18.016Z",
+      "at": "2026-11-11T21:40:18.267Z",
       "earned": "$55.00",
       "timesPaid": 2,
       "holdsAnEnvelope": false
     },
     {
       "step": "localization-agent's record",
-      "at": "2026-11-11T18:47:18.023Z",
+      "at": "2026-11-11T21:40:18.272Z",
       "promisesKept": 2,
       "promisesReleasedOrLapsed": 1
     },
     {
       "step": "writer-agent and editor-agent opened accounts that keep their income",
-      "at": "2026-11-11T18:47:18.044Z",
-      "writer": "acct:5are-z1e2-xzn2",
-      "editor": "acct:17h9-adtm-p40d",
+      "at": "2026-11-11T21:40:18.291Z",
+      "writer": "acct:qr21-v7fw-c5sx",
+      "editor": "acct:p5mb-5z90-1yp6",
       "writerMayPayAtOnce": "$30.00",
       "setBy": "Bea, its owner",
       "withdrawsTo": "t•••@example.com"
     },
     {
       "step": "a second owner sealed $60 for buyer-agent: PayPal hold placed",
-      "at": "2026-11-11T18:47:21.048Z",
-      "root": "env_oeZFD2CxFRdfBDyg",
-      "order": "9H550726C7948725T",
-      "authorization": "1RN238936P9131935"
+      "at": "2026-11-11T21:40:21.085Z",
+      "root": "env_5rDT1Q9-A8HvHbN9",
+      "order": "9NG991134X368263L",
+      "authorization": "3EM49986VC611651E"
     },
     {
       "step": "buyer-agent paid writer-agent $50: PayPal captured it from the hold and it was credited to writer-agent's balance, with no payout",
-      "at": "2026-11-11T18:47:23.764Z",
+      "at": "2026-11-11T21:40:24.073Z",
       "status": "PAID",
-      "capture": "32X89231HK5453121",
+      "capture": "2XL68957735920059",
       "payoutBatch": null,
       "heldInAccount": {
         "ledgerEntry": 1,
@@ -258,9 +258,9 @@
     },
     {
       "step": "writer-agent paid editor-agent $12 out of its balance: moved on the ledger, no PayPal call",
-      "at": "2026-11-11T18:47:23.791Z",
+      "at": "2026-11-11T21:40:24.100Z",
       "status": "BOOKED",
-      "transfer": "tr_QTP4vnbFD04MG-lR",
+      "transfer": "tr_zAXhfZuDhWeMC_RE",
       "writerBalance": "$38.00",
       "editorBalance": "$12.00",
       "receiptSignatureValid": true,
@@ -268,13 +268,13 @@
     },
     {
       "step": "the same signed transfer presented again moved nothing",
-      "at": "2026-11-11T18:47:23.799Z",
+      "at": "2026-11-11T21:40:24.107Z",
       "duplicate": true,
       "writerBalance": "$38.00"
     },
     {
       "step": "a compromised writer-agent tried to send its whole balance to a stranger; a stranger tried to move it with a forged signature: both refused",
-      "at": "2026-11-11T18:47:23.813Z",
+      "at": "2026-11-11T21:40:24.122Z",
       "drain": "DENIED",
       "drainReasons": [
         "OVER_ACCOUNT_LIMIT"
@@ -287,7 +287,7 @@
     },
     {
       "step": "Bea froze writer-agent's account: nothing could leave, and the agent could not lift the freeze; then Bea lifted it",
-      "at": "2026-11-11T18:47:23.840Z",
+      "at": "2026-11-11T21:40:24.150Z",
       "whileFrozen": "DENIED",
       "reasons": [
         "ACCOUNT_FROZEN"
@@ -296,9 +296,9 @@
     },
     {
       "step": "writer-agent withdrew $20 to its owner: a real PayPal payout",
-      "at": "2026-11-11T18:47:24.928Z",
+      "at": "2026-11-11T21:40:24.909Z",
       "status": "PAYOUT_PENDING",
-      "payoutBatch": "C9CBD4Z5BS78A",
+      "payoutBatch": "PX9WT7BXR7WZG",
       "payoutStatus": "PENDING",
       "sentTo": "t•••@example.com",
       "writerBalance": "$18.00",
@@ -306,23 +306,23 @@
     },
     {
       "step": "editor-agent paid $5 of what it was paid to a PayPal address: a real PayPal payout",
-      "at": "2026-11-11T18:47:25.902Z",
+      "at": "2026-11-11T21:40:25.618Z",
       "status": "PAYOUT_PENDING",
-      "payoutBatch": "2F8PPA45L8D3E",
+      "payoutBatch": "X6GVRAEL4WL9G",
       "payoutStatus": "PENDING",
       "editorBalance": "$7.00",
       "reasons": []
     },
     {
       "step": "the second owner closed the envelope: PayPal released what was not spent",
-      "at": "2026-11-11T18:47:27.408Z",
+      "at": "2026-11-11T21:40:27.261Z",
       "captured": "$50.00",
       "released": "$10.00",
       "authorizationStatus": "VOIDED"
     },
     {
       "step": "the books",
-      "at": "2026-11-11T18:47:27.411Z",
+      "at": "2026-11-11T21:40:27.264Z",
       "paidIn": "$50.00",
       "paidOut": "$25.00",
       "heldForAgents": "$25.00",
@@ -339,8 +339,8 @@
     },
     {
       "step": "payout from a balance, as PayPal reports it",
-      "at": "2026-11-11T18:47:44.269Z",
-      "transfer": "tr_S1wVEsZcg86Cm_wD",
+      "at": "2026-11-11T21:40:43.764Z",
+      "transfer": "tr_AnfWaCCeK11mkrG_",
       "kind": "withdraw",
       "sentTo": "t•••@example.com",
       "statusesSeen": [
@@ -353,8 +353,8 @@
     },
     {
       "step": "payout from a balance, as PayPal reports it",
-      "at": "2026-11-11T18:47:44.697Z",
-      "transfer": "tr_raP0kU6UBGo4LCWA",
+      "at": "2026-11-11T21:40:44.248Z",
+      "transfer": "tr_u_3SL0S0jXGqoGDB",
       "kind": "pay",
       "sentTo": "d•••@example.com",
       "statusesSeen": [
@@ -366,105 +366,242 @@
     },
     {
       "step": "payout delivery, as PayPal reports it",
-      "at": "2026-11-11T18:47:45.034Z",
-      "spend": "pr_kQIdj5OXJ4IsGxij",
-      "payee": "acct:98r2-nxqw-500w",
+      "at": "2026-11-11T21:40:44.512Z",
+      "spend": "pr_VfIKvBMUsszEDrvF",
+      "payee": "acct:32kt-bh3f-arcx",
       "sentTo": "t•••@example.com",
       "statusesSeen": [
         "SUCCESS"
       ],
       "final": "SUCCESS",
       "meaning": "delivered to the payee's PayPal account",
-      "transaction": "24G03593950517535"
+      "transaction": "3YA710240D545745K"
     },
     {
       "step": "payout delivery, as PayPal reports it",
-      "at": "2026-11-11T18:47:45.359Z",
-      "spend": "pr_nzLeiUuEaP_auMI-",
-      "payee": "acct:98r2-nxqw-500w",
+      "at": "2026-11-11T21:40:44.845Z",
+      "spend": "pr_zBQnurFofDTxR0dk",
+      "payee": "acct:32kt-bh3f-arcx",
       "sentTo": "t•••@example.com",
       "statusesSeen": [
         "SUCCESS"
       ],
       "final": "SUCCESS",
       "meaning": "delivered to the payee's PayPal account",
-      "transaction": "86801129YA9131715"
+      "transaction": "4FG90848RU198311B"
     },
     {
       "step": "payout delivery, as PayPal reports it",
-      "at": "2026-11-11T18:47:45.711Z",
-      "spend": "sp_9-ug-GmeGsuMC2o4",
-      "payee": "designer-1794422811132@example.com",
-      "sentTo": "designer-1794422811132@example.com",
+      "at": "2026-11-11T21:40:45.268Z",
+      "spend": "sp_1_f6aP4CZySBDHKP",
+      "payee": "designer-1794433193290@example.com",
+      "sentTo": "designer-1794433193290@example.com",
       "statusesSeen": [
         "UNCLAIMED"
       ],
       "final": "UNCLAIMED",
       "meaning": "accepted by PayPal and held for the payee to claim: this address has no sandbox account",
-      "transaction": "73X501154D681932K"
+      "transaction": "3J926638R2268670B"
     },
     {
       "step": "payout delivery, as PayPal reports it",
-      "at": "2026-11-11T18:47:46.089Z",
-      "spend": "pr_Kb0lfq_zHEX2aoVw",
-      "payee": "designer-1794422811132@example.com",
-      "sentTo": "designer-1794422811132@example.com",
+      "at": "2026-11-11T21:40:45.559Z",
+      "spend": "pr_SsZsHWMLwXFaumXh",
+      "payee": "designer-1794433193290@example.com",
+      "sentTo": "designer-1794433193290@example.com",
       "statusesSeen": [
         "UNCLAIMED"
       ],
       "final": "UNCLAIMED",
       "meaning": "accepted by PayPal and held for the payee to claim: this address has no sandbox account",
-      "transaction": "50R661912G908313N"
+      "transaction": "43M45789ET632960B"
+    },
+    {
+      "step": "third envelope sealed: PayPal hold placed",
+      "at": "2026-11-11T21:40:48.574Z",
+      "root": "env_YxPvO86RTnIX3JEd",
+      "authorization": "81R12686KH811821X",
+      "held": "$15.00"
+    },
+    {
+      "step": "scout-agent paid $7 to an address with no PayPal account: PayPal captured it and is holding the payout unclaimed",
+      "at": "2026-11-11T21:41:08.001Z",
+      "status": "UNCLAIMED",
+      "capture": "7EN967362W242302E",
+      "payoutBatch": "ZJFEK3GQ5DVSJ",
+      "payoutItem": "544RDNNBMYKV2",
+      "payoutStatus": "UNCLAIMED",
+      "capturedInBooks": "$7.00"
+    },
+    {
+      "step": "the owner tried to recall it and PayPal's sandbox would not cancel the payout item: nothing changed, and the books still count it; the agent itself could not even ask",
+      "at": "2026-11-11T21:42:46.209Z",
+      "agentTriedToRecall": "refused: Only the owner who sealed this envelope can recall a payment.",
+      "whatPayPalAnswered": [
+        "PayPal is still processing this payout batch and will not cancel it yet. Nothing changed; try again in a minute.",
+        "PayPal would not cancel the payout (INTERNAL_SERVICE_ERROR). Nothing changed.",
+        "PayPal would not cancel the payout (INTERNAL_SERVICE_ERROR). Nothing changed.",
+        "PayPal would not cancel the payout (INTERNAL_SERVICE_ERROR). Nothing changed.",
+        "PayPal would not cancel the payout (INTERNAL_SERVICE_ERROR). Nothing changed.",
+        "PayPal would not cancel the payout (INTERNAL_SERVICE_ERROR). Nothing changed.",
+        "PayPal would not cancel the payout (INTERNAL_SERVICE_ERROR). Nothing changed.",
+        "PayPal would not cancel the payout (INTERNAL_SERVICE_ERROR). Nothing changed."
+      ],
+      "status": "UNCLAIMED",
+      "payoutStatusAtPayPal": "UNCLAIMED",
+      "refund": null,
+      "reason": null,
+      "captureAtPayPal": "COMPLETED",
+      "capturedInBooks": "$7.00"
+    },
+    {
+      "step": "because the $7 did not come back, a $10 payment still does not fit under the $15 limit",
+      "at": "2026-11-11T21:42:46.235Z",
+      "status": "DENIED",
+      "capture": null,
+      "reasons": [
+        "OVER_ENVELOPE_LIMIT"
+      ]
+    },
+    {
+      "step": "sweep: every unfinished payment and transfer in this database was put to PayPal",
+      "at": "2026-11-11T21:42:48.191Z",
+      "checked": 4,
+      "moved": [],
+      "eventsFromPayPalFeed": 0
+    },
+    {
+      "step": "third envelope closed",
+      "at": "2026-11-11T21:42:49.739Z",
+      "captured": "$7.00",
+      "released": "$8.00",
+      "authorizationStatus": "VOIDED"
+    },
+    {
+      "step": "PayPal calls behind the first envelope",
+      "at": "2026-11-11T21:42:49.748Z",
+      "total": 43,
+      "changed": 10,
+      "asked": 33,
+      "repeats": 0,
+      "refused": 0,
+      "holds": 1,
+      "captures": 4,
+      "payouts": 4,
+      "refunds": 0,
+      "cancels": 0,
+      "voids": 1,
+      "calls": [
+        "POST /v2/checkout/orders → 201 CREATED $200.00 · 1UE178811T9879949 · debug ca59073c76de5 · 2534ms",
+        "POST /v2/payments/authorizations/{id}/capture → 201 COMPLETED $45.00 · 7F559524U14284623 · debug ca59073e27ed6 · 1551ms",
+        "POST /v1/payments/payouts → 201 PENDING $45.00 · 4Z3BU4QUWNPPU · debug ca59073ec3a64 · 451ms",
+        "POST /v2/payments/authorizations/{id}/capture → 201 COMPLETED $10.00 · 16798729522521506 · debug ca59073f98c6e · 2659ms",
+        "POST /v1/payments/payouts → 201 PENDING $10.00 · Z3TZY4F4UQX6S · debug ca590740a3a8f · 484ms",
+        "POST /v2/payments/authorizations/{id}/capture → 201 COMPLETED $70.00 · 7UT94136WP214620M · debug ca59074113e09 · 1926ms",
+        "POST /v1/payments/payouts → 201 PENDING $70.00 · EKMGREA33JUYQ · debug ca590741d5f9e · 503ms",
+        "POST /v2/payments/authorizations/{id}/capture → 201 COMPLETED $72.00 · 5E608978AP812332V · debug ca5907426cc14 · 2532ms",
+        "POST /v1/payments/payouts → 201 PENDING $72.00 · DBGP6UBYQSJVJ · debug ca5907436ab73 · 502ms",
+        "POST /v2/payments/authorizations/{id}/void → 204 VOIDED · 1UE178811T9879949 · debug f1065817ef6f7 · 1334ms"
+      ]
+    },
+    {
+      "step": "PayPal calls behind the second envelope",
+      "at": "2026-11-11T21:42:49.752Z",
+      "total": 6,
+      "changed": 3,
+      "asked": 3,
+      "repeats": 0,
+      "refused": 0,
+      "holds": 1,
+      "captures": 1,
+      "payouts": 0,
+      "refunds": 0,
+      "cancels": 0,
+      "voids": 1,
+      "calls": [
+        "POST /v2/checkout/orders → 201 CREATED $60.00 · 3EM49986VC611651E · debug f244551f8af92 · 2778ms",
+        "POST /v2/payments/authorizations/{id}/capture → 201 COMPLETED $50.00 · 2XL68957735920059 · debug f2119529164ee · 2169ms",
+        "POST /v2/payments/authorizations/{id}/void → 204 VOIDED · 3EM49986VC611651E · debug ca590748c9e22 · 1137ms"
+      ]
+    },
+    {
+      "step": "PayPal calls behind the third envelope",
+      "at": "2026-11-11T21:42:49.757Z",
+      "total": 34,
+      "changed": 4,
+      "asked": 22,
+      "repeats": 0,
+      "refused": 8,
+      "holds": 1,
+      "captures": 1,
+      "payouts": 1,
+      "refunds": 0,
+      "cancels": 0,
+      "voids": 1,
+      "calls": [
+        "POST /v2/checkout/orders → 201 CREATED $15.00 · 81R12686KH811821X · debug ca59075093d3d · 2996ms",
+        "POST /v2/payments/authorizations/{id}/capture → 201 COMPLETED $7.00 · 7EN967362W242302E · debug ca590751c1f2b · 1721ms",
+        "POST /v1/payments/payouts → 201 PENDING $7.00 · ZJFEK3GQ5DVSJ · debug ca5907526eea7 · 383ms",
+        "POST /v1/payments/payouts-item/{id}/cancel → 400 BATCH_NOT_COMPLETED · 544RDNNBMYKV2 · debug ca59075980bfe · 462ms",
+        "POST /v1/payments/payouts-item/{id}/cancel → 500 INTERNAL_SERVICE_ERROR · 544RDNNBMYKV2 · debug f62739809bf2e · 952ms",
+        "POST /v1/payments/payouts-item/{id}/cancel → 500 INTERNAL_SERVICE_ERROR · 544RDNNBMYKV2 · debug f977271139d99 · 1556ms",
+        "POST /v1/payments/payouts-item/{id}/cancel → 500 INTERNAL_SERVICE_ERROR · 544RDNNBMYKV2 · debug ca59076796bc7 · 871ms",
+        "POST /v1/payments/payouts-item/{id}/cancel → 500 INTERNAL_SERVICE_ERROR · 544RDNNBMYKV2 · debug f618023cc2142 · 1164ms",
+        "POST /v1/payments/payouts-item/{id}/cancel → 500 INTERNAL_SERVICE_ERROR · 544RDNNBMYKV2 · debug ca5907711fcd1 · 778ms",
+        "POST /v1/payments/payouts-item/{id}/cancel → 500 INTERNAL_SERVICE_ERROR · 544RDNNBMYKV2 · debug f482073e9a2e5 · 951ms",
+        "POST /v1/payments/payouts-item/{id}/cancel → 500 INTERNAL_SERVICE_ERROR · 544RDNNBMYKV2 · debug f608951ff59e2 · 1352ms",
+        "POST /v2/payments/authorizations/{id}/void → 204 VOIDED · 81R12686KH811821X · debug ca5907807ded9 · 1127ms"
+      ]
     }
   ],
   "receipt": {
     "v": "envelope-receipt/1",
-    "sig": "jlRln2DokJdHARxSpU3p36GD4H8lBTKHNl1lvkJmae_-sdA1AkPy1UDVN2VZwuVnypsJfQeBuXSTYeQpWdl1Bg",
+    "sig": "6Pd1zx3anyUe3DkNeGb87OYKWtkxxIfyyIJnbaDtDezBvUdfjBVJ1ARAIzViFrwUpaGGUMgZEGSPOGwD95mYAQ",
     "chain": [
       {
-        "id": "env_53wAXe5phB6_BfK7",
-        "hash": "fd5337d8d4715265c4d1667d005fabdcb1bc0701f60b4eb90453a2db0e19ca24",
-        "holder": "cQLeZftghznzD9qQjzoMAKTHgGkVg4XCNfRSfvCDFJM",
+        "id": "env_VlX7ZAVkpb03SMyT",
+        "hash": "faf20dc178fbe80f0ff8219f0ef388aa8a577510be34954ebf442240a3291c16",
+        "holder": "u7AensmCIIWPTCtS0fg-R1TzE5KiTNt-FhGt0kHrZdY",
         "holderLabel": "ops-agent"
       },
       {
-        "id": "env_jLADANKBMS2zG0bK",
-        "hash": "26076142d63d1a2aae8b24bce0af7112aa6cab51c532ad92f65dfcbce346ab5d",
-        "holder": "LKnQjrSxczGAESwj-bvExfMn0R0r0TRufwEAZ8YC2Kc",
+        "id": "env_esAT9S990ghhPZ36",
+        "hash": "00c08bf5fa0324bcba68d237559bf8f858f10b422dc70ad4a12e4f69b17c0f6c",
+        "holder": "Kqp6iKNtwnUT-zQV35f7WCuzd4IuAXsA8Itq0cqjqMQ",
         "holderLabel": "localization-agent"
       }
     ],
-    "spend": "pr_kQIdj5OXJ4IsGxij",
+    "spend": "pr_VfIKvBMUsszEDrvF",
     "paidTo": {
-      "agent": "SjAq9vwoAcvu9aC_kxvQ_vO6gvTqNqXVfVjB-cI6Stw",
-      "account": "98R2-NXQW-500W",
+      "agent": "GKelxG9WGdoiK71HsOADadxK9XC9Rzs70a8R0RoXmAw",
+      "account": "32KT-BH3F-ARCX",
       "settledTo": "t•••@example.com",
       "agentLabel": "translator-agent"
     },
     "paypal": {
       "mode": "sandbox",
-      "captureId": "8RF68442F9493582T",
-      "payoutItemId": "5DQ5Y236Q7M4Q",
+      "captureId": "7F559524U14284623",
+      "payoutItemId": "67A6TKUYJ6432",
       "payoutStatus": "PENDING",
-      "payoutBatchId": "U37JVZRBRFH7L",
-      "authorizationId": "4E1166380C2106431"
+      "payoutBatchId": "4Z3BU4QUWNPPU",
+      "authorizationId": "1UE178811T9879949"
     },
-    "gateway": "rAFHEG5wnGIlhzfTHWKTvCP8e2_wltKvMIZbcD-13Ug",
+    "gateway": "ke0mCBV8QJPR90MNjDBZUNqYTcoor4qM7H3YZ5f2YWA",
     "request": {
       "v": "envelope-promise/1",
-      "at": "2026-11-11T18:46:56.479Z",
+      "at": "2026-11-11T21:39:57.892Z",
       "ttl": 900,
-      "leaf": "env_jLADANKBMS2zG0bK",
+      "leaf": "env_esAT9S990ghhPZ36",
       "memo": "FR + YO store strings",
-      "nonce": "n_cy25UqPCluFU_Drv",
-      "payee": "acct:98r2-nxqw-500w",
+      "nonce": "n_SCkvq3U8oQIivJal",
+      "payee": "acct:32kt-bh3f-arcx",
       "amount": 4500,
       "purpose": "translation",
       "currency": "USD"
     },
     "decision": "PAID",
-    "issuedAt": "2026-11-11T18:47:00.045Z",
-    "principal": "jMeNIN5YCsnJi_fsc2Iw0j6UueiTJUGGw8ll7bXX_qw",
-    "requestSig": "x76lHKwZXoD2Sfwy9kpPQDlF3Isd9ammqYBS9CbfxOLj5aoPs6ELjcPqjTJecTpYw3dxUmk9riBD5SDNoZxyDw"
+    "issuedAt": "2026-11-11T21:40:01.067Z",
+    "principal": "C9MiBILgpmyBuHSJVwFlye3eTsHC1xIHF5LLms0cr5k",
+    "requestSig": "xkpqtTbuzdhkj-G0pAT8bXVXpJzWvpHMyYaNpGG5WHVf2NApAqY4DV0TbvsJrZzN8AgwTUfCiHuQLKXyW5xFBg"
   }
 }

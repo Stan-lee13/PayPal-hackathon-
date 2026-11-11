@@ -48,6 +48,25 @@ Pattern searches of the same 36 for three later features found:
 | A card or pull-payment mandate for agents | Not seen. "Recurring" appears as a risk signal in one entry's dataset. | Pattern search, not a full read |
 | A graph tracing a payment to the owner with signatures checked in the browser | Not searched for. Signed receipts verified in a browser exist in two entries. | — |
 
+## How deeply other entries use PayPal
+
+A second pass on 11 November read 65 entries' code for which PayPal APIs they really call. It was a static read (searching the source, about twenty read closely); nothing was run, so "uses" means the call exists in the code.
+
+| PayPal capability | Entries using it (of 65) | Envelope |
+|---|---|---|
+| Webhooks with signature verification | 34 | Built this round; proven on the simulator; the sandbox rejected a forged event |
+| Vault (payer not present) | 18 | No |
+| Disputes | 18 | No |
+| JS SDK buttons (the payer approves in PayPal) | 15 | No: the sandbox hold is placed on PayPal's test card |
+| PayPal's Agent Toolkit | 14 | No |
+| Order tracking | 11 | No |
+| Transaction Search | about 8 | No |
+| Hold reauthorization | 7 | No |
+| Their own MCP server | 22 | Yes, fourteen tools, tested over real MCP |
+| Their own SDK | 7, mostly generated | Yes, hand-written and run against the sandbox |
+
+The entries with the broadest PayPal use (second-key, mandate-gateway, chaperone, stood, cosign) call more PayPal products than Envelope does. Envelope's use is narrower and goes further into one lifecycle: partial captures of one hold across a tree of agents, payouts with their real delivery status, release, refund, cancellation, and a record of every call. A judge counting PayPal products will count more elsewhere. A judge asking whether PayPal is necessary to the product will find it is here.
+
 ## Where Envelope stands
 
 **Shared with others, so not a claim to originality:** signed delegation chains; agent passports; signed receipts verified in a browser; one hold with partial captures for a single agent; cards for agents (on card rails, and more useful there).

@@ -34,6 +34,23 @@ Every item here was a real fault in code that had been called finished. Each now
 
 Smaller changes made on the reviewer's advice without a dedicated test: a second root with an id already sealed is refused; a hold that cannot be recorded is voided; account openings are decided under the account's lock; the write that updates a payout's status is guarded; a refusal of a payout request is no longer taken as proof that no payout exists; a reversed card charge gives the charge back but not the waiting period.
 
+## Later the same day: settlement events and recall
+
+New code, attacked as it was written (`tests/paypal-rail.test.ts`):
+
+| Attack | Result |
+|---|---|
+| A webhook with no signature headers, a wrong signature, a genuine event edited to name another status, an invented event | Refused (401). Nothing stored, nothing changed |
+| A genuine event delivered twice | Applied once: PayPal's event id is the key |
+| A genuine but stale event ("unclaimed") arriving after PayPal says "delivered" | The gateway reads the payout from PayPal and keeps "delivered". An event is a hint, never the truth |
+| The paying agent, a stranger, the owner signing for another payment, the owner's signature of a different kind: each tries a recall | Refused. No call to PayPal was made |
+| Recall of a payment PayPal has delivered | Refused, no call to PayPal |
+| Recall twice | One cancel and one refund at PayPal |
+| The sweep endpoint without the scheduler's secret | Refused when a secret is set |
+| The record of PayPal calls searched for a card number, a CVV field or a token | None stored |
+
+Found on the real sandbox and not by any test: PayPal refuses to cancel an unclaimed payout while its batch is still closing (`BATCH_NOT_COMPLETED`). The first version treated that as final. It now says to try again and changes nothing. After that, PayPal's sandbox answered every cancel with `INTERNAL_SERVICE_ERROR`, so the recall has not completed there.
+
 ## What was tried and held
 
 From the attack corpus, all refused with no capture or payout caused:
@@ -57,7 +74,7 @@ From the reviewer's notes, areas examined with nothing found: the approval thres
 ## Reproducing
 
 ```bash
-npm test                              # 63 tests on the simulator
+npm test                              # 101 tests on the simulator
 npx tsx scripts/attack-suite.ts       # the corpus; rewrites docs/evidence/attack-suite.json
 npx vitest run tests/settlement.test.ts tests/review-findings.test.ts tests/replay-encoding.test.ts
 ```
@@ -71,7 +88,9 @@ These are known and not fixed.
 | Risk | Why it is still there |
 |---|---|
 | A receipt is signed when the capture is made and the payout is requested. It records PayPal's payout status at that moment and is not withdrawn if the payout later fails. | The receipt page and the proof graph ask PayPal live, which is the remedy. A signed correction would be better. |
-| Nothing runs on a timer. Unfinished payments advance when their envelope is opened or their status is asked for. PayPal webhooks are not consumed. | A scheduled job or a verified webhook handler is the fix. Not built. |
+| Settlement does not run by itself on this repository's deployments. | A sweep endpoint and a verified webhook receiver now exist and are tested on the simulator. No scheduler calls the first and no webhook is registered for the second. No genuine PayPal event has been received. |
+| The webhook receiver trusts PayPal's verification call. | It does not verify the certificate chain itself. Because an event can only cause a read of PayPal, a wrongly accepted event could not move money. |
+| Recall covers payments from an envelope only. | A payout from an agent's balance that goes unclaimed still waits for PayPal to return it. |
 | An envelope's page, its proof graph and an agent's page are readable by anyone who has the id or key. The books page lists every account's balance. | Ids are random and unlisted, and keys are how counterparties find an agent. A real deployment would put the books behind operator sign-in and let an agent choose what its page shows. |
 | The shared demo agent (translator-agent and its card) can be driven by any visitor of the site. | It is one agent for every visitor by design, and it only pays fixed demo destinations. The check that the call comes from a browser page is not authentication. |
 | The gateway holds its own signing key and the demo agents' keys. With `ENVELOPE_KEY_SECRET` set they are sealed at rest; whoever has both the database and the environment has them. | A managed key service is the fix. |

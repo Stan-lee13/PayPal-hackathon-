@@ -263,6 +263,38 @@ export const auditLog = pgTable("audit_log", {
   hash: text("hash").notNull(),
 }, (t) => [index("audit_subject").on(t.subjectId, t.seq), uniqueIndex("audit_chain_seq").on(t.scopeId, sql`coalesce(${t.subjectId}, '-')`, t.seq)]);
 
+/** Every call the gateway made to PayPal (lib/paypal/journal.ts). Facts only: no request or response bodies. */
+export const paypalCalls = pgTable("paypal_calls", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  at: ts("at").notNull().defaultNow(),
+  mode: text("mode").notNull(),
+  op: text("op").notNull(),
+  method: text("method").notNull(),
+  path: text("path").notNull(),
+  requestId: text("request_id"),
+  httpStatus: integer("http_status").notNull(),
+  paypalStatus: text("paypal_status"),
+  resourceId: text("resource_id"),
+  amountMinor: integer("amount_minor"),
+  currency: text("currency"),
+  debugId: text("debug_id"),
+  ms: integer("ms").notNull(),
+  error: text("error"),
+  /** Every id the call touched, ours and PayPal's, so the calls behind one envelope can be found. */
+  keys: text("keys").array().notNull(),
+}, (t) => [index("paypal_calls_at").on(t.at)]);
+
+/** Events PayPal reported (webhook or its event feed). The primary key is PayPal's event id, so each is applied once. */
+export const paypalEvents = pgTable("paypal_events", {
+  id: text("id").primaryKey(),
+  type: text("type").notNull(),
+  source: text("source", { enum: ["webhook", "feed"] }).notNull(),
+  resourceId: text("resource_id"),
+  subject: text("subject"),
+  outcome: text("outcome").notNull(),
+  receivedAt: ts("received_at").notNull().defaultNow(),
+}, (t) => [index("paypal_events_subject").on(t.subject)]);
+
 export const emulatorState = pgTable("emulator_state", {
   id: text("id").primaryKey(),
   state: jsonb("state").$type<Record<string, unknown>>().notNull(),
@@ -282,3 +314,5 @@ export type Account = typeof accounts.$inferSelect;
 export type LedgerEntry = typeof ledger.$inferSelect;
 export type Transfer = typeof transfers.$inferSelect;
 export type Card = typeof cards.$inferSelect;
+export type PayPalCall = typeof paypalCalls.$inferSelect;
+export type PayPalEvent = typeof paypalEvents.$inferSelect;

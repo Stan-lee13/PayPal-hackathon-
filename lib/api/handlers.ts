@@ -12,11 +12,13 @@ import * as E from "../envelope/core";
 import * as B from "../gateway/bank";
 import { proof } from "../gateway/proof";
 import * as G from "../gateway/service";
+import * as S from "../gateway/settlement";
+import { flushJournal } from "../paypal/journal";
 import { verifyChain } from "../ledger/chain";
 import { paypalMode } from "../paypal/client";
 import { REASON_TEXT } from "../reasons";
 
-export type Input = { params: Record<string, string>; body: unknown };
+export type Input = { params: Record<string, string>; body: unknown; /** Lower-cased request headers and the body as sent; only the webhook and sweep endpoints read them. */ headers?: Record<string, string>; raw?: string };
 export type Output = { status?: number; body: unknown };
 export type Handler = (i: Input) => Promise<Output>;
 
@@ -46,6 +48,9 @@ async function ownerAsks(body: unknown, principal: string): Promise<boolean> {
 }
 const spendStatus = (s: string) => (s === "DENIED" ? 403 : s === "FAILED" ? 502 : s === "LAPSED" ? 409 : 200);
 
+/** When each unfinished payment was last put to PayPal because somebody looked at its envelope. */
+const lastAsked = new Map<string, number>();
+
 export const handlers: Record<string, Handler> = {
   /** The envelopes one owner has sealed. Shown to that owner only: the request is signed with the owner's key. */
   "POST /api/envelopes/mine": async ({ body }) => {
@@ -67,7 +72,13 @@ export const handlers: Record<string, Handler> = {
     if (!t) return { status: 404, body: { error: "No such envelope." } };
     // Anything unfinished is moved along when the page is looked at: a payout PayPal has not delivered yet or is
     // holding unclaimed, a capture it was still reviewing, a refund it refused earlier, a payment interrupted mid-way.
-    const pending = t.spends.filter((s) => ["PAYOUT_PENDING", "UNCLAIMED", "CAPTURED", "RESERVED", "REFUND_DUE"].includes(s.status)).slice(-4);
+    // A page that stays open asks every few seconds. PayPal is asked at most that often for a payment in flight, and at most
+    // twice a minute for one that is only waiting to be claimed or refunded; the sweep and PayPal's events cover the rest.
+    const now = Date.now();
+    const pending = t.spends.filter((s) => ["PAYOUT_PENDING", "UNCLAIMED", "CAPTURED", "RESERVED", "REFUND_DUE"].includes(s.status)).slice(-4)
+      .filter((s) => now - (lastAsked.get(s.id) ?? 0) >= (s.status === "UNCLAIMED" || s.status === "REFUND_DUE" ? 30_000 : 2_500));
+    for (const s of pending) lastAsked.set(s.id, now);
+    if (lastAsked.size > 5000) lastAsked.clear();
     if (pending.length) { await Promise.all(pending.map((s) => G.syncSpend(s.id).catch(() => null))); t = (await G.tree(id))!; }
     const trail = await getDb().select().from(auditLog).where(eq(auditLog.subjectId, id)).orderBy(asc(auditLog.seq));
     const audit = verifyChain(t.root.principal, id, trail.map((x) => ({ ...x, createdAt: x.createdAt.toISOString() })) as never);
@@ -86,6 +97,42 @@ export const handlers: Record<string, Handler> = {
   },
 
   /** The proof graph of an envelope: every signed record behind it, with what a browser needs to check each one. */
+  /** Where one payment stands now, whatever its state (a receipt exists only once PayPal has captured). Asking makes the gateway ask PayPal. */
+  "GET /api/spends/:id/status": async ({ params }) => {
+    const s = await G.syncSpend(params.id!);
+    return { body: { id: s.id, status: s.status, delivered: s.status === "PAID", amountMinor: s.amountMinor, currency: s.currency, payee: s.payee, purpose: s.purpose, payoutStatus: s.payoutStatus, captureId: s.captureId, refundId: s.refundId, hasReceipt: Boolean(s.receipt), reasons: withMeaning(s.reasons) } };
+  },
+
+  /** Every call the gateway made to PayPal for this envelope, and the events PayPal reported about it. */
+  "GET /api/envelopes/:id/paypal": async ({ params }) => {
+    const t = await S.paypalTrail(params.id!);
+    return t ? { body: t } : { status: 404, body: { error: "No such envelope." } };
+  },
+
+  /** The owner takes back a payout nobody claimed: PayPal cancels it and the capture is refunded. */
+  "POST /api/spends/:id/recall": async ({ params, body }) => {
+    const b = z.object({ signed: z.object({ request: z.any(), sig: z.string(), by: z.string().regex(KEY) }) }).parse(body);
+    const s = await S.recall(params.id!, b.signed as never);
+    return { status: s.status === "FAILED" && s.refundId ? 200 : 202, body: { status: s.status, spendId: s.id, refundId: s.refundId, payoutStatus: s.payoutStatus, reasons: withMeaning(s.reasons) } };
+  },
+
+  /** PayPal reports something. Verified with PayPal, applied once, and only ever as a reason to ask PayPal by id. */
+  "POST /api/paypal/webhook": async ({ body, headers, raw }) => {
+    const ev = z.object({ id: z.string().min(1).max(100), event_type: z.string().min(1).max(100), resource: z.record(z.string(), z.unknown()).optional() }).safeParse(body);
+    if (!ev.success) return { status: 400, body: { error: "Not a PayPal event." } };
+    const genuine = await S.genuineEvent(headers ?? {}, raw ?? JSON.stringify(body));
+    if (genuine === "unconfigured") return { status: 503, body: { error: "No webhook id is configured (PAYPAL_WEBHOOK_ID), so events cannot be verified and are not accepted." } };
+    if (genuine === "no") return { status: 401, body: { error: "PayPal did not confirm this event." } };
+    return { body: await S.applyPayPalEvent(ev.data, "webhook") };
+  },
+
+  /** Move along everything unfinished. For a scheduler: with CRON_SECRET set, it must be presented as a bearer token. */
+  "POST /api/sweep": async ({ headers }) => {
+    const secret = process.env.CRON_SECRET;
+    if (secret && headers?.authorization !== `Bearer ${secret}`) return { status: 401, body: { error: "Not authorized." } };
+    return { body: await S.sweepUnfinished() };
+  },
+
   "GET /api/proof/:root": async ({ params }) => {
     const g = await proof(params.root!);
     return g ? { body: g } : { status: 404, body: { error: "No such envelope." } };
@@ -218,7 +265,9 @@ export const handlers: Record<string, Handler> = {
   "POST /api/gateway/accept": async ({ body }) => {
     const b = z.object({ signed: z.object({ request: z.any(), sig: z.string(), by: z.string() }) }).parse(body);
     const r = await G.accept(b.signed as never);
-    return { status: spendStatus(r.status), body: spendOut(r) };
+    // A decline that released the money did what was asked: that is a success, like an agent releasing its own promise.
+    const declined = (b.signed.request as { decline?: unknown } | null)?.decline === true && r.status === "LAPSED";
+    return { status: declined ? 200 : spendStatus(r.status), body: spendOut(r) };
   },
 
   /** "Is this agent good for the money?" Read-only; moves no money. */
@@ -301,8 +350,10 @@ export function match(method: string, path: string): { handler: Handler; params:
 export async function run(handler: Handler, input: Input): Promise<{ status: number; body: unknown }> {
   try {
     const out = await handler(input);
+    await flushJournal(); // records of PayPal calls made during this request
     return { status: out.status ?? 200, body: out.body };
   } catch (e) {
+    await flushJournal().catch(() => undefined);
     const { UserFacingError } = await import("../errors");
     if (e instanceof UserFacingError) return { status: e.status, body: { error: e.message } };
     if (e instanceof z.ZodError) return { status: 400, body: { error: "Invalid request", issues: e.issues.map((i) => i.path.join(".") + ": " + i.message) } };

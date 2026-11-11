@@ -293,6 +293,30 @@ The gateway and PayPal cannot commit together, so each step is safe to repeat an
 - **Revoked in between.** A payment that was admitted but not yet captured is checked again before the capture; if any envelope on its path was revoked or the root closed, it fails and nothing is captured.
 - **What is recorded.** A refusal is stored against an envelope only when the request is signed by the key that holds the envelope it presents, and every block of that chain is really signed by the holder above it, back to the root this gateway sealed. A chain that breaks the rules (a child wider than its parent) but is genuinely signed is recorded; a chain with a bad signature, a broken link or another root is refused and forgotten. For an account the signer must be the account's key, and for a card its merchant.
 
+### Settlement on PayPal's word
+
+**The record.** The gateway records its calls to PayPal (every call that changes something, every refusal, and every read unless it repeats the same answer within a minute): the operation, PayPal's status and ids, the amount, the idempotency key, PayPal's debug id, the time taken. Bodies are not stored. `GET /api/envelopes/{id}/paypal` returns the calls behind one envelope. A request sent again with the same idempotency key is marked as a repeat and counted once.
+
+**Events.** PayPal reports captures, payouts and voids as events. The gateway accepts them two ways: pushed to `POST /api/paypal/webhook`, or pulled from PayPal's own event feed. Either way:
+
+1. A pushed event is verified with PayPal (`verify-webhook-signature`) using the headers PayPal signed and the body byte for byte as received. Without a configured webhook id, events are not accepted at all.
+2. The event is stored under PayPal's event id. A second delivery of the same id does nothing.
+3. **An event is a hint, never the truth.** The gateway finds the payment, transfer or hold the event names (by the payment id it put in `invoice_id` and `sender_item_id`, by capture id, by payout batch id, or by authorization id) and reads that record from PayPal by id. What PayPal answers then is what changes the books. A forged, edited, stale or replayed event can therefore cause a read and nothing else.
+4. A hold PayPal reports voided or lapsed while its envelope is open closes the envelope. A capture refunded or reversed outside the gateway while its payment stands is written to the envelope's audit trail for the owner.
+
+**Sweep.** `POST /api/sweep` reads the event feed, asks PayPal about every payment and transfer still in flight, and lapses promises that ran out. With `CRON_SECRET` set it must be presented as a bearer token.
+
+**Recall.** A payout PayPal holds as `UNCLAIMED` can be taken back by the envelope's owner:
+
+```json
+{ "signed": { "request": { "v": "envelope-read/1", "what": "recall", "subject": "<payment id>", "nonce": "n_…", "at": "…" },
+              "sig": "<signature by `by`>", "by": "<owner key>" } }
+```
+
+sent to `POST /api/spends/{id}/recall`. The gateway reads PayPal's current word first; if the payout is still unclaimed it asks PayPal to cancel the item, and once PayPal reports it returned, the usual path for a payout that did not arrive runs: the capture is refunded, the budget returns at every level, and the payment records `RECALLED_BY_OWNER`. If PayPal will not cancel, nothing changes. Only the owner's key can do this; the agent that paid cannot.
+
+**Looking up a payment.** `GET /api/spends/{id}/status` answers for a payment in any state (refused, set aside, in flight, unclaimed, paid, refunded) after asking PayPal. `GET /api/spends/{id}` returns the receipt and exists only once PayPal has captured.
+
 ### Reading an owner's books
 
 ```json
@@ -364,6 +388,8 @@ Nothing is reserved, so the answer can go stale; it is valid for five minutes. I
 | Accept | Capture + Payout, triggered by the named key's signature | Payment follows evidence of delivery without either side holding PayPal credentials; the fingerprint of the work is bound to the PayPal ids on the receipt. |
 | Pay an agent | Payout to the account's settlement address | One agent's spending becomes another agent's income without either holding PayPal credentials. |
 | Check | Show authorization details | A payee learns from PayPal, through the gateway, that the hold is live before doing any work. |
+| Recall | Cancel an unclaimed payout item, then refund the capture | Money that never arrived does not stay out of the owner's hands for thirty days. |
+| Settle | Webhook signature verification; the event feed | A payment finishes when PayPal says so, without anyone opening a page; nothing PayPal did not send is believed. |
 | Receipt | capture id, payout batch and item ids | Any PayPal transaction can be traced to its chain of authority, and re-checked with PayPal's own GET endpoints. |
 
 Verified in the PayPal sandbox on 2026-11-11: 12 partial captures of one authorization all completed; an over-capture was refused (`MAX_CAPTURE_AMOUNT_EXCEEDED`); void after partial captures returned `VOIDED`. See `docs/evidence/sandbox-run.json`.
