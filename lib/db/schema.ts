@@ -6,7 +6,7 @@
  */
 import { sql } from "drizzle-orm";
 import { bigserial, index, integer, jsonb, pgTable, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
-import type { Block, Caps, SignedAccount, SignedPromise, SignedSpend, Violation } from "../envelope/core";
+import type { Block, Caps, SignedAccount, SignedPromise, SignedSpend, SignedTransfer, Violation } from "../envelope/core";
 
 const ts = (name: string) => timestamp(name, { withTimezone: true, mode: "date" });
 
@@ -64,13 +64,14 @@ export type Receipt = {
   request: SignedSpend["request"] | SignedPromise["request"];
   requestSig: string;
   /** Present when the payee is an agent's account: whose account it is and where PayPal sent the money. */
-  paidTo?: { account: string; agent: string; agentLabel: string; settledTo: string };
+  paidTo?: { account: string; agent: string; agentLabel: string; settledTo: string; /** Set when the money was credited to the agent's balance here and not paid out by PayPal. */ held?: { ledgerEntry: number; balanceAfterMinor: number } };
   /** Present when the money was released by the key the promise named: who signed for the work, and its fingerprint. */
   releasedBy?: { key: string; work: string; note: string; at: string };
   /** The authority chain: block ids and hashes, root first. */
   chain: Array<{ id: string; hash: string; holder: string; holderLabel: string }>;
   principal: string;
-  paypal: { mode: string; authorizationId: string; captureId: string; payoutBatchId: string; payoutItemId: string | null };
+  /** `payoutBatchId` is null when the money was credited to an agent's balance: there was no payout. */
+  paypal: { mode: string; authorizationId: string; captureId: string; payoutBatchId: string | null; payoutItemId: string | null };
   issuedAt: string;
   gateway: string;
   sig: string;
@@ -139,7 +140,64 @@ export const accounts = pgTable("accounts", {
   settleTo: text("settle_to").notNull(),
   signed: jsonb("signed").$type<SignedAccount>().notNull(),
   openedAt: ts("opened_at").notNull().defaultNow(),
+  /** "hold": income stays here as a balance. "settle": income is paid straight out to settleTo. */
+  mode: text("mode", { enum: ["settle", "hold"] }).notNull().default("settle"),
+  /** What the account holds, in minor units. Only ever changed together with a ledger entry. */
+  balanceMinor: integer("balance_minor").notNull().default(0),
+  /** Owner's cap on a single payment out of the balance; null = none. */
+  perPaymentMinor: integer("per_payment_minor"),
+  frozenAt: ts("frozen_at"),
 });
+
+/** Every change to a balance, one row each. `(agent, kind, ref)` is unique so a credit or debit can never be applied twice. */
+export const ledger = pgTable("ledger", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  agent: text("agent").notNull(),
+  kind: text("kind", { enum: ["income", "transfer_in", "transfer_out", "payout", "withdrawal", "reversal"] }).notNull(),
+  /** The spend or transfer this entry belongs to. */
+  ref: text("ref").notNull(),
+  deltaMinor: integer("delta_minor").notNull(),
+  balanceAfterMinor: integer("balance_after_minor").notNull(),
+  counterparty: text("counterparty"),
+  memo: text("memo").notNull().default(""),
+  createdAt: ts("created_at").notNull().defaultNow(),
+}, (t) => [uniqueIndex("ledger_once").on(t.agent, t.kind, t.ref), index("ledger_agent").on(t.agent, t.id)]);
+
+export const TRANSFER_STATES = ["DENIED", "BOOKED", "SENDING", "PAID", "PAYOUT_PENDING", "UNCLAIMED", "FAILED"] as const;
+export type TransferReceipt = {
+  v: "envelope-transfer-receipt/1";
+  transfer: string;
+  request: SignedTransfer["request"];
+  requestSig: string;
+  from: { account: string; agent: string; agentLabel: string };
+  /** A book transfer between two accounts here, or a PayPal payout. */
+  to: { kind: "account"; account: string; agent: string; agentLabel: string } | { kind: "paypal"; address: string; payoutBatchId: string; mode: string };
+  balanceAfterMinor: number;
+  issuedAt: string; gateway: string; sig: string;
+};
+/** Money leaving an agent's balance. */
+export const transfers = pgTable("transfers", {
+  id: text("id").primaryKey(),
+  fromAgent: text("from_agent").notNull(),
+  kind: text("kind", { enum: ["pay", "withdraw"] }).notNull(),
+  payee: text("payee").notNull(),
+  toAgent: text("to_agent"),
+  /** PayPal address when the money leaves through a payout. */
+  payoutTo: text("payout_to"),
+  amountMinor: integer("amount_minor").notNull(),
+  currency: text("currency").notNull(),
+  purpose: text("purpose").notNull().default(""),
+  memo: text("memo").notNull().default(""),
+  requestHash: text("request_hash").notNull().unique(),
+  signed: jsonb("signed").$type<SignedTransfer>().notNull(),
+  status: text("status", { enum: TRANSFER_STATES }).notNull(),
+  reasons: jsonb("reasons").$type<Violation[]>().notNull().default([]),
+  payoutBatchId: text("payout_batch_id"),
+  payoutItemId: text("payout_item_id"),
+  payoutStatus: text("payout_status"),
+  receipt: jsonb("receipt").$type<TransferReceipt>(),
+  createdAt: ts("created_at").notNull().defaultNow(),
+}, (t) => [index("transfers_from").on(t.fromAgent, t.createdAt), index("transfers_to").on(t.toAgent, t.createdAt)]);
 
 /** The gateway's own signing key for receipts (generated on first use). */
 export const gatewayKeys = pgTable("gateway_keys", {
@@ -192,3 +250,5 @@ export type Root = typeof roots.$inferSelect;
 export type BlockRow = typeof blocks.$inferSelect;
 export type Spend = typeof spends.$inferSelect;
 export type Account = typeof accounts.$inferSelect;
+export type LedgerEntry = typeof ledger.$inferSelect;
+export type Transfer = typeof transfers.$inferSelect;

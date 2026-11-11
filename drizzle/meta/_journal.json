@@ -22,6 +22,13 @@
       "when": 1794402817905,
       "tag": "0002_loud_infant_terrible",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1794406001029,
+      "tag": "0003_calm_earthquake",
+      "breakpoints": true
     }
   ]
 }

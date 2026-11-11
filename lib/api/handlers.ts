@@ -9,6 +9,7 @@ import { getDb } from "../db";
 import { auditLog, roots } from "../db/schema";
 import { act, attachDemoAgents, createDemoAgents, DEMO_ACTIONS, demoHello, ensureCounterparty, hasDemoAgents, isDemoAgent, runTool, TOOL_AGENTS } from "../demo/agents";
 import * as E from "../envelope/core";
+import * as B from "../gateway/bank";
 import * as G from "../gateway/service";
 import { verifyChain } from "../ledger/chain";
 import { paypalMode } from "../paypal/client";
@@ -101,7 +102,29 @@ export const handlers: Record<string, Handler> = {
   "POST /api/accounts": async ({ body }) => {
     const { signed } = z.object({ signed: z.object({ body: z.any(), agentSig: z.string(), ownerSig: z.string() }) }).parse(body);
     const a = await G.openAccount(signed as never);
-    return { body: { account: a.account, payee: E.accountPayee(a.agent), agent: a.agent, label: a.label, owner: a.ownerName, settlesTo: G.maskEmail(a.settleTo) } };
+    return { body: { account: a.account, payee: E.accountPayee(a.agent), agent: a.agent, label: a.label, owner: a.ownerName, settlesTo: G.maskEmail(a.settleTo), holds: a.mode === "hold", perPaymentMinor: a.perPaymentMinor, balanceMinor: a.balanceMinor } };
+  },
+
+  /** An agent moves money out of its own balance: to another account, to a PayPal address, or back to its owner. */
+  "POST /api/bank/transfer": async ({ body }) => {
+    const { signed } = z.object({ signed: z.object({ request: z.any(), sig: z.string() }) }).parse(body);
+    const r = await B.transfer(signed as never);
+    return {
+      status: r.status === "DENIED" ? 403 : r.status === "FAILED" ? 502 : 200,
+      body: { status: r.status, duplicate: r.duplicate, transferId: r.transfer?.id ?? null, reasons: withMeaning(r.reasons), balanceMinor: r.balanceMinor, paypal: r.transfer?.payoutBatchId ? { payoutBatchId: r.transfer.payoutBatchId, payoutStatus: r.transfer.payoutStatus } : null, receipt: r.receipt },
+    };
+  },
+  /** The owner freezes or unfreezes an agent's account. */
+  "POST /api/bank/freeze": async ({ body }) => {
+    const { signed } = z.object({ signed: z.object({ request: z.any(), sig: z.string(), by: z.string() }) }).parse(body);
+    const a = await B.freeze(signed as never);
+    return { body: { account: a.account, agent: a.agent, label: a.label, frozen: Boolean(a.frozenAt), balanceMinor: a.balanceMinor } };
+  },
+  /** The books: every balance, and whether they add up. */
+  "GET /api/bank": async () => ({ body: await B.position() }),
+  "GET /api/bank/transfers/:id": async ({ params }) => {
+    const t = await B.transferById(params.id!);
+    return t ? { body: t } : { status: 404, body: { error: "No such transfer." } };
   },
 
   /** The money boundary. Anyone may call it; the only thing that matters is what the signatures say. */

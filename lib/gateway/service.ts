@@ -17,7 +17,7 @@
  */
 import { and, asc, desc, eq, inArray, lt, sql } from "drizzle-orm";
 import { getDb, type DB } from "../db";
-import { accounts, blocks, gatewayKeys, roots, spends, type Account, type BlockRow, type PromiseNote, type Receipt, type Root, type Spend } from "../db/schema";
+import { accounts, blocks, gatewayKeys, ledger, roots, spends, type Account, type BlockRow, type PromiseNote, type Receipt, type Root, type Spend } from "../db/schema";
 import { UserFacingError } from "../errors";
 import { newId } from "../ids";
 import { formatMoney } from "../money";
@@ -32,6 +32,11 @@ export const PROMISE_NOTE_VERSION = "envelope-promise-note/1" as const;
 
 type Tx = Parameters<Parameters<DB["transaction"]>[0]>[0];
 const lockRoot = (tx: Tx, rootId: string) => tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`envelope-root|${rootId}`}, 0))`);
+/** One lock per agent account: every change to a balance happens under it. */
+export const lockAccount = (tx: Tx, agent: string) => tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`envelope-account|${agent}`}, 0))`);
+/** A payment to an account that keeps its income: there is an agent, and no PayPal address to pay out to. */
+export const isHeld = (s: Pick<Spend, "payeeAgent" | "payoutTo">) => Boolean(s.payeeAgent && !s.payoutTo);
+export const HELD = "HELD_IN_ACCOUNT" as const;
 const trail = (root: Pick<Root, "principal" | "id">, actor: Parameters<typeof audit>[1]["actor"], action: string, outcome: Parameters<typeof audit>[1]["outcome"], ref: string | null, detail: Record<string, unknown> = {}) =>
   audit(getDb(), { scopeId: root.principal, subjectId: root.id, actor, action, ref, outcome, detail });
 
@@ -207,7 +212,8 @@ async function admit(kind: "spend" | "promise", signed: E.SignedSpend | E.Signed
     if (E.isAccountPayee(base.payee)) {
       const number = base.payee.slice(5).toUpperCase();
       const acct = await tx.query.accounts.findFirst({ where: eq(accounts.account, number) });
-      if (acct) { payeeAgent = acct.agent; payoutTo = acct.settleTo; }
+      // An account that holds its income is credited here; one that settles is paid out to the address fixed now.
+      if (acct) { payeeAgent = acct.agent; payoutTo = acct.mode === "hold" ? null : acct.settleTo; }
       else reasons.push({ code: "PAYEE_ACCOUNT_UNKNOWN", at: null, detail: `no agent has opened account ${number}` });
     }
     const live = (await tx.query.roots.findFirst({ where: eq(roots.id, root.id) }))!;
@@ -296,7 +302,21 @@ export async function settle(spendId: string): Promise<Spend> {
     }
   }
 
-  if (!s.payoutBatchId) {
+  // An account that holds its income: the captured money is credited to its balance, exactly once. No payout.
+  let credit: { id: number; balanceAfterMinor: number } | null = null;
+  if (isHeld(s)) {
+    credit = await db.transaction(async (tx) => {
+      await lockAccount(tx, s.payeeAgent!);
+      const had = await tx.query.ledger.findFirst({ where: and(eq(ledger.agent, s.payeeAgent!), eq(ledger.kind, "income"), eq(ledger.ref, s.id)) });
+      if (had) return had;
+      const a = (await tx.query.accounts.findFirst({ where: eq(accounts.agent, s.payeeAgent!) }))!;
+      const after = a.balanceMinor + s.amountMinor;
+      await tx.update(accounts).set({ balanceMinor: after }).where(eq(accounts.agent, a.agent));
+      const [row] = await tx.insert(ledger).values({ agent: a.agent, kind: "income", ref: s.id, deltaMinor: s.amountMinor, balanceAfterMinor: after, counterparty: s.leafLabel, memo: s.memo || s.purpose }).returning();
+      return row!;
+    });
+    if (s.payoutStatus !== HELD) { await db.update(spends).set({ payoutStatus: HELD }).where(eq(spends.id, s.id)); s = { ...s, payoutStatus: HELD }; }
+  } else if (!s.payoutBatchId) {
     try {
       const po = await payout(pp, { spendId: s.id, receiverEmail: s.payoutTo ?? s.payee, amountMinor: s.amountMinor, currency: s.currency, note: `${s.memo || s.purpose} · paid from an Envelope (${s.id})` });
       await db.update(spends).set({ payoutBatchId: po.batchId, payoutItemId: po.itemId, payoutTransactionId: po.transactionId, payoutStatus: po.itemStatus ?? po.batchStatus }).where(eq(spends.id, s.id));
@@ -322,20 +342,21 @@ export async function settle(spendId: string): Promise<Spend> {
   const receiptBody: Omit<Receipt, "sig"> = {
     v: RECEIPT_VERSION, spend: s.id, decision: "PAID", request: s.signed.request, requestSig: s.signed.sig,
     ...(s.delivery ? { releasedBy: { key: s.delivery.by, work: s.delivery.work, note: s.delivery.note, at: s.delivery.at } } : {}),
-    ...(s.payeeAgent && s.payoutTo ? { paidTo: { account: E.accountNumber(s.payeeAgent), agent: s.payeeAgent, agentLabel: payeeAcct?.label ?? "agent", settledTo: s.payoutTo } } : {}),
+    ...(s.payeeAgent ? { paidTo: { account: E.accountNumber(s.payeeAgent), agent: s.payeeAgent, agentLabel: payeeAcct?.label ?? "agent", settledTo: credit ? "balance" : s.payoutTo!, ...(credit ? { held: { ledgerEntry: credit.id, balanceAfterMinor: credit.balanceAfterMinor } } : {}) } } : {}),
     chain: await Promise.all(chain.map(async (b) => ({ id: b.body.id, hash: await E.blockHash(b), holder: b.body.holder, holderLabel: b.body.holderLabel }))),
     principal: root.principal,
-    paypal: { mode: paypalMode(), authorizationId: root.authorizationId!, captureId: s.captureId!, payoutBatchId: s.payoutBatchId!, payoutItemId: s.payoutItemId },
+    paypal: { mode: paypalMode(), authorizationId: root.authorizationId!, captureId: s.captureId!, payoutBatchId: s.payoutBatchId, payoutItemId: s.payoutItemId },
     issuedAt: new Date().toISOString(), gateway: gw.publicKey,
   };
   const receipt: Receipt = { ...receiptBody, sig: await E.signDetached(gw.privateKey, RECEIPT_VERSION, receiptBody) };
-  const status = payoutState(s.payoutStatus);
+  const status = credit ? "PAID" : payoutState(s.payoutStatus);
   const final = await db.transaction(async (tx) => {
     await lockRoot(tx, s.rootId);
     const [u] = await tx.update(spends).set({ status, receipt, settledAt: new Date() }).where(and(eq(spends.id, s.id), eq(spends.status, "CAPTURED"))).returning();
     if (u) await tx.update(blocks).set({ reservedMinor: sql`${blocks.reservedMinor} - ${s.amountMinor}`, spentMinor: sql`${blocks.spentMinor} + ${s.amountMinor}` }).where(inArray(blocks.id, s.chainIds));
     return u ?? (await tx.query.spends.findFirst({ where: eq(spends.id, s.id) }))!;
   });
+  if (credit) { await trail(root, "gateway", "balance.credited", "OK", s.captureId, { spend: s.id, account: s.payee, amount: formatMoney(s.amountMinor, s.currency), ledgerEntry: credit.id }); return final; }
   await trail(root, "paypal", "payout.sent", "OK", s.payoutBatchId, { spend: s.id, to: s.payoutTo ?? s.payee, ...(s.payeeAgent ? { account: s.payee } : {}), amount: formatMoney(s.amountMinor, s.currency), item: s.payoutItemId, status: s.payoutStatus });
   if (s.payoutStatus && PAYOUT_DEAD.includes(s.payoutStatus)) return undoDeadPayout(final, s.payoutStatus, null);
   return final;
@@ -571,8 +592,10 @@ export async function openAccount(signed: E.SignedAccount): Promise<Account> {
   const account = E.accountNumber(b.agent);
   const clash = await db.query.accounts.findFirst({ where: eq(accounts.account, account) });
   if (clash && clash.agent !== b.agent) throw new UserFacingError("Another agent already holds that account number.", 409);
+  // The owner answers for the account, caps it and can freeze it: an agent must not be able to swap in an owner key of its own.
+  if (clash && clash.owner !== b.owner) throw new UserFacingError("This account already has an owner. Only that owner can co-sign a change to it.", 409);
   if (clash && Date.parse(clash.signed.body.at) >= Date.parse(b.at)) return clash;
-  const values = { account, label: b.label, owner: b.owner, ownerName: b.ownerName || "Owner", settleTo: b.settleTo, signed };
+  const values = { account, label: b.label, owner: b.owner, ownerName: b.ownerName || "Owner", settleTo: b.settleTo, signed, mode: b.mode === "hold" ? "hold" as const : "settle" as const, perPaymentMinor: b.perPayment ?? null };
   const [row] = await db.insert(accounts).values({ agent: b.agent, ...values }).onConflictDoUpdate({ target: accounts.agent, set: values }).returning();
   await audit(db, { scopeId: b.owner, subjectId: `acct:${account}`, actor: "principal", action: clash ? "account.updated" : "account.opened", ref: account, outcome: "OK", detail: { agent: b.label, owner: b.ownerName } });
   return row!;
@@ -759,7 +782,12 @@ export async function agentProfile(key: string) {
     firstSeenAt: firstSeen.toISOString(),
     accounts: holdings,
     /** Set when the agent has opened an account that can receive. */
-    receives: acct ? { payee: E.accountPayee(key), owner: { label: acct.ownerName, key: acct.owner }, settlesTo: maskEmail(acct.settleTo), openedAt: acct.openedAt.toISOString() } : null,
+    receives: acct ? { payee: E.accountPayee(key), owner: { label: acct.ownerName, key: acct.owner }, settlesTo: maskEmail(acct.settleTo), openedAt: acct.openedAt.toISOString(), holds: acct.mode === "hold" } : null,
+    /** Set when the account keeps a balance (or still has one). */
+    balance: acct && (acct.mode === "hold" || acct.balanceMinor > 0) ? {
+      minor: acct.balanceMinor, frozen: Boolean(acct.frozenAt), perPaymentMinor: acct.perPaymentMinor,
+      ledger: (await db.select().from(ledger).where(eq(ledger.agent, key)).orderBy(desc(ledger.id)).limit(30)).map((l) => ({ id: l.id, kind: l.kind, ref: l.ref, deltaMinor: l.deltaMinor, balanceAfterMinor: l.balanceAfterMinor, counterparty: l.counterparty && l.counterparty.includes("@") ? maskEmail(l.counterparty) : l.counterparty, memo: l.memo, at: l.createdAt.toISOString() })),
+    } : null,
     record: {
       payments: settled.length, paidMinor: settled.reduce((n, x) => n + x.amountMinor, 0),
       refused: denied.length, refusedCodes: [...new Set(denied.flatMap((x) => x.reasons.map((y) => y.code)))],
@@ -936,11 +964,13 @@ export async function reconcile(spendId: string) {
   if (!s?.receipt) throw new UserFacingError("No receipt for that spend.", 404);
   const root = (await db.query.roots.findFirst({ where: eq(roots.id, s.rootId) }))!;
   const pp = getPayPal();
+  const held = isHeld(s);
+  const entry = held ? await db.query.ledger.findFirst({ where: and(eq(ledger.agent, s.payeeAgent!), eq(ledger.kind, "income"), eq(ledger.ref, s.id)) }) : null;
   const [signatureOk, chainVerdict, cap, po, auth] = await Promise.all([
     verifyReceipt(s.receipt),
     E.verifyChain(s.signed.chain, new Date(s.signed.request.at)),
     getCapture(pp, s.captureId!).catch(() => null),
-    getPayout(pp, s.payoutBatchId!).catch(() => null),
+    held ? null : getPayout(pp, s.payoutBatchId!).catch(() => null),
     getAuthorization(pp, root.authorizationId!).catch(() => null),
   ]);
   const checks = [
@@ -948,7 +978,9 @@ export async function reconcile(spendId: string) {
     { name: "Authority chain verifies back to the principal's key", ok: chainVerdict.ok && chainVerdict.principal === root.principal },
     { name: "PayPal capture exists for exactly this amount", ok: Boolean(cap && cap.amountMinor === s.amountMinor && cap.currency === s.currency && ["COMPLETED", "PENDING", "PARTIALLY_REFUNDED"].includes(cap.status)), detail: cap ? `${cap.id} · ${cap.status} · ${formatMoney(cap.amountMinor, cap.currency)}` : "not found" },
     { name: "PayPal capture carries this spend's id", ok: Boolean(cap && (cap.invoiceId === s.id || cap.invoiceId === null)), detail: cap?.invoiceId ?? "invoice_id not returned" },
-    { name: "PayPal payout went to the payee the agent signed for", ok: Boolean(po && po.receiver?.toLowerCase() === (s.payoutTo ?? s.payee)), detail: po ? `${po.batchId} · ${po.itemStatus ?? po.batchStatus} · ${po.receiver}` : "not found" },
+    held
+      ? { name: "Credited once to the account the agent signed for", ok: Boolean(entry && entry.deltaMinor === s.amountMinor && s.receipt.paidTo?.held?.ledgerEntry === entry.id), detail: entry ? `ledger entry ${entry.id} · ${formatMoney(entry.deltaMinor, s.currency)} · no payout: the money stays in the agent's balance` : "not found" }
+      : { name: "PayPal payout went to the payee the agent signed for", ok: Boolean(po && po.receiver?.toLowerCase() === (s.payoutTo ?? s.payee)), detail: po ? `${po.batchId} · ${po.itemStatus ?? po.batchStatus} · ${po.receiver}` : "not found" },
     { name: "The hold belongs to this envelope", ok: Boolean(auth && (auth.customId === root.id || auth.customId === null)), detail: auth ? `${auth.id} · ${auth.status}` : "not found" },
   ];
   return { spend: s, receipt: s.receipt, checks, ok: checks.every((c) => c.ok) };

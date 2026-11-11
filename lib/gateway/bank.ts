@@ -1,0 +1,220 @@
+/**
+ * Balances: the part of an agent's account that holds money.
+ *
+ * An account opened in "hold" mode keeps what the agent earns. Each payment to it is still a partial
+ * capture of the payer's PayPal hold; the amount is then credited to a ledger here and not paid out.
+ * The agent moves that money by signing a transfer with its own key:
+ *
+ *   to another account here   a book transfer: one debit, one credit, under one lock, no PayPal call;
+ *   to a PayPal address       a debit, then a PayPal payout from the gateway's balance;
+ *   back to its owner         the same, to the settlement address its owner signed for.
+ *
+ * Every change to a balance is one ledger row, unique per (account, kind, reference), so nothing is
+ * credited or debited twice. The owner can cap a single payment and freeze the account.
+ *
+ * Holding balances for others is stored value. This runs against the PayPal sandbox only; a real
+ * deployment needs a licensed partner to hold the funds. No model output is read in this file.
+ */
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { getDb } from "../db";
+import { accounts, ledger, transfers, type Account, type Transfer, type TransferReceipt } from "../db/schema";
+import { UserFacingError } from "../errors";
+import * as E from "../envelope/core";
+import { newId } from "../ids";
+import { getPayPal, PayPalApiError, paypalMode } from "../paypal/client";
+import { getPayout, payout } from "../paypal/payments";
+import { audit } from "../services/audit";
+import { gatewayKey, lockAccount } from "./service";
+
+export const TRANSFER_RECEIPT_VERSION = "envelope-transfer-receipt/1" as const;
+export type TransferResult = { status: Transfer["status"]; transfer: Transfer | null; reasons: E.Violation[]; receipt: TransferReceipt | null; duplicate: boolean; balanceMinor: number | null };
+
+const note = (a: Account, action: string, outcome: "OK" | "REJECTED" | "FAILED" | "PENDING" | "INFO", ref: string, detail: Record<string, unknown>) =>
+  audit(getDb(), { scopeId: a.owner, subjectId: `acct:${a.account}`, actor: "agent", action, ref, outcome, detail });
+
+export async function verifyTransferReceipt(r: TransferReceipt): Promise<boolean> {
+  if (!r || r.v !== TRANSFER_RECEIPT_VERSION) return false;
+  const { sig, ...body } = r;
+  return E.verifyDetached(r.gateway, TRANSFER_RECEIPT_VERSION, body, sig);
+}
+
+/** An agent moves money out of its own balance. Only that agent's key can ask; the gateway checks the balance, the owner's cap and the freeze. */
+export async function transfer(signed: E.SignedTransfer): Promise<TransferResult> {
+  const db = getDb();
+  const stateless = await E.verifyTransfer(signed);
+  const r = signed?.request;
+  const denied = (reasons: E.Violation[]): TransferResult => ({ status: "DENIED", transfer: null, reasons, receipt: null, duplicate: false, balanceMinor: null });
+  if (!r || typeof r.from !== "string") return denied(stateless);
+  const from = await db.query.accounts.findFirst({ where: eq(accounts.agent, r.from) });
+  if (!from) return denied([...stateless, { code: "NO_BALANCE_ACCOUNT", at: null, detail: "that key has not opened an account here" }]);
+
+  // Where is it going?
+  let to: Account | null = null, payoutTo: string | null = null;
+  const reasons: E.Violation[] = [...stateless];
+  if (stateless.length === 0) {
+    if (r.kind === "withdraw") payoutTo = from.settleTo;
+    else if (E.isAccountPayee(r.payee)) {
+      to = (await db.query.accounts.findFirst({ where: eq(accounts.account, r.payee.slice(5).toUpperCase()) })) ?? null;
+      if (!to) reasons.push({ code: "PAYEE_ACCOUNT_UNKNOWN", at: null, detail: `no agent has opened account ${r.payee.slice(5).toUpperCase()}` });
+      else if (to.agent === from.agent) reasons.push({ code: "MALFORMED", at: null, detail: "an account cannot pay itself" });
+      else if (to.mode !== "hold") { payoutTo = to.settleTo; }
+    } else payoutTo = r.payee;
+  }
+  const book = Boolean(to && to.mode === "hold");
+  const requestHash = await E.sha256(E.canonical({ request: r, sig: signed.sig }));
+  const base = { fromAgent: from.agent, kind: r.kind, payee: String(r.payee).slice(0, 127), toAgent: to?.agent ?? null, payoutTo: book ? null : payoutTo, amountMinor: Number.isSafeInteger(r.amount) ? r.amount : 0, currency: String(r.currency), purpose: String(r.purpose).slice(0, 60), memo: String(r.memo).slice(0, 200), requestHash, signed };
+
+  const out = await db.transaction(async (tx): Promise<{ row: Transfer; fresh: boolean; balance: number }> => {
+    // Two accounts are always locked in the same order, so two transfers crossing each other cannot deadlock.
+    for (const k of [from.agent, ...(book ? [to!.agent] : [])].sort()) await lockAccount(tx, k);
+    const live = (await tx.query.accounts.findFirst({ where: eq(accounts.agent, from.agent) }))!;
+    const seen = await tx.query.transfers.findFirst({ where: eq(transfers.requestHash, requestHash) });
+    if (seen) return { row: seen, fresh: false, balance: live.balanceMinor };
+    const why = [...reasons];
+    if (why.length === 0) {
+      if (live.frozenAt) why.push({ code: "ACCOUNT_FROZEN", at: null, detail: `${live.label}'s account was frozen by ${live.ownerName}` });
+      if (r.kind === "pay" && live.perPaymentMinor !== null && r.amount > live.perPaymentMinor) why.push({ code: "OVER_ACCOUNT_LIMIT", at: null, detail: `${E.money(r.amount)} is over the ${E.money(live.perPaymentMinor)} ${live.ownerName} lets this account pay at once` });
+      if (r.amount > live.balanceMinor) why.push({ code: "INSUFFICIENT_BALANCE", at: null, detail: `the balance is ${E.money(live.balanceMinor)}` });
+    }
+    const id = newId("tr");
+    if (why.length) {
+      const [row] = await tx.insert(transfers).values({ id, ...base, status: "DENIED", reasons: why }).returning();
+      return { row: row!, fresh: true, balance: live.balanceMinor };
+    }
+    const after = live.balanceMinor - r.amount;
+    await tx.update(accounts).set({ balanceMinor: after }).where(eq(accounts.agent, live.agent));
+    await tx.insert(ledger).values({ agent: live.agent, kind: book ? "transfer_out" : r.kind === "withdraw" ? "withdrawal" : "payout", ref: id, deltaMinor: -r.amount, balanceAfterMinor: after, counterparty: book ? to!.label : payoutTo, memo: base.memo || base.purpose });
+    if (book) {
+      const dest = (await tx.query.accounts.findFirst({ where: eq(accounts.agent, to!.agent) }))!;
+      await tx.update(accounts).set({ balanceMinor: dest.balanceMinor + r.amount }).where(eq(accounts.agent, dest.agent));
+      await tx.insert(ledger).values({ agent: dest.agent, kind: "transfer_in", ref: id, deltaMinor: r.amount, balanceAfterMinor: dest.balanceMinor + r.amount, counterparty: live.label, memo: base.memo || base.purpose });
+    }
+    const [row] = await tx.insert(transfers).values({ id, ...base, status: book ? "BOOKED" : "SENDING" }).returning();
+    return { row: row!, fresh: true, balance: after };
+  });
+
+  let t = out.row;
+  if (t.status === "DENIED") {
+    if (out.fresh) await note(from, "transfer.denied", "REJECTED", t.id, { amount: t.amountMinor, payee: t.payee, reasons: t.reasons.map((x) => x.code) });
+    return { status: "DENIED", transfer: t, reasons: t.reasons, receipt: null, duplicate: !out.fresh, balanceMinor: out.balance };
+  }
+  if (t.status === "SENDING") t = await send(from, t);
+  if (!t.receipt && t.status !== "FAILED" && t.status !== "SENDING") t = await receipt(from, to, t);
+  if (out.fresh) await note(from, t.status === "BOOKED" ? "transfer.booked" : t.kind === "withdraw" ? "balance.withdrawn" : "transfer.paid_out", t.status === "FAILED" ? "FAILED" : "OK", t.id, { amount: t.amountMinor, to: t.toAgent ? t.payee : E.fingerprint(t.payoutTo ?? ""), status: t.status });
+  const now = await db.query.accounts.findFirst({ where: eq(accounts.agent, from.agent) });
+  return { status: t.status, transfer: t, reasons: t.reasons, receipt: t.receipt, duplicate: !out.fresh, balanceMinor: now?.balanceMinor ?? null };
+}
+
+/** The balance has already been debited; send the money through PayPal. Safe to call again for the same transfer. */
+async function send(from: Account, t: Transfer): Promise<Transfer> {
+  const db = getDb();
+  try {
+    const po = await payout(getPayPal(), { spendId: t.id, receiverEmail: t.payoutTo!, amountMinor: t.amountMinor, currency: t.currency, note: `${t.memo || t.purpose || "Payment"} · from ${from.label}'s Envelope account (${t.id})` });
+    const st = po.itemStatus ?? po.batchStatus;
+    const status: Transfer["status"] = st === "SUCCESS" ? "PAID" : st === "UNCLAIMED" ? "UNCLAIMED" : "PAYOUT_PENDING";
+    const [u] = await db.update(transfers).set({ status, payoutBatchId: po.batchId, payoutItemId: po.itemId, payoutStatus: st }).where(and(eq(transfers.id, t.id), eq(transfers.status, "SENDING"))).returning();
+    return u ?? (await db.query.transfers.findFirst({ where: eq(transfers.id, t.id) }))!;
+  } catch (e) {
+    if (!(e instanceof PayPalApiError) || e.retryable) return t; // in doubt: stays SENDING; presenting the same request again resumes here
+    // PayPal refused: put the money back, exactly once.
+    return reverse(t, { code: "PAYPAL_PAYOUT_FAILED", at: null, detail: `PayPal refused the payout: ${e.issue ?? e.paypalName}; the amount is back in the balance` }, null);
+  }
+}
+
+const DEAD = ["FAILED", "RETURNED", "BLOCKED", "REFUNDED", "REVERSED", "DENIED", "CANCELED"];
+/** Put a debit back, exactly once (the ledger's unique index is the guard). */
+async function reverse(t: Transfer, reason: E.Violation, payoutStatus: string | null): Promise<Transfer> {
+  return getDb().transaction(async (tx) => {
+    await lockAccount(tx, t.fromAgent);
+    const [u] = await tx.update(transfers).set({ status: "FAILED", reasons: [reason], ...(payoutStatus ? { payoutStatus } : {}) }).where(and(eq(transfers.id, t.id), inArray(transfers.status, ["SENDING", "PAYOUT_PENDING", "UNCLAIMED", "PAID"]))).returning();
+    if (!u) return (await tx.query.transfers.findFirst({ where: eq(transfers.id, t.id) }))!;
+    const live = (await tx.query.accounts.findFirst({ where: eq(accounts.agent, t.fromAgent) }))!;
+    const [row] = await tx.insert(ledger).values({ agent: live.agent, kind: "reversal", ref: t.id, deltaMinor: t.amountMinor, balanceAfterMinor: live.balanceMinor + t.amountMinor, counterparty: t.payoutTo, memo: "the payout did not go through" }).onConflictDoNothing().returning();
+    if (row) await tx.update(accounts).set({ balanceMinor: live.balanceMinor + t.amountMinor }).where(eq(accounts.agent, live.agent));
+    return u;
+  });
+}
+
+/** Ask PayPal where a pending payout is. If PayPal failed or returned it, the amount goes back to the balance. */
+export async function syncTransfer(id: string): Promise<Transfer | null> {
+  const db = getDb();
+  const t = await db.query.transfers.findFirst({ where: eq(transfers.id, id) });
+  if (!t || !t.payoutBatchId || !["PAYOUT_PENDING", "UNCLAIMED"].includes(t.status)) return t ?? null;
+  const po = await getPayout(getPayPal(), t.payoutBatchId).catch(() => null);
+  if (!po) return t;
+  const st = po.itemStatus ?? po.batchStatus;
+  if (DEAD.includes(st)) return reverse(t, { code: "PAYPAL_PAYOUT_FAILED", at: null, detail: `PayPal could not deliver the payout (${po.error ?? st}); the amount is back in the balance` }, st);
+  const status: Transfer["status"] = st === "SUCCESS" ? "PAID" : st === "UNCLAIMED" ? "UNCLAIMED" : "PAYOUT_PENDING";
+  const [u] = await db.update(transfers).set({ status, payoutStatus: st, payoutItemId: po.itemId ?? t.payoutItemId }).where(and(eq(transfers.id, t.id), inArray(transfers.status, ["PAYOUT_PENDING", "UNCLAIMED"]))).returning();
+  return u ?? t;
+}
+
+async function receipt(from: Account, to: Account | null, t: Transfer): Promise<Transfer> {
+  const db = getDb();
+  const gw = await gatewayKey();
+  const entry = await db.query.ledger.findFirst({ where: and(eq(ledger.agent, from.agent), eq(ledger.ref, t.id)), orderBy: desc(ledger.id) });
+  const body: Omit<TransferReceipt, "sig"> = {
+    v: TRANSFER_RECEIPT_VERSION, transfer: t.id, request: t.signed.request, requestSig: t.signed.sig,
+    from: { account: from.account, agent: from.agent, agentLabel: from.label },
+    to: t.toAgent && to && !t.payoutTo ? { kind: "account", account: to.account, agent: to.agent, agentLabel: to.label } : { kind: "paypal", address: t.payoutTo!, payoutBatchId: t.payoutBatchId!, mode: paypalMode() },
+    balanceAfterMinor: entry?.balanceAfterMinor ?? 0,
+    issuedAt: new Date().toISOString(), gateway: gw.publicKey,
+  };
+  const r: TransferReceipt = { ...body, sig: await E.signDetached(gw.privateKey, TRANSFER_RECEIPT_VERSION, body) };
+  const [u] = await db.update(transfers).set({ receipt: r }).where(eq(transfers.id, t.id)).returning();
+  return u ?? t;
+}
+
+/** The owner freezes (or unfreezes) an agent's account: nothing can leave a frozen balance. Income still arrives. */
+export async function freeze(signed: E.SignedFreeze): Promise<Account> {
+  if (!(await E.verifyFreezeSignature(signed))) throw new UserFacingError("That isn't properly signed, or is too old.", 401);
+  const db = getDb();
+  const acct = await db.query.accounts.findFirst({ where: eq(accounts.agent, signed.request.agent) });
+  if (!acct) throw new UserFacingError("No such account.", 404);
+  if (signed.by !== acct.owner) throw new UserFacingError("Only the owner who answers for an account can freeze it.", 403);
+  const [u] = await db.update(accounts).set({ frozenAt: signed.request.frozen ? acct.frozenAt ?? new Date() : null }).where(eq(accounts.agent, acct.agent)).returning();
+  await audit(db, { scopeId: acct.owner, subjectId: `acct:${acct.account}`, actor: "principal", action: signed.request.frozen ? "account.frozen" : "account.unfrozen", ref: acct.account, outcome: "OK", detail: { agent: acct.label } });
+  return u!;
+}
+
+/**
+ * The bank's own books. Every balance is a liability; it must equal what the ledger says, and the
+ * ledger must equal money captured from PayPal holds into accounts minus money paid out of them.
+ */
+export async function position() {
+  const db = getDb();
+  const [accts, sums] = await Promise.all([
+    db.select().from(accounts).orderBy(desc(accounts.balanceMinor), desc(accounts.openedAt)).limit(200),
+    db.select({ kind: ledger.kind, total: sql<number>`coalesce(sum(${ledger.deltaMinor}), 0)::int`, n: sql<number>`count(*)::int` }).from(ledger).groupBy(ledger.kind),
+  ]);
+  const by = Object.fromEntries(sums.map((x) => [x.kind, x])) as Record<string, { total: number; n: number } | undefined>;
+  const balances = accts.reduce((n, a) => n + a.balanceMinor, 0);
+  const ledgerTotal = sums.reduce((n, x) => n + x.total, 0);
+  const capturedIn = by.income?.total ?? 0;
+  const paidOut = -((by.payout?.total ?? 0) + (by.withdrawal?.total ?? 0)) - (by.reversal?.total ?? 0);
+  const bookTransfers = by.transfer_out?.n ?? 0;
+  return {
+    mode: paypalMode(),
+    accounts: accts.map((a) => ({ agent: a.agent, account: a.account, label: a.label, owner: a.ownerName, mode: a.mode, balanceMinor: a.balanceMinor, frozen: Boolean(a.frozenAt), perPaymentMinor: a.perPaymentMinor })),
+    totals: { accounts: accts.length, holding: accts.filter((a) => a.mode === "hold").length, balancesMinor: balances, capturedInMinor: capturedIn, paidOutMinor: paidOut, bookTransfers, bookTransferredMinor: by.transfer_in?.total ?? 0 },
+    // balances == ledger, and ledger == captured in − paid out (book transfers net to zero)
+    checks: [
+      { name: "Every balance equals the sum of its ledger entries", ok: balances === ledgerTotal },
+      { name: "Balances equal money captured from PayPal holds into accounts, minus money paid out", ok: balances === capturedIn - paidOut },
+      { name: "Transfers between accounts net to zero", ok: (by.transfer_in?.total ?? 0) + (by.transfer_out?.total ?? 0) === 0 },
+    ],
+  };
+}
+
+/** A transfer and whether its receipt verifies. The PayPal address is masked. */
+export async function transferById(id: string) {
+  const t = await syncTransfer(id);
+  if (!t) return null;
+  const { signed: _s, payoutTo, ...rest } = t;
+  return { ...rest, payoutTo: payoutTo ? payoutTo.replace(/^(.)[^@]*(@.*)$/, "$1•••$2") : null, receiptOk: t.receipt ? await verifyTransferReceipt(t.receipt) : null };
+}
+
+/** One account's recent ledger. */
+export async function ledgerOf(agent: string, limit = 40) {
+  return getDb().select().from(ledger).where(eq(ledger.agent, agent)).orderBy(desc(ledger.id)).limit(limit);
+}

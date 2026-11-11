@@ -31,6 +31,10 @@ export const KEEP_VERSION = "envelope-keep/1" as const;
 export const ACCEPT_VERSION = "envelope-accept/1" as const;
 /** An agent's account for RECEIVING money: where payments to its account number are settled. */
 export const ACCOUNT_VERSION = "envelope-account/1" as const;
+/** An agent moving money out of its own balance: to another agent, to a PayPal address, or back to its owner. */
+export const TRANSFER_VERSION = "envelope-transfer/1" as const;
+/** The owner freezing or unfreezing an agent's account. */
+export const FREEZE_VERSION = "envelope-freeze/1" as const;
 
 export type Caps = {
   currency: string;
@@ -110,7 +114,17 @@ export type SignedAccept = { request: AcceptRequest; sig: string; by: string };
  * Opening an account that can receive. Signed twice: by the agent's own key (so nobody can point
  * someone else's account number at their own PayPal address) and by the owner who answers for it.
  */
-export type AccountBody = { v: typeof ACCOUNT_VERSION; agent: string; label: string; owner: string; ownerName: string; settleTo: string; at: string };
+export type AccountBody = {
+  v: typeof ACCOUNT_VERSION; agent: string; label: string; owner: string; ownerName: string; settleTo: string; at: string;
+  /** "hold": what the agent earns stays in its account as a balance it can spend. Absent: income is paid straight out to `settleTo`. */
+  mode?: "hold";
+  /** The most the agent may move out of its balance in one payment (minor units). Set by the owner; absent = no cap. Withdrawals to the owner are never capped. */
+  perPayment?: number;
+};
+export type TransferRequest = { v: typeof TRANSFER_VERSION; from: string; kind: "pay" | "withdraw"; amount: number; currency: string; payee: string; purpose: string; memo: string; nonce: string; at: string };
+export type SignedTransfer = { request: TransferRequest; sig: string };
+export type FreezeRequest = { v: typeof FREEZE_VERSION; agent: string; frozen: boolean; nonce: string; at: string };
+export type SignedFreeze = { request: FreezeRequest; sig: string; by: string };
 export type SignedAccount = { body: AccountBody; agentSig: string; ownerSig: string };
 
 export type RevokeRequest = { v: typeof REVOKE_VERSION; block: string; nonce: string; at: string };
@@ -123,6 +137,7 @@ export type Reason =
   | "OVER_PER_PAYMENT" | "PAYEE_NOT_ALLOWED" | "PURPOSE_NOT_ALLOWED" | "WRONG_CURRENCY" | "BAD_AMOUNT"
   // stateful (gateway)
   | "PAYEE_ACCOUNT_UNKNOWN" | "PROMISE_LAPSED" | "NEEDS_OWNER_APPROVAL" | "WIDENED_APPROVAL"
+  | "NO_BALANCE_ACCOUNT" | "INSUFFICIENT_BALANCE" | "ACCOUNT_FROZEN" | "OVER_ACCOUNT_LIMIT"
   | "UNKNOWN_ROOT" | "ROOT_NOT_FUNDED" | "REVOKED" | "REPLAY" | "OVER_ENVELOPE_LIMIT" | "OVER_ANCESTOR_LIMIT" | "FORKED_BLOCK"
   | "PAYPAL_CAPTURE_FAILED" | "PAYPAL_PAYOUT_FAILED";
 
@@ -385,15 +400,45 @@ export async function verifyKeepSignature(k: SignedKeep, now = new Date()): Prom
 export const accountPayee = (publicKey: string) => `acct:${accountNumber(publicKey).toLowerCase()}`;
 export const isAccountPayee = (payee: string) => /^acct:[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}$/.test(payee);
 
-export async function signAccount(agent: KeyPair, owner: KeyPair, p: { label: string; ownerName: string; settleTo: string }, now = new Date()): Promise<SignedAccount> {
-  const body: AccountBody = { v: ACCOUNT_VERSION, agent: agent.publicKey, label: p.label.trim().slice(0, 80), owner: owner.publicKey, ownerName: p.ownerName.trim().slice(0, 80), settleTo: p.settleTo.trim().toLowerCase(), at: now.toISOString() };
+export async function signAccount(agent: KeyPair, owner: KeyPair, p: { label: string; ownerName: string; settleTo: string; mode?: "hold"; perPayment?: number }, now = new Date()): Promise<SignedAccount> {
+  const body: AccountBody = { v: ACCOUNT_VERSION, agent: agent.publicKey, label: p.label.trim().slice(0, 80), owner: owner.publicKey, ownerName: p.ownerName.trim().slice(0, 80), settleTo: p.settleTo.trim().toLowerCase(), at: now.toISOString(), ...(p.mode ? { mode: p.mode } : {}), ...(p.perPayment !== undefined ? { perPayment: p.perPayment } : {}) };
   return { body, agentSig: await sign(agent.privateKey, ACCOUNT_VERSION, body), ownerSig: await sign(owner.privateKey, ACCOUNT_VERSION, body) };
 }
 export async function verifyAccount(a: SignedAccount): Promise<boolean> {
   const b = a?.body;
   if (!b || b.v !== ACCOUNT_VERSION || typeof b.agent !== "string" || typeof b.owner !== "string" || typeof b.label !== "string" || !b.label || typeof b.ownerName !== "string" || Number.isNaN(Date.parse(b.at))) return false;
   if (typeof b.settleTo !== "string" || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(b.settleTo) || b.settleTo.length > 127 || b.settleTo !== b.settleTo.toLowerCase()) return false;
+  if (b.mode !== undefined && b.mode !== "hold") return false;
+  if (b.perPayment !== undefined && (!Number.isSafeInteger(b.perPayment) || b.perPayment <= 0)) return false;
   return (await verify(b.agent, ACCOUNT_VERSION, b, a.agentSig)) && (await verify(b.owner, ACCOUNT_VERSION, b, a.ownerSig));
+}
+
+/** An agent signs a movement out of its own balance. `kind: "withdraw"` sends it to the owner's settlement address. */
+export async function signTransfer(agent: KeyPair, p: { kind?: "pay" | "withdraw"; amount: number; payee?: string; purpose?: string; memo?: string }, now = new Date()): Promise<SignedTransfer> {
+  const kind = p.kind ?? "pay";
+  const request: TransferRequest = { v: TRANSFER_VERSION, from: agent.publicKey, kind, amount: p.amount, currency: "USD", payee: kind === "withdraw" ? "owner" : (p.payee ?? "").trim().toLowerCase(), purpose: (p.purpose ?? (kind === "withdraw" ? "withdrawal" : "")).trim().toLowerCase().slice(0, 60), memo: (p.memo ?? "").slice(0, 200), nonce: randomId("n"), at: now.toISOString() };
+  return { request, sig: await sign(agent.privateKey, TRANSFER_VERSION, request) };
+}
+/** Shape, freshness and the agent's signature. Balances and limits are the gateway's to check. */
+export async function verifyTransfer(t: SignedTransfer, now = new Date()): Promise<Violation[]> {
+  const r = t?.request;
+  const v: Violation[] = [];
+  if (!r || r.v !== TRANSFER_VERSION || typeof t.sig !== "string" || typeof r.from !== "string" || (r.kind !== "pay" && r.kind !== "withdraw") || typeof r.payee !== "string" || typeof r.purpose !== "string" || typeof r.memo !== "string" || typeof r.nonce !== "string" || r.memo.length > 200) return [{ code: "MALFORMED", at: null, detail: "malformed transfer" }];
+  if (!(await verify(r.from, TRANSFER_VERSION, r, t.sig))) v.push({ code: "NOT_THE_HOLDER", at: null, detail: "the transfer is not signed by the key that owns the account" });
+  if (Math.abs(now.getTime() - Date.parse(r.at)) > SPEND_WINDOW_MS) v.push({ code: "STALE_REQUEST", at: null, detail: "the request is outside the 5-minute acceptance window" });
+  if (!Number.isSafeInteger(r.amount) || r.amount <= 0) v.push({ code: "BAD_AMOUNT", at: null, detail: "amount must be a positive whole number of minor units" });
+  if (r.currency !== "USD") v.push({ code: "WRONG_CURRENCY", at: null, detail: "balances are in USD" });
+  if (r.kind === "pay" && !isAccountPayee(r.payee) && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(r.payee)) v.push({ code: "MALFORMED", at: null, detail: "the payee must be an account (acct:…) or a PayPal address" });
+  return v;
+}
+export async function signFreeze(owner: KeyPair, agent: string, frozen: boolean, now = new Date()): Promise<SignedFreeze> {
+  const request: FreezeRequest = { v: FREEZE_VERSION, agent, frozen, nonce: randomId("n"), at: now.toISOString() };
+  return { request, sig: await sign(owner.privateKey, FREEZE_VERSION, request), by: owner.publicKey };
+}
+export async function verifyFreezeSignature(f: SignedFreeze, now = new Date()): Promise<boolean> {
+  const r = f?.request;
+  if (!r || r.v !== FREEZE_VERSION || typeof r.agent !== "string" || typeof r.frozen !== "boolean" || Math.abs(now.getTime() - Date.parse(r.at)) > SPEND_WINDOW_MS) return false;
+  return verify(f.by, FREEZE_VERSION, r, f.sig);
 }
 
 export async function signRevoke(by: KeyPair, block: string, now = new Date()): Promise<SignedRevoke> {
