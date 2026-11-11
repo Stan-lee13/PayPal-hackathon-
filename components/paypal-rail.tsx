@@ -56,7 +56,7 @@ export function PayPalRail({ id, tick }: { id: string; tick?: unknown }) {
                 {c.repeat && <span className="ml-2 text-xs text-ink-3">same request sent again: PayPal returned its first answer and did nothing new</span>}
               </p>
               <p className="justify-self-end">{ok ? (c.paypalStatus ? <Stamp tone={c.moves && !c.repeat ? "blue" : "grey"} flat>{c.paypalStatus.replace(/_/g, " ")}</Stamp> : null) : <Stamp tone="red" flat>{c.error ?? `HTTP ${c.httpStatus}`}</Stamp>}</p>
-              <p className="mono col-span-2 break-all text-[.64rem] leading-snug text-ink-3">{c.method} {c.path} · {c.httpStatus}{c.resourceId ? ` · ${c.resourceId}` : ""}{c.debugId ? ` · debug ${c.debugId}` : ""} · {c.ms} ms</p>
+              <p className="mono col-span-2 text-[.64rem] leading-snug text-ink-3 [overflow-wrap:anywhere]">{c.method} {c.path} · {c.httpStatus}{c.resourceId ? ` · ${c.resourceId}` : ""}{c.debugId ? ` · debug ${c.debugId}` : ""} · {c.ms} ms</p>
             </li>
           );
         })}

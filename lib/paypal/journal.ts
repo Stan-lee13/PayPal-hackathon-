@@ -36,6 +36,8 @@ export const OP_TEXT: Record<string, string> = {
 /** Operations that change something at PayPal, as opposed to asking. */
 export const MOVES = ["hold.place", "capture", "hold.void", "refund", "payout.send", "payout.cancel"];
 
+/** Path words that are PayPal's, as opposed to ids. */
+const WORDS = new Set(["v1", "v2", "v3", "checkout", "orders", "payments", "authorizations", "captures", "capture", "void", "refund", "payouts", "payouts-item", "cancel", "notifications", "verify-webhook-signature", "webhooks-events"]);
 type Loose = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 const str = (x: unknown): string | null => (typeof x === "string" && x ? x : null);
 
@@ -44,7 +46,7 @@ function describe(c: CallRecord): Omit<PayPalCall, "id" | "at"> | null {
   if (!op) return null;
   const req = (c.request ?? {}) as Loose, res = (c.response ?? {}) as Loose;
   const ok = c.status >= 200 && c.status < 300;
-  const inPath = c.path.split("/").filter((x) => /^[A-Za-z0-9_-]{8,}$/.test(x) && !["payments", "authorizations", "captures", "checkout", "notifications", "payouts-item"].includes(x));
+  const inPath = c.path.split("/").filter((x) => x && !WORDS.has(x));
   const auth = res.purchase_units?.[0]?.payments?.authorizations?.[0];
   const item = res.items?.[0];
   // Our own ids travel in the idempotency key: seal-<envelope>, capture-<payment>, payout-<payment>, refund-<payment>, close-<envelope>.
@@ -61,7 +63,7 @@ function describe(c: CallRecord): Omit<PayPalCall, "id" | "at"> | null {
     ? (op === "hold.place" ? str(auth?.status) : op === "hold.void" ? "VOIDED" : str(item?.transaction_status) ?? str(res.transaction_status) ?? str(res.status) ?? str(res.batch_header?.batch_status) ?? str(res.verification_status) ?? (op === "event.feed" ? `${res.events?.length ?? 0} events` : null))
     : null;
   return {
-    mode: paypalMode(), op, method: c.method, path: c.path.replace(/\/[A-Za-z0-9_-]{12,}(?=\/|$)/g, "/{id}"), requestId: c.requestId, httpStatus: c.status, paypalStatus,
+    mode: paypalMode(), op, method: c.method, path: c.path.split("/").map((x) => (x === "" || WORDS.has(x) ? x : "{id}")).join("/"), requestId: c.requestId, httpStatus: c.status, paypalStatus,
     resourceId: ok ? (op === "hold.place" ? str(auth?.id) : str(res.id) ?? str(res.batch_header?.payout_batch_id) ?? str(res.payout_item_id) ?? inPath[inPath.length - 1] ?? null) : inPath[inPath.length - 1] ?? null,
     amountMinor, currency, debugId: c.debugId, ms: c.ms,
     error: ok ? null : [str(res.name), str(res.details?.[0]?.issue)].filter(Boolean).join("/") || `HTTP ${c.status}`,
