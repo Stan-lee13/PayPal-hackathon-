@@ -31,7 +31,7 @@ const acct = await G.openAccount(await E.signAccount(tr!, bea!, { label: "transl
 const translator = E.accountPayee(tr!.publicKey);
 log("translator-agent opened an account that can receive", { account: acct.account, payAs: translator, answersForIt: "Bea", settlesTo: G.maskEmail(acct.settleTo) });
 
-const rootChain = await E.seal(ada!, { publicKey: ops!.publicKey, label: "ops-agent" }, { currency: "USD", limit: 20000, perPayment: 8000, payees: [translator, designer], purposes: ["translation", "design"], notAfter, splits: 2 });
+const rootChain = await E.seal(ada!, { publicKey: ops!.publicKey, label: "ops-agent" }, { currency: "USD", limit: 20000, perPayment: 8000, payees: [translator, designer], purposes: ["translation", "design"], notAfter, splits: 2, approveOver: 7000 });
 const root = await G.registerRoot({ chain: rootChain, principalName: "Ada (sandbox)", title: "Launch budget" });
 const pp = getPayPal();
 log("sealed: PayPal hold placed", { root: root.id, order: root.paypalOrderId, authorization: root.authorizationId, held: "$200.00", status: (await getAuthorization(pp, root.authorizationId!)).status });
@@ -73,6 +73,15 @@ log("compromised creative-agent → attacker: denied", { status: bad1.status, re
 const bad2 = await G.spend(await E.signSpend(artChain, art!, { amount: 2500, payee: designer, purpose: "design" }));
 log("creative-agent over its envelope ($70 + $25 > $90): denied", { status: bad2.status, reasons: bad2.reasons.map((r) => r.code) });
 
+// Owner approval: Ada asked to sign for any single payment over $70. ops-agent wants to pay the designer $72.
+const tooBig = await G.spend(await E.signSpend(rootChain, ops!, { amount: 7200, payee: designer, purpose: "design", memo: "Rush: extra banner sizes" }));
+const asked = await G.promise(await E.signPromise(rootChain, ops!, { amount: 7200, payee: designer, purpose: "design", memo: "Rush: extra banner sizes", ttl: 600, releaseBy: ada!.publicKey }), "Over what I may pay on my own; asking the owner.");
+let selfPay = "refused";
+try { await G.keep(await E.signKeep(ops!, asked.spend!.id, "pay")); selfPay = "NOT REFUSED"; } catch (e) { selfPay = `refused: ${e instanceof Error ? e.message : e}`; }
+const waiting = (await G.treasury(ada!.publicKey))?.approvals.length;
+const signedOff = await G.accept(await E.signAccept(ada!, asked.spend!.id, { note: "Approved by the owner." }));
+log("a $72 payment is over the $70 the owner asked to sign for: refused outright, then set aside, the agent could not pay it itself, and the owner's signature paid it", { direct: tooBig.status, directReasons: tooBig.reasons.map((r) => r.code), asked: asked.status, agentTriedToPayItself: selfPay, waitingInOwnersInbox: waiting, afterOwnerSigned: signedOff.status, capture: signedOff.spend?.captureId, payoutBatch: signedOff.spend?.payoutBatchId, signedByOwnerOnReceipt: signedOff.receipt?.releasedBy?.key === ada!.publicKey });
+
 const rc = pay1.spend ? await G.reconcile(pay1.spend.id) : null;
 log("receipt reconciled against PayPal", { ok: rc?.ok, checks: rc?.checks });
 
@@ -95,7 +104,7 @@ log("localization-agent's record", { promisesKept: payer?.record.promisesKept, p
 
 // A capture is not a delivered payout. PayPal processes payouts asynchronously, so ask again until each
 // one leaves PENDING (or a minute passes) and record what PayPal finally says.
-for (const s of [pay1, acc, pay2]) if (s.spend) {
+for (const s of [pay1, acc, pay2, signedOff]) if (s.spend) {
   let u = await G.syncSpend(s.spend.id);
   const seen = [u.payoutStatus];
   for (let i = 0; i < 12 && (u.payoutStatus === "PENDING" || u.payoutStatus === null); i++) {

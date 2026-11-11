@@ -210,6 +210,19 @@ A revocation is `{ request: { v: "envelope-revoke/1", block, nonce, at }, sig, b
 
 A promise is released automatically when its time runs out, when any envelope in its chain is revoked, and when the root is closed. It is earmarked money, not escrow: the payee learns that the money exists and cannot be spent elsewhere, and gets no right to it.
 
+### Owner approval above a threshold
+
+A block's caps may carry `"approveOver": <minor units>`. It is optional; when a parent has it, every block below must have it too, at the same value or lower (`WIDENED_APPROVAL` otherwise). `split` carries it down by default.
+
+For a request whose amount is greater than the leaf's `approveOver`:
+
+- a spend is refused with `NEEDS_OWNER_APPROVAL`;
+- a promise is refused with the same code unless its `releaseBy` is the root's issuer (the owner);
+- a promise that does name the owner is admitted and reserved like any other, and appears in the owner's treasury as waiting for a signature;
+- `keep` with `action: "pay"` from the promise's maker is refused: only an acceptance signed by the owner pays it. An acceptance with `"decline": true` from the owner releases it. The maker may still release its own request.
+
+A statement of standing for such an amount reports `good: false` with `NEEDS_OWNER_APPROVAL`, so a payee sees that the agent cannot pay this on its own.
+
 ### Releasing a promise on accepted work
 
 `POST /api/gateway/accept`. If a promise names `releaseBy`, an acceptance signed by exactly that key pays it, through the same path as `keep` with `action: "pay"`: the gateway re-checks revocation and that the root is open, then captures and pays out. The maker of the promise consented to this when it signed `releaseBy`. The gateway does not judge the work; it checks one signature. The acceptance's `work` fingerprint, note and time are stored and appear on the receipt as `releasedBy`.

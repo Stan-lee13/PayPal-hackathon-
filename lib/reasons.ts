@@ -25,6 +25,8 @@ export const REASON_TEXT: Record<Reason, string> = {
   BAD_AMOUNT: "The amount isn't a positive whole number of cents.",
   PAYEE_ACCOUNT_UNKNOWN: "No agent has opened an account with that number.",
   PROMISE_LAPSED: "The money that was set aside has been released.",
+  NEEDS_OWNER_APPROVAL: "A payment this large needs the owner's own signature.",
+  WIDENED_APPROVAL: "A sub-envelope raises or drops the owner's approval threshold.",
   UNKNOWN_ROOT: "This envelope was never sealed with the gateway.",
   ROOT_NOT_FUNDED: "No PayPal hold backs this envelope.",
   REVOKED: "The envelope (or one above it) was revoked or closed.",

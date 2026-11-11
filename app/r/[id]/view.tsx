@@ -64,7 +64,7 @@ export function ReceiptView({ id }: { id: string }) {
           <p className="text-center text-[.68rem] tracking-[.34em]">ENVELOPE · RECEIPT</p>
           <h1 className="mt-5 text-center font-sans"><span className="sr-only">Receipt: </span><Figure minor={r.request.amount} className="text-[3.4rem]" /></h1>
           <p className="mt-2 text-center">to {r.paidTo ? <><Link href={`/a/${r.paidTo.agent}`} className="link !text-ink"><b>{r.paidTo.agentLabel}</b></Link> <span className="text-ink-2">account {r.paidTo.account}</span></> : <b className="break-all">{r.request.payee}</b>}</p>
-          {r.request.v === PROMISE_VERSION && <p className="text-center text-ink-2">{r.releasedBy ? "set aside first, released when the work was accepted" : "set aside first, paid when the work was done"}</p>}
+          {r.request.v === PROMISE_VERSION && <p className="text-center text-ink-2">{r.releasedBy ? (r.releasedBy.key === r.principal ? "over the owner's threshold: set aside, then signed by the owner" : "set aside first, released when the work was accepted") : "set aside first, paid when the work was done"}</p>}
           <p className="text-center text-ink-2">{r.request.purpose}{r.request.memo ? ` · ${r.request.memo}` : ""}</p>
           <p className="text-center text-ink-2">{new Date(r.request.at).toISOString().replace("T", " ").slice(0, 19)} UTC</p>
           <Stamp tone="green" size="lg" land className="absolute right-4 top-[5.2rem]">Paid</Stamp>
@@ -83,9 +83,9 @@ export function ReceiptView({ id }: { id: string }) {
 
           {r.releasedBy && (
             <>
-              <h2 className="mt-3 border-t border-dashed border-ink pt-4 text-[.68rem] tracking-[.2em]">RELEASED ON ACCEPTED WORK</h2>
+              <h2 className="mt-3 border-t border-dashed border-ink pt-4 text-[.68rem] tracking-[.2em]">{r.releasedBy.key === r.principal ? "SIGNED BY THE OWNER" : "RELEASED ON ACCEPTED WORK"}</h2>
               <dl className="mt-2 space-y-1">
-                <div className="leader"><dt className="text-ink-2">Accepted by</dt><i /><dd>{d.chain.find((b) => b.body.holder === r.releasedBy!.key)?.body.holderLabel ?? "named key"} · {fingerprint(r.releasedBy.key)}</dd></div>
+                <div className="leader"><dt className="text-ink-2">Accepted by</dt><i /><dd>{r.releasedBy.key === r.principal ? "the owner" : d.chain.find((b) => b.body.holder === r.releasedBy!.key)?.body.holderLabel ?? "named key"} · {fingerprint(r.releasedBy.key)}</dd></div>
                 {r.releasedBy.work && <div className="leader"><dt className="text-ink-2">Work fingerprint</dt><i /><dd>{r.releasedBy.work.slice(0, 20)}…</dd></div>}
                 <div className="leader"><dt className="text-ink-2">Signed at</dt><i /><dd>{new Date(r.releasedBy.at).toISOString().replace("T", " ").slice(0, 19)} UTC</dd></div>
               </dl>

@@ -46,6 +46,12 @@ export type Caps = {
   notAfter: string;
   /** How many more times this authority may be split. 0 = cannot be passed on. */
   splits: number;
+  /**
+   * Optional. A single payment above this amount (minor units) needs the owner's own signature: the
+   * agent must set the money aside naming the owner, and only the owner's acceptance pays it.
+   * Down the chain it can be lowered, never raised or removed.
+   */
+  approveOver?: number;
 };
 
 export type BlockBody = {
@@ -97,7 +103,7 @@ export type SignedPromise = { request: PromiseRequest; sig: string; chain: Envel
 export type KeepRequest = { v: typeof KEEP_VERSION; promise: string; action: "pay" | "release"; nonce: string; at: string };
 export type SignedKeep = { request: KeepRequest; sig: string; by: string };
 /** `work` is a SHA-256 fingerprint of what was delivered (or empty); it ends up on the receipt. */
-export type AcceptRequest = { v: typeof ACCEPT_VERSION; promise: string; work: string; note: string; nonce: string; at: string };
+export type AcceptRequest = { v: typeof ACCEPT_VERSION; promise: string; work: string; note: string; nonce: string; at: string; /** Present and true when the named key refuses: the money is released back. */ decline?: true };
 export type SignedAccept = { request: AcceptRequest; sig: string; by: string };
 
 /**
@@ -116,7 +122,7 @@ export type Reason =
   | "EXPIRED" | "NOT_THE_HOLDER" | "STALE_REQUEST" | "WRONG_LEAF"
   | "OVER_PER_PAYMENT" | "PAYEE_NOT_ALLOWED" | "PURPOSE_NOT_ALLOWED" | "WRONG_CURRENCY" | "BAD_AMOUNT"
   // stateful (gateway)
-  | "PAYEE_ACCOUNT_UNKNOWN" | "PROMISE_LAPSED"
+  | "PAYEE_ACCOUNT_UNKNOWN" | "PROMISE_LAPSED" | "NEEDS_OWNER_APPROVAL" | "WIDENED_APPROVAL"
   | "UNKNOWN_ROOT" | "ROOT_NOT_FUNDED" | "REVOKED" | "REPLAY" | "OVER_ENVELOPE_LIMIT" | "OVER_ANCESTOR_LIMIT" | "FORKED_BLOCK"
   | "PAYPAL_CAPTURE_FAILED" | "PAYPAL_PAYOUT_FAILED";
 
@@ -197,7 +203,7 @@ export async function blockHash(b: Block): Promise<string> {
 
 export function normalizeCaps(c: Caps): Caps {
   const list = (x: string[] | null) => (x === null ? null : [...new Set(x.map((s) => s.trim().toLowerCase()).filter(Boolean))].sort());
-  return { currency: c.currency.toUpperCase(), limit: c.limit, perPayment: Math.min(c.perPayment, c.limit), payees: list(c.payees), purposes: list(c.purposes), notAfter: new Date(c.notAfter).toISOString(), splits: c.splits };
+  return { currency: c.currency.toUpperCase(), limit: c.limit, perPayment: Math.min(c.perPayment, c.limit), payees: list(c.payees), purposes: list(c.purposes), notAfter: new Date(c.notAfter).toISOString(), splits: c.splits, ...(c.approveOver !== undefined && c.approveOver !== null ? { approveOver: c.approveOver } : {}) };
 }
 
 function capsShapeProblems(c: Caps): string | null {
@@ -205,6 +211,7 @@ function capsShapeProblems(c: Caps): string | null {
   if (!/^[A-Z]{3}$/.test(c.currency ?? "")) return "currency";
   for (const k of ["limit", "perPayment", "splits"] as const) if (!Number.isSafeInteger(c[k]) || c[k] < 0) return k;
   if (c.limit <= 0 || c.perPayment <= 0) return "limit and perPayment must be positive";
+  if (c.approveOver !== undefined && (!Number.isSafeInteger(c.approveOver) || c.approveOver < 0)) return "approveOver";
   if (Number.isNaN(Date.parse(c.notAfter))) return "notAfter";
   for (const k of ["payees", "purposes"] as const) if (c[k] !== null && (!Array.isArray(c[k]) || c[k]!.some((s) => typeof s !== "string" || !s))) return k;
   return null;
@@ -232,6 +239,7 @@ export function narrowingViolations(parent: Caps, child: Caps, at: string | null
   if (parent.payees !== null && (child.payees === null || child.payees.some((p) => !parent.payees!.includes(p)))) add("WIDENED_PAYEES", "adds payees the parent doesn't allow");
   if (parent.purposes !== null && (child.purposes === null || child.purposes.some((p) => !parent.purposes!.includes(p)))) add("WIDENED_PURPOSES", "adds purposes the parent doesn't allow");
   if (Date.parse(child.notAfter) > Date.parse(parent.notAfter)) add("EXTENDED_EXPIRY", "expires later than the parent");
+  if (parent.approveOver !== undefined && (child.approveOver === undefined || child.approveOver > parent.approveOver)) add("WIDENED_APPROVAL", `the parent needs the owner's signature above ${money(parent.approveOver, parent.currency)}; a sub-envelope can lower that, not raise or drop it`);
   if (parent.splits < 1) add("SPLIT_NOT_ALLOWED", "the parent may not be split");
   else if (child.splits > parent.splits - 1) add("SPLIT_NOT_ALLOWED", `may be split ${child.splits} more times; the parent allows at most ${parent.splits - 1}`);
   return v;
@@ -241,7 +249,8 @@ export function narrowingViolations(parent: Caps, child: Caps, at: string | null
 export async function split(chain: Envelope, holderKey: KeyPair, to: { publicKey: string; label: string }, caps: Caps, now = new Date()): Promise<Envelope> {
   const last = chain[chain.length - 1]!;
   if (last.body.holder !== holderKey.publicKey) throw new Error("Only the holder of an envelope can split it.");
-  const next = normalizeCaps(caps);
+  // The owner's approval threshold carries down unless the splitter chooses a lower one.
+  const next = normalizeCaps({ ...caps, approveOver: caps.approveOver ?? last.body.caps.approveOver });
   const problem = capsShapeProblems(next);
   if (problem) throw new Error(`Invalid caps: ${problem}`);
   const bad = narrowingViolations(last.body.caps, next);
@@ -318,6 +327,10 @@ async function verifyIntent(version: string, s: { request: Intent; sig: string; 
   if (r.amount > c.perPayment) add("OVER_PER_PAYMENT", `${money(r.amount, c.currency)} is over the per-payment cap of ${money(c.perPayment, c.currency)}`);
   if (c.payees !== null && !c.payees.includes(r.payee)) add("PAYEE_NOT_ALLOWED", `${r.payee} is not a payee this envelope allows`);
   if (c.purposes !== null && !c.purposes.includes(r.purpose)) add("PURPOSE_NOT_ALLOWED", `"${r.purpose}" is not a purpose this envelope allows`);
+  // Above the owner's threshold, the only thing an agent can do is set the money aside for the owner to sign.
+  if (c.approveOver !== undefined && Number.isSafeInteger(r.amount) && r.amount > c.approveOver && !(version === PROMISE_VERSION && (r as { releaseBy?: string }).releaseBy === chain.principal)) {
+    add("NEEDS_OWNER_APPROVAL", `payments over ${money(c.approveOver, c.currency)} need the owner's signature: set the money aside naming the owner as the key that releases it`);
+  }
   return { ok: violations.length === 0, violations, chain };
 }
 
@@ -346,13 +359,13 @@ export async function verifyPromise(s: SignedPromise, now = new Date()): Promise
   if (rb !== undefined && (typeof rb !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(rb))) { v.violations.push({ code: "MALFORMED", at: s?.request?.leaf ?? null, detail: "releaseBy must be a public key" }); v.ok = false; }
   return v;
 }
-export async function signAccept(by: KeyPair, promise: string, p: { work?: string; note?: string } = {}, now = new Date()): Promise<SignedAccept> {
-  const request: AcceptRequest = { v: ACCEPT_VERSION, promise, work: (p.work ?? "").slice(0, 64), note: (p.note ?? "").slice(0, 200), nonce: randomId("n"), at: now.toISOString() };
+export async function signAccept(by: KeyPair, promise: string, p: { work?: string; note?: string; decline?: boolean } = {}, now = new Date()): Promise<SignedAccept> {
+  const request: AcceptRequest = { v: ACCEPT_VERSION, promise, work: (p.work ?? "").slice(0, 64), note: (p.note ?? "").slice(0, 200), nonce: randomId("n"), at: now.toISOString(), ...(p.decline ? { decline: true as const } : {}) };
   return { request, sig: await sign(by.privateKey, ACCEPT_VERSION, request), by: by.publicKey };
 }
 export async function verifyAcceptSignature(a: SignedAccept, now = new Date()): Promise<boolean> {
   const r = a?.request;
-  if (!r || r.v !== ACCEPT_VERSION || typeof r.promise !== "string" || typeof r.work !== "string" || !/^([0-9a-f]{64})?$/.test(r.work) || typeof r.note !== "string" || r.note.length > 200 || Math.abs(now.getTime() - Date.parse(r.at)) > SPEND_WINDOW_MS) return false;
+  if (!r || r.v !== ACCEPT_VERSION || typeof r.promise !== "string" || typeof r.work !== "string" || !/^([0-9a-f]{64})?$/.test(r.work) || typeof r.note !== "string" || r.note.length > 200 || (r.decline !== undefined && r.decline !== true) || Math.abs(now.getTime() - Date.parse(r.at)) > SPEND_WINDOW_MS) return false;
   return verify(a.by, ACCEPT_VERSION, r, a.sig);
 }
 export async function signKeep(by: KeyPair, promise: string, action: KeepRequest["action"], now = new Date()): Promise<SignedKeep> {

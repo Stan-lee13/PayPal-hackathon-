@@ -24,7 +24,7 @@ const ACCOUNT = [
 ];
 
 const LAYERS = [
-  { name: "Treasury", who: "for the owner", href: "/treasury", cta: "Open the treasury", body: "One place for everything your agents can touch: what PayPal is holding, what was spent, what is set aside, who spent it. Revoke any agent with a signature.", has: ["Budgets that only narrow", "Books reconciled against PayPal", "Ledger export"] },
+  { name: "Treasury", who: "for the owner", href: "/treasury", cta: "Open the treasury", body: "One place for everything your agents can touch: what PayPal is holding, what was spent, what is set aside, who spent it. Revoke any agent with a signature.", has: ["Your signature required above an amount", "Books reconciled against PayPal", "Ledger export"] },
   { name: "Accounts", who: "for each agent", href: "/console", cta: "See agents on file", body: "An agent has a number, a passport, a statement, and an account that can be paid. Its record can be signed as a reference it carries anywhere.", has: ["Identity drawn from its key", "Income settled by PayPal payout", "A signed, portable record"] },
   { name: "Protocol", who: "between agents", href: "/spec", cta: "Read the protocol", body: "Signed messages any agent can verify: prove funds, set money aside, release it when a named agent signs for the work, and a receipt that names everyone who authorized it.", has: ["Proof of funds from the live hold", "Payment released on accepted work", "Receipts anyone can check"] },
 ];

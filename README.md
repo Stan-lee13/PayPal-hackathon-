@@ -10,6 +10,7 @@ It behaves like an account of the agent's own:
 - **Anyone can check it.** Before doing any work, a payee can ask "is this agent good for $70 to me, right now?" The answer is signed, names every person and agent standing behind it, and includes PayPal's own confirmation that the money is on hold.
 - **It can set money aside.** An agent can earmark a fee for one payee before the work starts. Nothing else can spend it until it is paid or released.
 - **It can get paid.** An agent can open an account that receives. Other agents pay it by account number, and PayPal pays out to the owner who answers for it.
+- **Its owner stays in control.** The owner can require their own signature above an amount. Over it, an agent can only ask: the money is set aside and waits in the owner's inbox.
 - **It can be paid on accepted work.** Money set aside can name an agent whose signature releases it. The fingerprint of the delivered work goes on the receipt.
 
 Around that sit three layers on the same primitive: a **Treasury** for the owner (everything their agents can touch, reconciled against PayPal), **Accounts** for each agent (identity, income, a signed record it can carry anywhere), and a **Protocol** between agents (prove funds, set aside, release, receipt).
@@ -33,9 +34,11 @@ Built for the PayPal AI Hackathon 2026. Sandbox only. The people and agents in t
 |---|---|
 | ![A model playing ops-agent](docs/screenshots/03-model.png) | ![Treasury](docs/screenshots/09-treasury.png) |
 
-| The passport of an agent that gets paid | A receipt, checked against PayPal and in the browser |
+| A payment over the owner's threshold, waiting for a signature (still from the video) | The passport of an agent that gets paid |
 |---|---|
-| ![Agent passport](docs/screenshots/05-passport.png) | ![Receipt](docs/screenshots/07-receipt.png) |
+| ![Owner approval](docs/screenshots/04-approval.png) | ![Agent passport](docs/screenshots/05-passport.png) |
+
+![A receipt, checked against PayPal and in the browser](docs/screenshots/07-receipt.png)
 
 Demo video: [`docs/demo/envelope-demo.mp4`](docs/demo/envelope-demo.mp4).
 
@@ -59,6 +62,7 @@ An agent that can pay holds a credential. When it delegates work to another agen
 | **Set aside** | The agent holding an envelope | Signs a promise for one payee. The gateway reserves the amount in every envelope up the chain, confirms the hold with PayPal, and gives the payee a signed note. Moves no money. | `GET /v2/payments/authorizations/{id}` |
 | **Spend** | The agent holding it | Signs a request with its own key, or pays a promise it made. The gateway verifies the whole chain, then under a lock checks revocation and the budget of **every** envelope up the chain, reserves, and pays. | `POST /v2/payments/authorizations/{id}/capture` (partial) then `POST /v1/payments/payouts` |
 | **Accept** | The key a promise named | Signs that the work is delivered and accepted, with a fingerprint of it. That signature pays the promise without going back to its maker; revocation and expiry still win. Name the payee for paid-on-delivery, or a checker for paid on verified work. | Partial capture + Payout |
+| **Approve** | The owner | An envelope can carry "ask me above $X". A payment over it is refused; the agent sets the money aside naming the owner, and only the owner's signature (in their browser) pays it, or declines it. The threshold can be lowered down the chain, never raised or dropped. | Partial capture + Payout, on the owner's signature |
 | **Get paid** | An agent with an account | The account is opened with two signatures: the agent's own key and its owner's. A payee written as `acct:xxxx-xxxx-xxxx` is that agent; the payout goes to its owner's PayPal address, fixed when the payment is admitted. | Payout |
 | **Close / revoke** | The owner, or a holder above | Revoking one envelope kills everything split from it and releases what it had set aside. Closing the root releases what was never spent. | `POST /v2/payments/authorizations/{id}/void` |
 
@@ -82,7 +86,7 @@ Protocol: [`docs/SPEC.md`](docs/SPEC.md). Core (pure, isomorphic): [`lib/envelop
 | An introduction or a promise is replayed as a payment | `NOT_THE_HOLDER`: each kind of message has its own signature domain |
 | Everything else goes wrong | PayPal refuses to capture beyond the authorization |
 
-The **attack corpus** ([`tests/attack-corpus.ts`](tests/attack-corpus.ts)) runs 98 such attacks in eight categories against the gateway on the simulator. All 98 are refused and none causes a capture or a payout. Result: [`docs/evidence/attack-suite.json`](docs/evidence/attack-suite.json); reproduce with `npx tsx scripts/attack-suite.ts`.
+The **attack corpus** ([`tests/attack-corpus.ts`](tests/attack-corpus.ts)) runs 107 such attacks in eight categories against the gateway on the simulator. All 107 are refused and none causes a capture or a payout. Result: [`docs/evidence/attack-suite.json`](docs/evidence/attack-suite.json); reproduce with `npx tsx scripts/attack-suite.ts`.
 
 ## How AI is used
 
@@ -100,12 +104,12 @@ AI tools used to build the project: Claude Code (Anthropic) wrote the code, test
 
 | Part | Status |
 |---|---|
-| Real PayPal sandbox, API-only | **Ran.** [`docs/evidence/sandbox-run.json`](docs/evidence/sandbox-run.json): an agent account opened, a $200 hold placed (authorization `32C145258B808091L`), proof of funds given and refused, $45 set aside and then paid agent to agent, a second promise released, a third released by a named agent's signed acceptance after the payee's own attempt was refused, a $70 payment, three denials, a receipt reconciled against PayPal, a signed reference, the owner's books matched against PayPal (3 of 3, $125.00), and the hold voided with $125 captured and $75 released. The run then waits for PayPal's final word on each payout: the two to the agent's account went `PENDING` → `SUCCESS`; the one to a placeholder address ended `UNCLAIMED`. Reproduce with `scripts/sandbox-run.ts`. |
-| Real PayPal sandbox, in a browser | **Ran** while recording the demo video: `scripts/record-demo.mjs` drove the app in Chromium against the sandbox (authorization `9PK89405GA223334E`). Seal with a key held in the browser; a model split, set $45 aside and paid it agent to agent (PayPal payout `SUCCESS`), and paid the designer $67 (`UNCLAIMED`: placeholder address); three scripted attacks denied; proof of funds reported `PARTIALLY_CAPTURED`, $88.00 unused, signature checked in the browser; receipt checks passed; the treasury matched 2 of 2 payments against PayPal; revoke; close with $112 captured and $88 released. `scripts/e2e.mjs` runs the browser flow with the scripted agents, including acceptance-released payment, the treasury and a signed reference: it passes on the simulator with a server gateway and with the in-browser gateway, and an earlier version of it (before the treasury steps) passed on the real sandbox (authorization `0EB62360D09969525`). |
+| Real PayPal sandbox, API-only | **Ran.** [`docs/evidence/sandbox-run.json`](docs/evidence/sandbox-run.json): an agent account opened, a $200 hold placed (authorization `1H272878WF609603T`), proof of funds given and refused, $45 set aside and then paid agent to agent, a second promise released, a third released by a named agent's signed acceptance after the payee's own attempt was refused, a $70 payment, three denials, a $72 payment over the owner's $70 threshold (refused outright, set aside, not payable by the agent, paid on the owner's signature), a receipt reconciled against PayPal, a signed reference, the owner's books matched against PayPal (4 of 4, $197.00), and the hold voided with $197 captured and $3 released. The run then waits for PayPal's final word on each payout: the two to the agent's account ended `SUCCESS`; the two to a placeholder address ended `UNCLAIMED`. Reproduce with `scripts/sandbox-run.ts`. |
+| Real PayPal sandbox, in a browser | **Ran** while recording the demo video: `scripts/record-demo.mjs` drove the app in Chromium against the sandbox (authorization `26586885XV7370446`). Seal with a key held in the browser; a model split, set $45 aside and paid it agent to agent (PayPal payout `SUCCESS`), and paid the designer $67 (`UNCLAIMED`: placeholder address); three scripted attacks denied; proof of funds reported `PARTIALLY_CAPTURED`, $88.00 unused, signature checked in the browser; receipt checks passed; an $80 request over the owner's $75 threshold waited for the owner's signature and was paid when the owner signed in the browser; the treasury matched 3 of 3 payments against PayPal; revoke; close with $192 captured and $8 released. `scripts/e2e.mjs` runs the browser flow with the scripted agents, including acceptance-released payment, owner approval, the treasury and a signed reference: it passes on the simulator with a server gateway and with the in-browser gateway, and an earlier version of it passed on the real sandbox (authorization `0EB62360D09969525`). |
 | In-browser gateway (no database) | **Ran** in Chromium: seal, agents set aside and pay, an agent's income on its passport, receipt verified, proof of funds, three attacks denied, close, a second tab sharing the same data, reload. Vercel builds and serves this mode from this repository with no environment variables. |
 | A real model playing the agents | **Ran** on the real sandbox in that recording, with Claude Haiku through `scripts/claude-bridge.mjs`: [`docs/evidence/model-run.md`](docs/evidence/model-run.md). Its red-team stage varied between runs (attempts refused by the gateway in two, declined by the model in three), so the video uses the scripted attacker for that part. The hosted copy has no model connected unless you add a key. |
 | MCP server and command line for agents | **Ran.** `scripts/mcp.ts` over stdio against the sandbox-backed gateway (split, pay, refused widenings). The promise and account commands were added after that run and are covered by the tests, not by a separate sandbox run through the CLI. |
-| Automated tests | **31 pass** on the simulator (`npm test`): narrowing rules, forged chains, ancestor budgets, replay, 20-way races, revocation scope, close → void, audit chain, statements of standing, accounts, promises, acceptance-released payment, and the 98-attack corpus. |
+| Automated tests | **32 pass** on the simulator (`npm test`): narrowing rules, forged chains, ancestor budgets, replay, 20-way races, revocation scope, close → void, audit chain, statements of standing, accounts, promises, acceptance-released payment, owner approval, and the 107-attack corpus. |
 | PayPal behaviour the design relies on | **Checked in sandbox:** 12 partial captures of one authorization all completed; over-capture refused (`MAX_CAPTURE_AMOUNT_EXCEEDED`); void after partial captures returned `VOIDED`. |
 | Payout delivery | Payouts are accepted by PayPal. The demo payees are placeholder addresses: PayPal reports `translator@example.com` as `SUCCESS` (an account with that address exists in the sandbox) and the others as `UNCLAIMED` (held for the payee to claim). Set `ENVELOPE_PAYEE_1/2` to your own sandbox account emails to see `SUCCESS` for both. |
 | Demo video | [`docs/demo/envelope-demo.mp4`](docs/demo/envelope-demo.mp4), recorded by `scripts/record-demo.mjs` driving the app. The narration is a synthetic voice. |
@@ -118,9 +122,9 @@ bash scripts/local-postgres.sh          # Postgres on :5433 (or set DATABASE_URL
 cp .env.example .env                    # add PAYPAL_CLIENT_ID / PAYPAL_CLIENT_SECRET from a sandbox app
 npm run db:migrate
 npm run build && npm start              # http://localhost:3000
-npm test                                # 31 tests on the simulator, including the attack corpus
+npm test                                # 32 tests on the simulator, including the attack corpus
 npx tsx scripts/sandbox-run.ts          # the whole flow on the real sandbox, writes evidence
-npx tsx scripts/attack-suite.ts         # 98 attacks, writes evidence
+npx tsx scripts/attack-suite.ts         # 107 attacks, writes evidence
 ```
 
 Without PayPal credentials the app runs on a built-in simulator and says so on every page. Without `DATABASE_URL` it runs the gateway in the browser (above).
@@ -184,6 +188,7 @@ Or call the gateway directly: `POST /api/gateway/spend` with `{ signed, note }` 
 
 - **Not a bank.** An agent's "account" is authority to spend from a hold on its owner's funding source, plus an address where its income is settled. Agents hold no deposits; what an agent earns goes to its owner's PayPal.
 - **Setting money aside is not escrow.** A promise reserves money so nothing else can spend it. The agent that made it decides whether to pay, and the owner can still revoke. The payee gets certainty that the money exists and is spoken for, not a right to it.
+- **Owner approval is only as safe as the owner's key.** The key lives in the browser's storage in this demo. Whoever holds it can approve.
 - **Release on acceptance trusts the named key.** The gateway checks that the acceptance is signed by the key the promise named. It does not judge the work. Naming the payee means paying on its word; naming a checker means trusting the checker.
 - **A reference is one gateway's view.** It states what this gateway saw, signed. It is not a credit score, and nothing here extends credit.
 - **The treasury is public by key.** Anyone who knows an owner's public key can read that owner's totals, as they can read an envelope's page. Only the owner's private key can revoke or close.

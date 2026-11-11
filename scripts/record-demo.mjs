@@ -182,6 +182,22 @@ await scene("receipt", async () => {
   await page.getByText("Signatures valid").waitFor(T);
 });
 
+// 6a. Over the owner's threshold: the agent can only ask, and the owner signs in this browser
+await page.goto(rootUrl);
+await holdCard();
+await scene("approval", async () => {
+  await scrollTo('[data-testid="controls"]', "start");
+  await wait(600);
+  await page.getByRole("button", { name: "Agent asks for a bigger payment" }).click();
+  await page.getByTestId("approval").getByText(/asks to pay/).waitFor(T);
+  await scrollTo('[data-testid="approval"]');
+  await wait(4200);
+  await page.getByTestId("approval").getByRole("button", { name: /^Sign & pay/ }).click();
+  await page.getByText(/^You signed\./).waitFor(T);
+  await page.getByTestId("approval").waitFor({ state: "detached", timeout: 30000 });
+  await top();
+});
+
 // 6b. The owner's treasury, with the books checked against PayPal
 await scene("treasury", async () => {
   await page.goto(`${BASE}/treasury`);
@@ -207,7 +223,7 @@ await scene("close", async () => {
 });
 
 // 8. Numbers, then the close
-await card("<span class=\"figure\" style=\"font-size:120px\">98<span style=\"color:#8A8271\">/98</span></span>", ["attacks refused in the test corpus. None moved money.", "The try-it copy runs the whole gateway in your browser: nothing to install, nothing to configure."]);
+await card("<span class=\"figure\" style=\"font-size:120px\">107<span style=\"color:#8A8271\">/107</span></span>", ["attacks refused in the test suite. None moved money.", "The try-it copy runs the whole gateway in your browser: nothing to install, nothing to configure."]);
 await scene("numbers");
 await card("Seal is an authorization.<br>Spend is a capture and a payout.<br><em>Close is a void.</em>", ["Envelope · a treasury, accounts and a payment protocol for AI agents", "open source · github.com/Stan-lee13/PayPal-hackathon-"]);
 await scene("end");

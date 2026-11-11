@@ -1,9 +1,9 @@
 {
-  "ranAt": "2026-11-11T13:22:08.921Z",
+  "ranAt": "2026-11-11T13:54:32.853Z",
   "paypal": "built-in simulator",
   "summary": {
-    "attacks": 98,
-    "refused": 98,
+    "attacks": 107,
+    "refused": 107,
     "movedMoney": 0
   },
   "byCategory": {
@@ -33,8 +33,8 @@
       "movedMoney": 0
     },
     "Promise": {
-      "attacks": 20,
-      "refused": 20,
+      "attacks": 29,
+      "refused": 29,
       "movedMoney": 0
     },
     "Account": {
@@ -649,6 +649,69 @@
       "attack": "forged note: signed by a different key",
       "refused": true,
       "how": "valid only under the attacker's key; a payee pins the gateway's key",
+      "moneyMoved": false
+    },
+    {
+      "category": "Promise",
+      "attack": "pay over the owner's approval threshold without asking",
+      "refused": true,
+      "how": "NEEDS_OWNER_APPROVAL",
+      "moneyMoved": false
+    },
+    {
+      "category": "Promise",
+      "attack": "set the money aside to pay it oneself later",
+      "refused": true,
+      "how": "NEEDS_OWNER_APPROVAL",
+      "moneyMoved": false
+    },
+    {
+      "category": "Promise",
+      "attack": "name a friendly agent instead of the owner as approver",
+      "refused": true,
+      "how": "NEEDS_OWNER_APPROVAL",
+      "moneyMoved": false
+    },
+    {
+      "category": "Promise",
+      "attack": "name oneself as approver",
+      "refused": true,
+      "how": "NEEDS_OWNER_APPROVAL",
+      "moneyMoved": false
+    },
+    {
+      "category": "Promise",
+      "attack": "the agent pays its own request that awaits the owner",
+      "refused": true,
+      "how": "refused: This payment is over the owner's approval threshold: only the owner's signature can pay it",
+      "moneyMoved": false
+    },
+    {
+      "category": "Promise",
+      "attack": "the agent signs the owner's approval itself",
+      "refused": true,
+      "how": "refused: This promise names a different key as the one that can release it.",
+      "moneyMoved": false
+    },
+    {
+      "category": "Promise",
+      "attack": "a sub-envelope that drops the approval threshold",
+      "refused": true,
+      "how": "SPLIT_NOT_ALLOWED, WIDENED_APPROVAL",
+      "moneyMoved": false
+    },
+    {
+      "category": "Promise",
+      "attack": "a sub-envelope that raises the approval threshold",
+      "refused": true,
+      "how": "WIDENED_APPROVAL",
+      "moneyMoved": false
+    },
+    {
+      "category": "Promise",
+      "attack": "split payments just under the threshold are not an attack, but one cent over is",
+      "refused": true,
+      "how": "NEEDS_OWNER_APPROVAL",
       "moneyMoved": false
     },
     {

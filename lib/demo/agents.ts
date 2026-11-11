@@ -73,7 +73,7 @@ export async function hasDemoAgents(rootId: string): Promise<boolean> {
   return Boolean(await getDb().query.demoKeys.findFirst({ where: eq(demoKeys.rootId, rootId) }));
 }
 
-export const DEMO_ACTIONS = ["split-localization", "split-creative", "promise-translator", "accept-translator", "keep-translator", "pay-translator", "pay-designer", "attack-payee", "attack-overspend", "attack-forge"] as const;
+export const DEMO_ACTIONS = ["ask-owner", "split-localization", "split-creative", "promise-translator", "accept-translator", "keep-translator", "pay-translator", "pay-designer", "attack-payee", "attack-overspend", "attack-forge"] as const;
 export type DemoAction = (typeof DEMO_ACTIONS)[number];
 
 /** One scripted step. Amounts scale with the root so any envelope size works. */
@@ -95,6 +95,15 @@ export async function act(rootId: string, action: DemoAction): Promise<{ action:
   const sub = (limit: number, payee: string, purpose: string): E.Caps => ({ currency: rootCaps.currency, limit, perPayment: Math.min(limit, rootCaps.perPayment), payees: [payee], purposes: [purpose], notAfter: rootCaps.notAfter, splits: 0 });
 
   switch (action) {
+    case "ask-owner": {
+      // A payment over the owner's threshold: the agent cannot make it. It sets the money aside and waits for the owner's signature.
+      const over = rootCaps.approveOver;
+      if (over === undefined) throw new UserFacingError("This envelope was sealed without an approval threshold.", 409);
+      const amount = Math.min(rootCaps.perPayment, over + 500);
+      if (amount <= over) throw new UserFacingError("The per-payment cap is not above the approval threshold, so nothing needs your signature.", 409);
+      const result = await G.promise(await E.signPromise(ops.chain, ops.key, { amount, payee: designer, purpose: pDe, memo: "Rush: three extra banner sizes", ttl: 900, releaseBy: ops.chain[0]!.body.issuer }), "The designer offers three extra banner sizes if we confirm today. It is over what I may pay on my own, so I am asking the owner.");
+      return { action, narration: `ops-agent wants to pay ${await who(designer)} $${(amount / 100).toFixed(2)} for extra banner sizes. That is over the $${(over / 100).toFixed(2)} you asked to sign for, so it cannot pay. The money is set aside, waiting for your signature.`, result };
+    }
     case "split-localization":
     case "split-creative": {
       const loc = action === "split-localization";
@@ -213,7 +222,7 @@ export async function runTool(rootId: string, label: ToolAgent, tool: string, ar
     const limit = cents("limit_usd");
     if (!Number.isSafeInteger(limit) || limit <= 0) return out("limit_usd must be a positive dollar amount.");
     const parent = a.chain[a.chain.length - 1]!.body.caps;
-    const caps: E.Caps = { currency: parent.currency, limit, perPayment: Math.min(limit, parent.perPayment), payees: [str("payee", 127)], purposes: [str("purpose", 60)], notAfter: parent.notAfter, splits: 0 };
+    const caps: E.Caps = { currency: parent.currency, limit, perPayment: Math.min(limit, parent.perPayment), payees: [str("payee", 127)], purposes: [str("purpose", 60)], notAfter: parent.notAfter, splits: 0, approveOver: parent.approveOver };
     let chain: E.Envelope;
     try { chain = await E.split(a.chain, a.key, { publicKey: to.row.publicKey, label: toLabel }, caps); }
     catch (e) { return out(`NOT SPLIT. ${e instanceof Error ? e.message : "The sub-envelope was wider than yours."}`, "DENIED"); }

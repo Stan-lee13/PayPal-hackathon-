@@ -501,7 +501,10 @@ export async function keep(signed: E.SignedKeep, agentNote?: string): Promise<Sp
   if (!(await E.verifyKeepSignature(signed))) throw new UserFacingError("That isn't properly signed, or is too old.", 401);
   const s0 = await getDb().query.spends.findFirst({ where: eq(spends.id, signed.request.promise) });
   if (!s0 || !s0.promiseExpiresAt) throw new UserFacingError("No such promise.", 404);
-  if (signed.by !== s0.signed.chain[s0.signed.chain.length - 1]!.body.holder) throw new UserFacingError("Only the agent that made a promise can pay or release it.", 403);
+  const leaf = s0.signed.chain[s0.signed.chain.length - 1]!.body;
+  if (signed.by !== leaf.holder) throw new UserFacingError("Only the agent that made a promise can pay or release it.", 403);
+  // Above the owner's threshold the agent may set money aside and release it, but only the owner's signature pays it.
+  if (signed.request.action === "pay" && leaf.caps.approveOver !== undefined && s0.amountMinor > leaf.caps.approveOver) throw new UserFacingError("This payment is over the owner's approval threshold: only the owner's signature can pay it.", 403);
   return decidePromise(s0, signed.request.action, { agentNote });
 }
 
@@ -518,10 +521,11 @@ export async function accept(signed: E.SignedAccept): Promise<SpendResult> {
   const named = (s0.signed.request as E.PromiseRequest).releaseBy;
   if (!named) throw new UserFacingError("This promise can only be paid by the agent that made it.", 403);
   if (signed.by !== named) throw new UserFacingError("This promise names a different key as the one that can release it.", 403);
+  if (signed.request.decline) return decidePromise(s0, "release", { why: "declined by the key it named" });
   return decidePromise(s0, "pay", { delivery: { by: signed.by, work: signed.request.work, note: signed.request.note, at: signed.request.at, sig: signed.sig } });
 }
 
-async function decidePromise(s0: Spend, action: "pay" | "release", o: { agentNote?: string; delivery?: NonNullable<Spend["delivery"]> }): Promise<SpendResult> {
+async function decidePromise(s0: Spend, action: "pay" | "release", o: { agentNote?: string; delivery?: NonNullable<Spend["delivery"]>; why?: string }): Promise<SpendResult> {
   const db = getDb();
   const root = (await db.query.roots.findFirst({ where: eq(roots.id, s0.rootId) }))!;
   const out = await db.transaction(async (tx) => {
@@ -530,7 +534,7 @@ async function decidePromise(s0: Spend, action: "pay" | "release", o: { agentNot
     const s = (await tx.query.spends.findFirst({ where: eq(spends.id, s0.id) }))!;
     if (s.status !== "PROMISED") return { row: s, changed: false, lapsed };
     if (action === "release") {
-      const u = await lapse(tx, s, { code: "PROMISE_LAPSED", at: s.leafId, detail: "released by the agent that made it" });
+      const u = await lapse(tx, s, { code: "PROMISE_LAPSED", at: s.leafId, detail: o.why ?? "released by the agent that made it" });
       return { row: u ?? s, changed: true, lapsed: u ? [...lapsed, u] : lapsed };
     }
     // Authority may have been withdrawn since the promise was made.
@@ -872,6 +876,8 @@ export async function treasury(principal: string) {
     },
     envelopes: rootRows.map((r) => ({ id: r.id, title: r.title, status: r.status, limitMinor: r.limitMinor, capturedMinor: r.capturedMinor, releasedMinor: r.releasedMinor, authorizationId: r.authorizationId, createdAt: r.createdAt.toISOString() })),
     agents,
+    /** Money set aside that names this owner as the key that releases it: waiting for the owner's signature. */
+    approvals: ss.filter((x) => x.status === "PROMISED" && (x.signed.request as E.PromiseRequest).releaseBy === principal).map((x) => ({ id: x.id, rootId: x.rootId, rootTitle: rootById.get(x.rootId)!.title, agent: x.leafLabel, payee: x.payee, who: nameOf.get(x.payee)?.label ?? null, purpose: x.purpose, memo: x.memo, agentNote: x.agentNote, amountMinor: x.amountMinor, expiresAt: x.promiseExpiresAt!.toISOString() })),
     payees: [...byPayee.values()].sort((a, b) => b.totalMinor - a.totalMinor),
     activity: ss.slice(0, 40).map((x) => ({ id: x.id, rootId: x.rootId, at: x.createdAt.toISOString(), agent: x.leafLabel, payee: x.payee, who: nameOf.get(x.payee)?.label ?? null, purpose: x.purpose, amountMinor: x.amountMinor, status: x.status, reasons: x.reasons.map((y) => y.code), captureId: x.captureId, payoutBatchId: x.payoutBatchId, payoutStatus: x.payoutStatus, hasReceipt: Boolean(x.receipt) })),
   };

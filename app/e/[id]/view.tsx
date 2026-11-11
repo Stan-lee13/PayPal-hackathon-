@@ -3,13 +3,13 @@
 import { api, gatewayInBrowser } from "@/lib/client/api";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { accountNumber, fingerprint, signRevoke, type Caps, type KeyPair } from "@/lib/envelope/core";
+import { accountNumber, fingerprint, signAccept, signRevoke, type Caps, type KeyPair } from "@/lib/envelope/core";
 import { principalKey } from "@/lib/principal-key";
 import { Mission } from "./mission";
 import { Figure, Flap, Meter, Postmark, Sigil, SpendStamp, Stamp, usd } from "@/components/stationery";
 
 type BlockT = { id: string; parentId: string | null; depth: number; holder: string; holderLabel: string; caps: Caps; spentMinor: number; reservedMinor: number; revokedAt: string | null };
-type SpendT = { id: string; leafLabel: string; amountMinor: number; payee: string; purpose: string; memo: string; agentNote: string | null; status: string; reasons: Array<{ code: string; detail: string }>; captureId: string | null; payoutBatchId: string | null; payoutStatus: string | null; createdAt: string; hasReceipt: boolean; promiseExpiresAt: string | null; delivery: { by: string; work: string; note: string } | null; signed?: never };
+type SpendT = { id: string; leafLabel: string; amountMinor: number; payee: string; purpose: string; memo: string; agentNote: string | null; status: string; reasons: Array<{ code: string; detail: string }>; captureId: string | null; payoutBatchId: string | null; payoutStatus: string | null; createdAt: string; hasReceipt: boolean; promiseExpiresAt: string | null; delivery: { by: string; work: string; note: string } | null; releaseBy: string | null; signed?: never };
 type Data = {
   mode: string; demoAgents: boolean;
   root: { id: string; principal: string; principalName: string; title: string; limitMinor: number; capturedMinor: number; releasedMinor: number | null; status: string; authorizationId: string | null; paypalOrderId: string | null; authorizationExpiresAt: string | null; closeReason: string | null; createdAt: string };
@@ -83,6 +83,18 @@ export function EnvelopeView({ id }: { id: string }) {
     } finally { setBusy(null); }
   }
 
+  /** The owner signs (or refuses) a payment an agent asked for above the approval threshold. */
+  async function decide(spendId: string, decline: boolean) {
+    if (!me) return;
+    setBusy("decide"); setErr(null);
+    try {
+      const r = await api("/api/gateway/accept", { body: { signed: await signAccept(me, spendId, { decline, note: decline ? "Declined by the owner." : "Approved by the owner." }) } });
+      if (!r.ok && r.status !== 409) setErr(r.json.error ?? "Couldn't record your decision.");
+      else say(decline ? "You declined. The money went back into the envelope." : "You signed. PayPal captured it from the hold and paid the payee.", "good");
+      await load();
+    } finally { setBusy(null); }
+  }
+  const waiting = spends.filter((s) => s.status === "PROMISED" && s.releaseBy === root.principal);
   const held = open ? root.limitMinor - root.capturedMinor : 0;
   /** A payee as people should read it: an agent's name when it is an account, the address otherwise. */
   const Payee = ({ p, tag }: { p: string; tag?: boolean }) => {
@@ -124,7 +136,7 @@ export function EnvelopeView({ id }: { id: string }) {
             </div>
           </div>
           <p className="mono mt-2.5 text-[.66rem] leading-relaxed opacity-80">
-            {b.depth === 0 ? `sealed by ${root.principalName}` : "split off by the envelope above, offline"} · max {usd(b.caps.perPayment)} per payment · expires {when(b.caps.notAfter)} · {b.caps.splits > 0 ? `can split ${b.caps.splits}×` : "cannot split"}
+            {b.depth === 0 ? `sealed by ${root.principalName}` : "split off by the envelope above, offline"} · max {usd(b.caps.perPayment)} per payment · expires {when(b.caps.notAfter)} · {b.caps.splits > 0 ? `can split ${b.caps.splits}×` : "cannot split"}{b.caps.approveOver !== undefined ? ` · owner signs above ${usd(b.caps.approveOver)}` : ""}
           </p>
         </div>
         {kids.length > 0 && <div className="envl-kids space-y-4">{kids.map((k) => <Node key={k.id} b={k} />)}</div>}
@@ -157,6 +169,21 @@ export function EnvelopeView({ id }: { id: string }) {
           <p className="mt-3 text-xs text-ink-2">Each spend is a partial capture of this one authorization; PayPal itself refuses to capture beyond it. Closing the envelope voids the rest. {d.mode === "sandbox" ? "Sandbox: the hold is on PayPal's test card." : ""}</p>
         </section>
 
+        {waiting.map((s) => (
+          <section key={s.id} className="sheet sheet-lift enter relative border-l-[5px] !border-l-amber p-5 sm:p-6" data-testid="approval" aria-live="polite">
+            <p className="label">Waiting for {isOwner ? "your" : "the owner's"} signature</p>
+            <p className="title mt-2 text-[1.5rem] leading-snug"><span>{s.leafLabel}</span> asks to pay <Payee p={s.payee} /> <span className="money">{usd(s.amountMinor)}</span></p>
+            <p className="mt-1.5 text-sm text-ink-2">{s.purpose}{s.memo ? ` · ${s.memo}` : ""}. Over the {usd(blocks[0]?.caps.approveOver ?? 0)} you asked to sign for, so the agent cannot pay it. The money is set aside until {hhmm(s.promiseExpiresAt ?? s.createdAt)} UTC.</p>
+            {s.agentNote && <p className="mt-2 font-serif text-[.95rem] italic leading-snug text-ink-2">Agent: “{s.agentNote}”</p>}
+            {isOwner ? (
+              <div className="mt-4 flex flex-wrap gap-3">
+                <button type="button" className="btn btn-ink" disabled={Boolean(busy)} onClick={() => decide(s.id, false)}>{busy === "decide" ? "Signing…" : `Sign & pay ${usd(s.amountMinor)}`}</button>
+                <button type="button" className="btn btn-red" disabled={Boolean(busy)} onClick={() => decide(s.id, true)}>Decline</button>
+              </div>
+            ) : <p className="mt-3 text-xs text-ink-2">Only the owner&rsquo;s browser holds the key that can sign this.</p>}
+          </section>
+        ))}
+
         <section aria-label="Envelopes" className="space-y-4">
           <h2 className="label">Who holds what</h2>
           {children(null).map((b) => <Node key={b.id} b={b} />)}
@@ -168,6 +195,7 @@ export function EnvelopeView({ id }: { id: string }) {
             <div className="flex flex-wrap gap-x-4 gap-y-4">
               {d.demoAgents && <button type="button" className="btn btn-ink" disabled={Boolean(busy) || !open} onClick={() => script(RUN, "run")}>{busy === "run" ? "Agents working…" : "Run the launch (agents split & pay)"}</button>}
               {d.demoAgents && <button type="button" className="btn" disabled={Boolean(busy) || !open} onClick={() => script(ATTACK, "attack")}>{busy === "attack" ? "Attacking…" : "Compromise the creative agent"}</button>}
+              {d.demoAgents && blocks[0]?.caps.approveOver !== undefined && <button type="button" className="btn" disabled={Boolean(busy) || !open || waiting.length > 0} onClick={() => script(["ask-owner"], "ask")}>{busy === "ask" ? "Asking…" : "Agent asks for a bigger payment"}</button>}
               {isOwner && <button type="button" className="btn btn-red" disabled={Boolean(busy) || !open} onClick={() => revoke(id, "the root")}>Close envelope & release the hold</button>}
             </div>
             {d.demoAgents && <p className="text-xs text-ink-2">The built-in agents are scripted and their keys live {gatewayInBrowser() ? "in this browser" : "on this demo server"}. External agents (see the README) hold their own keys and call the same gateway.</p>}
@@ -195,7 +223,7 @@ export function EnvelopeView({ id }: { id: string }) {
                     <Figure minor={s.amountMinor} className={`shrink-0 text-[1.35rem] ${s.status === "DENIED" ? "text-ink-3 line-through decoration-red decoration-2" : ""}`} />
                   </div>
                   <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1"><SpendStamp status={s.status} land /><span className="text-xs text-ink-2">{s.purpose}{s.memo ? ` · ${s.memo}` : ""}{s.status === "PROMISED" && s.promiseExpiresAt ? ` · held for this payee until ${hhmm(s.promiseExpiresAt)} UTC` : ""}</span></p>
-                  {s.delivery && <p className="mono mt-2 text-[.7rem] leading-snug text-green">released by {blocks.find((b) => b.holder === s.delivery!.by)?.holderLabel ?? fingerprint(s.delivery.by)}&rsquo;s signature{s.delivery.work ? ` · work ${s.delivery.work.slice(0, 12)}…` : ""}</p>}
+                  {s.delivery && <p className="mono mt-2 text-[.7rem] leading-snug text-green">released by {s.delivery.by === root.principal ? "the owner" : blocks.find((b) => b.holder === s.delivery!.by)?.holderLabel ?? fingerprint(s.delivery.by)}&rsquo;s signature{s.delivery.work ? ` · work ${s.delivery.work.slice(0, 12)}…` : ""}</p>}
                   {s.agentNote && <p className="mt-2 font-serif text-[.9rem] italic leading-snug text-ink-2">Agent: “{s.agentNote}”</p>}
                   {s.reasons.length > 0 && <ul className="mono mt-2 space-y-0.5 text-[.72rem] leading-snug text-red">{s.reasons.map((r, i) => <li key={i}><b>{r.code}</b> · {r.detail}</li>)}</ul>}
                   {s.captureId && <p className="mono mt-2 text-[.68rem] text-ink-2">capture {s.captureId} · payout {s.payoutBatchId}{s.payoutStatus ? ` (${s.payoutStatus})` : ""}</p>}

@@ -6,7 +6,8 @@
  *   BASE=http://localhost:3000 node scripts/e2e.mjs            # optional: OUT=<dir> for screenshots
  *
  * Covers: seal with a key held in the browser, agents split, money set aside and released when a
- * named agent signs for the delivered work, a direct payment, the earning agent's passport, a receipt checked against PayPal and in
+ * named agent signs for the delivered work, a direct payment, a payment over the owner's threshold
+ * that waits for the owner's signature, the earning agent's passport, a receipt checked against PayPal and in
  * the browser, proof of funds, three attacks denied, close, and a second tab seeing the same data.
  */
 import { createRequire } from "node:module";
@@ -39,6 +40,13 @@ try {
   await page.waitForTimeout(1500);
   if (OUT) await page.screenshot({ path: `${OUT}/local-2-envelope.png`, fullPage: true }).catch(() => {});
   console.log("launch ran");
+  // over the owner's threshold: the agent can only ask; the owner signs in this browser
+  await page.getByRole("button", { name: "Agent asks for a bigger payment" }).click();
+  await page.getByTestId("approval").getByText(/asks to pay/).waitFor(T);
+  await page.getByTestId("approval").getByRole("button", { name: /^Sign & pay \$80\.00/ }).click();
+  await page.getByText(/^You signed\./).waitFor(T);
+  await page.getByTestId("approval").waitFor({ state: "detached", timeout: 20000 });
+  console.log("owner approval: asked, signed, paid");
   await page.getByText("held for this payee until").waitFor({ state: "detached", timeout: 20000 }).catch(() => {});
   if (OUT) await page.screenshot({ path: `${OUT}/local-2-envelope.png`, fullPage: true }).catch(() => {});
   // the agent that got paid

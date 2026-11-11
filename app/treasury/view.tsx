@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/client/api";
-import { fingerprint, signRevoke, type KeyPair } from "@/lib/envelope/core";
+import { fingerprint, signAccept, signRevoke, type KeyPair } from "@/lib/envelope/core";
 import { principalKey } from "@/lib/principal-key";
 import { Figure, Meter, Sigil, SpendStamp, Stamp, usd } from "@/components/stationery";
 
@@ -14,6 +14,7 @@ type Data = {
   totals: { envelopes: number; open: number; heldNowMinor: number; spentMinor: number; setAsideMinor: number; releasedMinor: number; payments: number; refused: number; agents: number };
   envelopes: Array<{ id: string; title: string; status: string; limitMinor: number; capturedMinor: number; releasedMinor: number | null; authorizationId: string | null; createdAt: string }>;
   agents: AgentRow[];
+  approvals: Array<{ id: string; rootId: string; rootTitle: string; agent: string; payee: string; who: string | null; purpose: string; memo: string; agentNote: string | null; amountMinor: number; expiresAt: string }>;
   payees: Array<{ payee: string; who: string | null; key: string | null; owner: string | null; totalMinor: number; payments: number }>;
   activity: Activity[];
 };
@@ -47,6 +48,15 @@ export function TreasuryView() {
     try {
       const r = await api("/api/gateway/revoke", { body: { signed: await signRevoke(me, a.blockId) } });
       if (!r.ok) setErr(r.json.error ?? "Couldn't revoke.");
+      await load(me);
+    } finally { setBusy(null); }
+  }
+  async function decide(id: string, decline: boolean) {
+    if (!me) return;
+    setBusy(id); setErr(null);
+    try {
+      const r = await api("/api/gateway/accept", { body: { signed: await signAccept(me, id, { decline, note: decline ? "Declined by the owner." : "Approved by the owner." }) } });
+      if (!r.ok && r.status !== 409) setErr(r.json.error ?? "Couldn't record your decision.");
       await load(me);
     } finally { setBusy(null); }
   }
@@ -97,6 +107,26 @@ export function TreasuryView() {
         <div><Figure minor={t.setAsideMinor} className="text-[clamp(2rem,4.2vw,3rem)] text-amber" /><p className="label mt-2">Set aside</p><p className="mt-1 text-xs text-ink-2">promised to a payee, not yet paid</p></div>
         <div><Figure minor={t.releasedMinor} className="text-[clamp(2rem,4.2vw,3rem)] text-ink-3" /><p className="label mt-2">Released back</p><p className="mt-1 text-xs text-ink-2">voided when envelopes were closed</p></div>
       </section>
+
+      {d.approvals.length > 0 && (
+        <section data-testid="approvals" aria-live="polite">
+          <h2 className="title text-2xl">Waiting for your signature</h2>
+          <p className="mt-1 text-sm text-ink-2">Payments over the amount you asked to sign for. The agent cannot pay them; the money is set aside until you decide or the time runs out.</p>
+          <ul className="mt-4 grid gap-4 md:grid-cols-2">
+            {d.approvals.map((a) => (
+              <li key={a.id} className="sheet sheet-lift border-l-[5px] !border-l-amber p-5">
+                <p className="flex items-baseline justify-between gap-3"><span className="title text-[1.15rem]">{a.agent} <span className="text-ink-3">→</span> {a.who ?? <span className="mono text-[.82rem]">{a.payee}</span>}</span><Figure minor={a.amountMinor} className="text-[1.6rem]" /></p>
+                <p className="mt-1 text-sm text-ink-2">{a.purpose}{a.memo ? ` · ${a.memo}` : ""} · <Link className="underline decoration-dotted underline-offset-2" href={`/e/${a.rootId}`}>{a.rootTitle}</Link> · held until {when(a.expiresAt)} UTC</p>
+                {a.agentNote && <p className="mt-2 font-serif text-[.92rem] italic leading-snug text-ink-2">Agent: “{a.agentNote}”</p>}
+                <div className="mt-3 flex flex-wrap gap-3">
+                  <button type="button" className="btn btn-ink btn-sm" disabled={Boolean(busy)} onClick={() => decide(a.id, false)}>{busy === a.id ? "Signing…" : "Sign & pay"}</button>
+                  <button type="button" className="btn btn-red btn-sm" disabled={Boolean(busy)} onClick={() => decide(a.id, true)}>Decline</button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       <div className="grid items-start gap-x-12 gap-y-12 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
         <section data-testid="agents">

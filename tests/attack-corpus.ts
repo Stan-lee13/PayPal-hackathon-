@@ -217,6 +217,26 @@ export async function runCorpus(deps: { G: G; sim: Sim; reset: () => Promise<voi
   await attack("Promise", "forged note: amount edited", async () => G.verifyPromiseNote({ ...p3.note!, amount: 999999 }));
   await attack("Promise", "forged note: signed by a different key", async () => { const { sig: _s, ...body } = p3.note!; const fake = { ...body, gateway: w.rogue.publicKey }; return G.verifyPromiseNote({ ...fake, sig: await E.signDetached(w.rogue.privateKey, G.PROMISE_NOTE_VERSION, fake) }).then(async (ok) => (ok && fake.gateway !== (await G.gatewayKey()).publicKey ? "valid only under the attacker's key; a payee pins the gateway's key" : ok)); });
 
+  // owner approval above a threshold
+  {
+    await deps.reset();
+    const [ada, ops, helper] = await Promise.all([1, 2, 3].map(() => E.generateKeyPair()));
+    const caps: E.Caps = { currency: "USD", limit: 20000, perPayment: 8000, payees: ["designer@example.com"], purposes: ["design"], notAfter: EXP(), splits: 2, approveOver: 5000 };
+    const root = await E.seal(ada!, { publicKey: ops!.publicKey, label: "ops-agent" }, caps);
+    await G.registerRoot({ chain: root, principalName: "Ada", title: "Launch budget" });
+    const ask = (p: Partial<{ amount: number; releaseBy: string }> = {}) => E.signPromise(root, ops!, { amount: 7000, payee: "designer@example.com", purpose: "design", ttl: 600, ...p }).then((x) => G.promise(x));
+    await attack("Promise", "pay over the owner's approval threshold without asking", async () => G.spend(await E.signSpend(root, ops!, { amount: 5001, payee: "designer@example.com", purpose: "design" })));
+    await attack("Promise", "set the money aside to pay it oneself later", async () => ask());
+    await attack("Promise", "name a friendly agent instead of the owner as approver", async () => ask({ releaseBy: helper!.publicKey }));
+    await attack("Promise", "name oneself as approver", async () => ask({ releaseBy: ops!.publicKey }));
+    const pending = await ask({ releaseBy: ada!.publicKey });
+    await attack("Promise", "the agent pays its own request that awaits the owner", async () => G.keep(await E.signKeep(ops!, pending.spend!.id, "pay")));
+    await attack("Promise", "the agent signs the owner's approval itself", async () => G.accept(await E.signAccept(ops!, pending.spend!.id)));
+    await attack("Promise", "a sub-envelope that drops the approval threshold", async () => { const { approveOver: _d, ...without } = caps; return pay(await forge(root, ops!, helper!, { ...without, limit: 8000 } as E.Caps, (b) => { delete (b.caps as Partial<E.Caps>).approveOver; }), helper!, { amount: 8000 }); });
+    await attack("Promise", "a sub-envelope that raises the approval threshold", async () => pay(await forge(root, ops!, helper!, { approveOver: 8000, limit: 8000 }), helper!, { amount: 8000 }));
+    await attack("Promise", "split payments just under the threshold are not an attack, but one cent over is", async () => G.spend(await E.signSpend(root, ops!, { amount: 5001, payee: "designer@example.com", purpose: "design" })));
+  }
+
   // ---- 7. Accounts ---------------------------------------------------------------------------------------
   w = await world();
   await attack("Account", "point someone else's account at the attacker's PayPal address", async () => { const f = await E.signAccount(w.rogue, w.rogue, { label: "translator-agent", ownerName: "Mallory", settleTo: "mallory@evil.example" }); f.body.agent = w.tr.publicKey; return G.openAccount(f); });

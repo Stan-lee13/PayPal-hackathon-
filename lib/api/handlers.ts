@@ -50,7 +50,7 @@ export const handlers: Record<string, Handler> = {
     return { body: {
       mode: paypalMode(), root: t.root, demoAgents: await hasDemoAgents(id), payees: t.payees,
       blocks: t.blocks.map(({ raw: _raw, ...b }) => b),
-      spends: t.spends.map(({ signed: _s, receipt: _r, payoutTo: _p, ...s }) => ({ ...s, hasReceipt: Boolean(_r) })),
+      spends: t.spends.map(({ signed: _s, receipt: _r, payoutTo: _p, ...s }) => ({ ...s, hasReceipt: Boolean(_r), releaseBy: (_s.request as E.PromiseRequest).releaseBy ?? null })),
       audit: { ok: audit.ok, length: audit.length, entries: trail.map((x) => ({ seq: x.seq, at: x.createdAt, actor: x.actor, action: x.action, ref: x.ref, outcome: x.outcome })) },
     } };
   },
