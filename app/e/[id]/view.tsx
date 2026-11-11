@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { accountNumber, fingerprint, signRevoke, type Caps, type KeyPair } from "@/lib/envelope/core";
 import { principalKey } from "@/lib/principal-key";
+import { Mission } from "./mission";
 import { Figure, Flap, Meter, Postmark, Sigil, SpendStamp, Stamp, usd } from "@/components/stationery";
 
 type BlockT = { id: string; parentId: string | null; depth: number; holder: string; holderLabel: string; caps: Caps; spentMinor: number; reservedMinor: number; revokedAt: string | null };
@@ -171,6 +172,7 @@ export function EnvelopeView({ id }: { id: string }) {
             </div>
             {d.demoAgents && <p className="text-xs text-ink-2">The built-in agents are scripted and their keys live {gatewayInBrowser() ? "in this browser" : "on this demo server"}. External agents (see the README) hold their own keys and call the same gateway.</p>}
             {!isOwner && <p className="text-xs text-ink-2">Only the owner's browser holds the key that can revoke or close this envelope.</p>}
+            {d.demoAgents && open && blocks[0] && <Mission id={id} root={root} caps={blocks[0].caps} payees={d.payees ?? {}} disabled={Boolean(busy)} onChange={load} />}
             {err && <p role="alert" className="text-sm text-red">{err}</p>}
             {lines.length > 0 && (
               <ol className="mono space-y-1.5 border-l-[1.5px] border-ink pl-4 text-[.8rem] leading-relaxed" aria-live="polite">
