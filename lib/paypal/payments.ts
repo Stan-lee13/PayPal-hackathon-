@@ -14,7 +14,7 @@
  * Every mutating call carries a PayPal-Request-Id derived from our own ids, so a retry can never
  * capture, pay or refund twice. Payouts are also de-duplicated by sender_batch_id.
  */
-import type { PayPalClient } from "./client";
+import { PayPalApiError, type PayPalClient } from "./client";
 import { toDecimalString, toMinor } from "../money";
 
 type Money = { currency_code: string; value: string };
@@ -25,30 +25,46 @@ export type CaptureFacts = { id: string; status: string; amountMinor: number; cu
 export type PayoutFacts = { batchId: string; batchStatus: string; itemId: string | null; itemStatus: string | null; transactionId: string | null; receiver: string | null; error: string | null };
 
 /**
- * PayPal's documented sandbox test card. In the sandbox it stands in for the principal's funding
- * instrument so a hold can be placed without a browser; it is refused outside the sandbox.
- * In production the principal approves the hold in PayPal's own checkout (or a vaulted wallet is used).
+ * PayPal's documented sandbox test cards (developer.paypal.com/tools/sandbox/card-testing: any future
+ * expiry, any 3-digit CVV). In the sandbox one of them stands in for the principal's funding instrument,
+ * so a hold can be placed without a browser; they are refused outside the sandbox. In production the
+ * principal approves the hold in PayPal's own checkout (or a vaulted wallet is used).
+ *
+ * The sandbox sometimes stops honouring a test card after many holds (PAYER_CANNOT_PAY). When it does,
+ * the next card on the list is tried. PAYPAL_SANDBOX_TEST_CARD puts a card of your choice first.
  */
-const SANDBOX_TEST_CARD = {
-  number: "4032039317984658", expiry: "2030-12", security_code: "123", name: "Sandbox Principal",
+const SANDBOX_TEST_CARDS = [process.env.PAYPAL_SANDBOX_TEST_CARD, "4012888888881881", "4005519200000004", "2223000048400011", "4032039317984658"].filter((x): x is string => Boolean(x && /^\d{13,19}$/.test(x)));
+const testCard = (number: string) => ({
+  number, expiry: "2030-12", security_code: "123", name: "Sandbox Principal",
   billing_address: { address_line_1: "1 Main St", admin_area_2: "San Jose", admin_area_1: "CA", postal_code: "95131", country_code: "US" },
-};
+});
 
 /** Place the hold that backs a root envelope. */
 export async function authorizeHold(pp: PayPalClient, a: { rootId: string; title: string; currency: string; amountMinor: number }): Promise<AuthorizationFacts> {
   if (pp.env !== "sandbox") throw new Error("Holds on the sandbox test card are only available in sandbox mode.");
-  const r = await pp.request<{ id: string; status: string; purchase_units?: Array<{ payments?: { authorizations?: RawAuth[] } }> }>("POST", "/v2/checkout/orders", {
-    requestId: `seal-${a.rootId}`,
-    prefer: "return=representation",
-    body: {
-      intent: "AUTHORIZE",
-      purchase_units: [{ reference_id: a.rootId, custom_id: a.rootId, description: `Envelope: ${a.title}`.slice(0, 127), amount: { currency_code: a.currency, value: toDecimalString(a.amountMinor, a.currency) } }],
-      payment_source: { card: SANDBOX_TEST_CARD },
-    },
-  });
-  const auth = r.purchase_units?.[0]?.payments?.authorizations?.[0];
-  if (!auth) throw new Error(`PayPal returned no authorization (order ${r.id}, status ${r.status}).`);
-  return { ...authFacts(auth), orderId: r.id, customId: auth.custom_id ?? a.rootId };
+  let refused: unknown = null;
+  for (const [i, number] of SANDBOX_TEST_CARDS.entries()) {
+    try {
+      const r = await pp.request<{ id: string; status: string; purchase_units?: Array<{ payments?: { authorizations?: RawAuth[] } }> }>("POST", "/v2/checkout/orders", {
+        // One idempotency key per card tried: the same key with a different card would be a different request.
+        requestId: i === 0 ? `seal-${a.rootId}` : `seal-${a.rootId}-c${i}`,
+        prefer: "return=representation",
+        body: {
+          intent: "AUTHORIZE",
+          purchase_units: [{ reference_id: a.rootId, custom_id: a.rootId, description: `Envelope: ${a.title}`.slice(0, 127), amount: { currency_code: a.currency, value: toDecimalString(a.amountMinor, a.currency) } }],
+          payment_source: { card: testCard(number) },
+        },
+      });
+      const auth = r.purchase_units?.[0]?.payments?.authorizations?.[0];
+      if (!auth) throw new Error(`PayPal returned no authorization (order ${r.id}, status ${r.status}).`);
+      return { ...authFacts(auth), orderId: r.id, customId: auth.custom_id ?? a.rootId };
+    } catch (e) {
+      // Only a decline of this card moves on to the next one; anything else is a real failure.
+      if (!(e instanceof PayPalApiError) || !["PAYER_CANNOT_PAY", "CARD_TYPE_NOT_SUPPORTED", "TRANSACTION_REFUSED"].includes(e.issue ?? "")) throw e;
+      refused = e;
+    }
+  }
+  throw refused ?? new Error("No sandbox test card is configured.");
 }
 
 export async function getAuthorization(pp: PayPalClient, id: string): Promise<AuthorizationFacts> {

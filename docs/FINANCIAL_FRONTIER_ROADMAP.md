@@ -1,4 +1,4 @@
-# After the hackathon: where Envelope could go
+# Financial frontier roadmap: where Envelope could go after the hackathon
 
 This document is about the long term. Nothing in it is a claim about what exists today; what exists is described in the [README](../README.md) and the [protocol specification](SPEC.md). It is deliberately separate from the hackathon implementation.
 
@@ -76,6 +76,31 @@ Only the first two items have working mechanics, on the sandbox. None of it shou
 - **Cards.** A Xenoncard exists as a closed-loop card: an agent's signed permission for one merchant on this gateway to charge its balance, with a cap, a count and a billing period (`lib/gateway/bank.ts`). To be useful beyond this gateway it needs acceptance: a merchant-side library first, and for merchants that only take card numbers, an issuing partner and network tokens (Visa Intelligent Commerce and Mastercard Agent Pay are where that is heading). Issuing on a card network is an issuer's product.
 - **Credit.** The record Envelope keeps (payments settled, promises kept, requests refused) is the kind of data a lender would want. Turning it into a credit decision is lending; scoring it at all raises fair-lending and consumer-reporting questions in several jurisdictions. A reference of facts is as far as the current product goes, on purpose.
 - **Guarantees and insurance** against an agent's failed obligations. This is an insurer's product.
+
+## Four divisions, one system
+
+The same layers, read as lines of work. They share one protocol, one ledger and one set of signed records; none is a separate product.
+
+| Division | What it owns | What exists today (sandbox) | First thing to build next | Needs a licensed partner? |
+|---|---|---|---|---|
+| A. Protocol | Identity, authority, delegation, commitments, proof of funds, receipts, references, interoperability | Version 1 of all of these, with test vectors in the test suite; the proof graph that ties them together | A published specification with test vectors and a second language binding; an AP2 mandate as the source of a root envelope | No |
+| B. Treasury | Budgets, allocation, approvals, reconciliation, reporting | One owner's treasury, approval inbox, books reconciled against PayPal, ledger export, owner-signed reads | Budgets by project; policy templates; alerts; an accounting export a finance team would accept | No, if the owner's own funds move on the rail's platform product |
+| C. Partner-powered banking | Balances, cards, credit, guarantees | Balances and a closed-loop card as mechanics, with owner caps, daily limits and freeze | Nothing with real money until a partner holds the funds; then statements and disputes | Yes, for every item |
+| D. Commerce network | Merchants and agents finding, verifying and paying each other | Proof of funds for a payee; commitments released on acceptance; cards a merchant charges with its own key | A merchant-side library; two gateways honouring each other's statements | Depends on what the network holds |
+
+## Business model questions
+
+Nothing here has been tested with a customer or checked against a payment provider's rules.
+
+| Possible model | Who would pay | What must be checked first |
+|---|---|---|
+| Treasury subscription (per organisation or per agent) | Teams whose agents spend real money | Whether finance teams already get this from their card or spend-management vendor |
+| Verification as a service (proof of funds, references, receipts) | Marketplaces and platforms where agents transact | Whether a verification that reserves nothing is worth paying for |
+| Per-transaction infrastructure fee | Platforms settling through the gateway | Payment-provider terms and money-transmission law; this is the model most likely to need a licence |
+| Open protocol, paid reference gateway | Developers first, then their employers | Whether the protocol is adopted at all |
+| Partner revenue share on balances, cards or credit | The partner pays for distribution | Everything in division C |
+
+**First customer to look for:** a team already running several agents that spend on their behalf (an AI automation agency or an agent-product company), whose finance person has asked "which agent spent this, and who allowed it?". They have the problem today, they can use their own funds on a platform product, and they need the treasury before anything else.
 
 ## Research questions worth answering
 

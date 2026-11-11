@@ -54,7 +54,7 @@ export const blocks = pgTable("blocks", {
   firstSeenAt: ts("first_seen_at").notNull().defaultNow(),
 }, (t) => [index("blocks_root").on(t.rootId, t.depth)]);
 
-export const SPEND_STATES = ["DENIED", "PROMISED", "LAPSED", "RESERVED", "CAPTURED", "PAID", "PAYOUT_PENDING", "UNCLAIMED", "FAILED"] as const;
+export const SPEND_STATES = ["DENIED", "PROMISED", "LAPSED", "RESERVED", "CAPTURED", "PAID", "PAYOUT_PENDING", "UNCLAIMED", "FAILED", "REFUND_DUE"] as const;
 export type SpendState = (typeof SPEND_STATES)[number];
 
 export type Receipt = {
@@ -71,7 +71,7 @@ export type Receipt = {
   chain: Array<{ id: string; hash: string; holder: string; holderLabel: string }>;
   principal: string;
   /** `payoutBatchId` is null when the money was credited to an agent's balance: there was no payout. */
-  paypal: { mode: string; authorizationId: string; captureId: string; payoutBatchId: string | null; payoutItemId: string | null };
+  paypal: { mode: string; authorizationId: string; captureId: string; payoutBatchId: string | null; payoutItemId: string | null; /** PayPal's word on the payout at the moment of signing. A receipt records that money was captured and a payout was asked for; whether it was delivered is PayPal's to say, live. */ payoutStatus?: string | null };
   issuedAt: string;
   gateway: string;
   sig: string;
@@ -109,7 +109,7 @@ export const spends = pgTable("spends", {
   promiseExpiresAt: ts("promise_expires_at"),
   promiseNote: jsonb("promise_note").$type<PromiseNote>(),
   /** The signed acceptance that released a promise, when it was released by the key it named. */
-  delivery: jsonb("delivery").$type<{ by: string; work: string; note: string; at: string; sig: string }>(),
+  delivery: jsonb("delivery").$type<{ by: string; work: string; note: string; at: string; sig: string; /** The signed acceptance itself, so anyone can check the acceptor's signature. */ request?: unknown }>(),
   createdAt: ts("created_at").notNull().defaultNow(),
   settledAt: ts("settled_at"),
 }, (t) => [index("spends_root").on(t.rootId, t.createdAt), index("spends_payee_agent").on(t.payeeAgent, t.createdAt)]);

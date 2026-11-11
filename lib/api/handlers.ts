@@ -10,6 +10,7 @@ import { auditLog, roots } from "../db/schema";
 import { act, attachDemoAgents, BANK_ACTIONS, bankAct, createDemoAgents, DEMO_ACTIONS, demoHello, ensureCounterparty, hasDemoAgents, isBankDemoAgent, isDemoAgent, runTool, TOOL_AGENTS } from "../demo/agents";
 import * as E from "../envelope/core";
 import * as B from "../gateway/bank";
+import { proof } from "../gateway/proof";
 import * as G from "../gateway/service";
 import { verifyChain } from "../ledger/chain";
 import { paypalMode } from "../paypal/client";
@@ -27,14 +28,35 @@ const spendOut = (r: G.SpendResult) => ({
   paypal: r.spend ? { captureId: r.spend.captureId, payoutBatchId: r.spend.payoutBatchId, payoutItemId: r.spend.payoutItemId, payoutStatus: r.spend.payoutStatus } : null,
   receipt: r.receipt,
 });
+/**
+ * DEMO agents' keys are kept by this server, so whoever may press their buttons can spend their envelope.
+ * That is the envelope's owner and nobody else: the request carries the owner's signature.
+ */
+async function ownerOfRootAsks(owner: unknown, rootId: string): Promise<boolean> {
+  const p = z.object({ request: z.any(), sig: z.string(), by: z.string() }).safeParse(owner);
+  if (!p.success) return false;
+  const root = await getDb().query.roots.findFirst({ where: eq(roots.id, rootId) });
+  return Boolean(root) && p.data.by === root!.principal && (await E.verifyReadSignature(p.data as never, "demo", rootId));
+}
+const NOT_OWNER = { status: 401, body: { error: "The built-in agents act only for the owner who sealed this envelope. Open it in the browser that sealed it." } };
+/** Knowing an owner's public key is not being the owner: reads of an owner's books need the owner's signature. */
+async function ownerAsks(body: unknown, principal: string): Promise<boolean> {
+  const p = z.object({ signed: z.object({ request: z.any(), sig: z.string(), by: z.string() }) }).safeParse(body);
+  return p.success && p.data.signed.by === principal && (await E.verifyReadSignature(p.data.signed as never, "treasury", principal));
+}
 const spendStatus = (s: string) => (s === "DENIED" ? 403 : s === "FAILED" ? 502 : s === "LAPSED" ? 409 : 200);
 
 export const handlers: Record<string, Handler> = {
-  "GET /api/envelopes": async () => ({ body: { roots: await getDb().select().from(roots).orderBy(desc(roots.createdAt)).limit(30) } }),
+  /** The envelopes one owner has sealed. Shown to that owner only: the request is signed with the owner's key. */
+  "POST /api/envelopes/mine": async ({ body }) => {
+    const p = z.object({ signed: z.object({ request: z.any(), sig: z.string(), by: z.string().regex(KEY) }) }).safeParse(body);
+    if (!p.success || !(await E.verifyReadSignature(p.data.signed as never, "treasury", p.data.signed.by))) return { status: 401, body: { error: "Sign the request with the owner's key." } };
+    return { body: { roots: await getDb().select().from(roots).where(eq(roots.principal, p.data.signed.by)).orderBy(desc(roots.createdAt)).limit(30) } };
+  },
 
   /** Seal: register a root envelope signed by the principal; the gateway places the PayPal hold. */
   "POST /api/envelopes": async ({ body }) => {
-    const b = z.object({ chain: z.array(z.any()).length(1), principalName: z.string().max(80).default("Principal"), title: z.string().max(120).default("Envelope"), draftId: z.string().max(60).optional() }).parse(body);
+    const b = z.object({ chain: z.array(z.any()).length(1), principalName: z.string().max(80).default("Principal"), title: z.string().max(120).default("Envelope"), draftId: z.string().regex(/^draft_[A-Za-z0-9_-]{8,40}$/).optional() }).parse(body);
     const root = await G.registerRoot({ chain: b.chain, principalName: b.principalName, title: b.title });
     return { body: { root, demoAgents: b.draftId ? await attachDemoAgents(b.draftId, b.chain) : false } };
   },
@@ -43,8 +65,9 @@ export const handlers: Record<string, Handler> = {
     const id = params.id!;
     let t = await G.tree(id);
     if (!t) return { status: 404, body: { error: "No such envelope." } };
-    // pending payouts: ask PayPal (cheap GET) so the page settles by itself
-    const pending = t.spends.filter((s) => s.status === "PAYOUT_PENDING").slice(0, 3);
+    // Anything unfinished is moved along when the page is looked at: a payout PayPal has not delivered yet or is
+    // holding unclaimed, a capture it was still reviewing, a refund it refused earlier, a payment interrupted mid-way.
+    const pending = t.spends.filter((s) => ["PAYOUT_PENDING", "UNCLAIMED", "CAPTURED", "RESERVED", "REFUND_DUE"].includes(s.status)).slice(-4);
     if (pending.length) { await Promise.all(pending.map((s) => G.syncSpend(s.id).catch(() => null))); t = (await G.tree(id))!; }
     const trail = await getDb().select().from(auditLog).where(eq(auditLog.subjectId, id)).orderBy(asc(auditLog.seq));
     const audit = verifyChain(t.root.principal, id, trail.map((x) => ({ ...x, createdAt: x.createdAt.toISOString() })) as never);
@@ -60,6 +83,17 @@ export const handlers: Record<string, Handler> = {
   "GET /api/spends/:id": async ({ params }) => {
     const r = await G.reconcile(params.id!);
     return { body: { ok: r.ok, checks: r.checks, receipt: r.receipt, chain: r.spend.signed.chain, spend: { id: r.spend.id, status: r.spend.status, payoutStatus: r.spend.payoutStatus, payoutTransactionId: r.spend.payoutTransactionId, agentNote: r.spend.agentNote } } };
+  },
+
+  /** The proof graph of an envelope: every signed record behind it, with what a browser needs to check each one. */
+  "GET /api/proof/:root": async ({ params }) => {
+    const g = await proof(params.root!);
+    return g ? { body: g } : { status: 404, body: { error: "No such envelope." } };
+  },
+  /** One payment's path back to the owner, and nothing else about the envelope. This is what a payee can be shown. */
+  "GET /api/proof/:root/:spend": async ({ params }) => {
+    const g = await proof(params.root!, params.spend!);
+    return g ? { body: g } : { status: 404, body: { error: "No such payment in that envelope." } };
   },
 
   "GET /api/agents": async () => ({ body: { agents: await G.recentAgents(12) } }),
@@ -85,15 +119,17 @@ export const handlers: Record<string, Handler> = {
   },
 
   /** One owner's treasury: every envelope sealed with that key, the agents under them, and where the money went. */
-  "GET /api/treasury/:principal": async ({ params }) => {
+  "POST /api/treasury/:principal": async ({ params, body }) => {
     if (!KEY.test(params.principal!)) return { status: 400, body: { error: "Not an owner key." } };
+    if (!(await ownerAsks(body, params.principal!))) return { status: 401, body: { error: "A treasury is shown only to its owner. Sign the request with the owner's key." } };
     const t = await G.treasury(params.principal!);
     return t ? { body: t } : { status: 404, body: { error: "No envelope has been sealed with that key." } };
   },
 
   /** Check that owner's recent payments against PayPal's own records. */
-  "POST /api/treasury/:principal/reconcile": async ({ params }) => {
+  "POST /api/treasury/:principal/reconcile": async ({ params, body }) => {
     if (!KEY.test(params.principal!)) return { status: 400, body: { error: "Not an owner key." } };
+    if (!(await ownerAsks(body, params.principal!))) return { status: 401, body: { error: "A treasury is shown only to its owner. Sign the request with the owner's key." } };
     const r = await G.reconcileTreasury(params.principal!);
     return r ? { body: r } : { status: 404, body: { error: "No envelope has been sealed with that key." } };
   },
@@ -219,7 +255,8 @@ export const handlers: Record<string, Handler> = {
 
   /** DEMO: one scripted agent step. It goes through the same gateway code as any external agent. */
   "POST /api/demo/act": async ({ body }) => {
-    const b = z.object({ rootId: z.string().max(60), action: z.enum(DEMO_ACTIONS) }).parse(body);
+    const b = z.object({ rootId: z.string().max(60), action: z.enum(DEMO_ACTIONS), owner: z.unknown().optional() }).parse(body);
+    if (!(await ownerOfRootAsks(b.owner, b.rootId))) return NOT_OWNER;
     const r = await act(b.rootId, b.action);
     return { body: { action: r.action, narration: r.narration, status: r.result?.status ?? null, reasons: withMeaning(r.result?.reasons ?? []) } };
   },
@@ -233,7 +270,8 @@ export const handlers: Record<string, Handler> = {
 
   /** DEMO: carry out one tool call a language model made while playing a built-in agent. The gateway decides. */
   "POST /api/demo/tool": async ({ body }) => {
-    const b = z.object({ rootId: z.string().max(60), agent: z.enum(TOOL_AGENTS), tool: z.string().max(40), args: z.record(z.string(), z.unknown()).default({}) }).parse(body);
+    const b = z.object({ rootId: z.string().max(60), agent: z.enum(TOOL_AGENTS), tool: z.string().max(40), args: z.record(z.string(), z.unknown()).default({}), owner: z.unknown().optional() }).parse(body);
+    if (!(await ownerOfRootAsks(b.owner, b.rootId))) return NOT_OWNER;
     const r = await runTool(b.rootId, b.agent, b.tool, b.args);
     return { body: { text: r.text, status: r.status, reasons: withMeaning(r.reasons) } };
   },

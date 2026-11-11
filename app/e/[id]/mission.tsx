@@ -2,7 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/client/api";
-import type { Caps } from "@/lib/envelope/core";
+import { signRead, type Caps } from "@/lib/envelope/core";
+import { principalKey } from "@/lib/principal-key";
 
 type Line = { kind: "stage" | "say" | "call" | "result" | "error"; agent?: string; text: string; tone?: "good" | "bad" | "info" };
 type ToolCall = { id: string; type: "function"; function: { name: string; arguments: string } };
@@ -66,7 +67,8 @@ export function Mission({ id, root, caps, payees, disabled, onChange }: { id: st
             try { args = JSON.parse(t.function.arguments || "{}"); } catch { /* the gateway side will say what is wrong */ }
             const name = t.function.name;
             if (name !== "look_at_my_envelope") add({ kind: "call", agent, text: `${agent} ${CALL_WORDS[name] ?? `calls ${name}`} ${describe(name, args)}`.trim() });
-            const out = await api("/api/demo/tool", { body: { rootId: id, agent, tool: name, args } });
+            const owner = await principalKey(false);
+            const out = await api("/api/demo/tool", { body: { rootId: id, agent, tool: name, args, ...(owner ? { owner: await signRead(owner, "demo", id) } : {}) } });
             const text: string = out.ok ? out.json.text : out.json.error ?? "The gateway did not answer.";
             if (name !== "look_at_my_envelope") add({ kind: "result", text: `Gateway: ${text}`, tone: !out.ok || ["DENIED", "FAILED", "LAPSED"].includes(out.json.status) ? "bad" : out.json.status ? "good" : "info" });
             turns.push({ role: "tool", tool_call_id: t.id, content: text });

@@ -60,7 +60,7 @@ d("accounts and promises (simulated PayPal)", async () => {
     const r = await G.spend(await E.signSpend(w.locChain, w.loc, { amount: 4500, payee: w.payee, purpose: "translation" }));
     expect(r.status).toBe("PAID");
     expect(r.spend).toMatchObject({ payee: w.payee, payeeAgent: w.tr.publicKey, payoutTo: "bea@example.com" });
-    expect(r.receipt!.paidTo).toEqual({ account: E.accountNumber(w.tr.publicKey), agent: w.tr.publicKey, agentLabel: "translator-agent", settledTo: "bea@example.com" });
+    expect(r.receipt!.paidTo).toEqual({ account: E.accountNumber(w.tr.publicKey), agent: w.tr.publicKey, agentLabel: "translator-agent", settledTo: "b•••@example.com" });
     expect(await G.verifyReceipt(r.receipt!)).toBe(true);
     expect((await G.reconcile(r.spend!.id)).ok).toBe(true); // PayPal's payout went to the settlement address
 
@@ -181,7 +181,7 @@ d("accounts and promises (simulated PayPal)", async () => {
     const paid = await G.accept(real);
     expect(paid.status).toBe("PAID");
     expect(paid.receipt!.releasedBy).toEqual({ key: checker.publicKey, work, note: "Both files checked against the brief.", at: real.request.at });
-    expect(paid.receipt!.paidTo!.settledTo).toBe("bea@example.com");
+    expect(paid.receipt!.paidTo!.settledTo).toBe("b•••@example.com");
     expect(await G.verifyReceipt(paid.receipt!)).toBe(true);
     expect(await blockRow(w.root.id)).toMatchObject({ reservedMinor: 0, spentMinor: 4500 });
     // accepting twice pays once

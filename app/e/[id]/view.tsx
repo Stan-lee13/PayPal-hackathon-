@@ -3,7 +3,7 @@
 import { api, gatewayInBrowser } from "@/lib/client/api";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { accountNumber, fingerprint, signAccept, signRevoke, type Caps, type KeyPair } from "@/lib/envelope/core";
+import { accountNumber, fingerprint, signAccept, signRead, signRevoke, type Caps, type KeyPair } from "@/lib/envelope/core";
 import { principalKey } from "@/lib/principal-key";
 import { Mission } from "./mission";
 import { Figure, Flap, Meter, Postmark, Sigil, SpendStamp, Stamp, usd } from "@/components/stationery";
@@ -57,7 +57,8 @@ export function EnvelopeView({ id }: { id: string }) {
     setBusy(label); setErr(null);
     try {
       for (const action of actions) {
-        const r = await api("/api/demo/act", { body: { rootId: id, action } });
+        if (!me) { setErr("The built-in agents act only for the owner. Open this envelope in the browser that sealed it."); break; }
+        const r = await api("/api/demo/act", { body: { rootId: id, action, owner: await signRead(me, "demo", id) } });
         const j = r.json;
         if (!r.ok) { setErr(j.error ?? "That step failed."); break; }
         say(j.narration);
@@ -150,6 +151,7 @@ export function EnvelopeView({ id }: { id: string }) {
         <header>
           <p className="label">Envelope · owner {root.principalName} <span className="normal-case tracking-normal">{fingerprint(root.principal)}</span>{isOwner ? " (you)" : ""}</p>
           <h1 className="display mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-[clamp(2rem,4.4vw,3rem)]">{root.title} <Stamp tone={open ? "green" : "grey"}>{open ? "Open" : "Closed"}</Stamp></h1>
+          <p className="mt-2"><Link className="link text-[.9rem]" href={`/proof/${root.id}`} data-testid="proof-link">Proof graph: trace every dollar back to {isOwner ? "your" : `${root.principalName}'s`} signature →</Link></p>
         </header>
 
         <section className="sheet overflow-hidden p-5 sm:p-6" aria-label="PayPal hold">

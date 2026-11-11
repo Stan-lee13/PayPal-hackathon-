@@ -40,6 +40,8 @@ export const CARD_VERSION = "envelope-card/1" as const;
 /** A merchant charging a card. Signed by the merchant the card is locked to. */
 export const CHARGE_VERSION = "envelope-charge/1" as const;
 export const CARD_CANCEL_VERSION = "envelope-card-cancel/1" as const;
+/** An owner asking to read their own books. A public key names an owner; only a signature proves who is asking. */
+export const READ_VERSION = "envelope-read/1" as const;
 
 export type Caps = {
   currency: string;
@@ -148,6 +150,8 @@ export type ChargeRequest = { v: typeof CHARGE_VERSION; card: string; merchant: 
 export type SignedCharge = { request: ChargeRequest; sig: string };
 export type CardCancelRequest = { v: typeof CARD_CANCEL_VERSION; card: string; nonce: string; at: string };
 export type SignedCardCancel = { request: CardCancelRequest; sig: string; by: string };
+export type ReadRequest = { v: typeof READ_VERSION; what: "treasury" | "demo"; subject: string; nonce: string; at: string };
+export type SignedRead = { request: ReadRequest; sig: string; by: string };
 export type TransferRequest = { v: typeof TRANSFER_VERSION; from: string; kind: "pay" | "withdraw"; amount: number; currency: string; payee: string; purpose: string; memo: string; nonce: string; at: string };
 export type SignedTransfer = { request: TransferRequest; sig: string };
 export type FreezeRequest = { v: typeof FREEZE_VERSION; agent: string; frozen: boolean; nonce: string; at: string };
@@ -355,6 +359,10 @@ export async function signSpend(chain: Envelope, holderKey: KeyPair, p: { amount
 
 /** Requests older or newer than this are refused, which bounds how long a replay cache must be kept. */
 export const SPEND_WINDOW_MS = 5 * 60_000;
+/** No single amount is larger than this (ten million dollars in cents). Keeps every amount inside a 32-bit column. */
+export const MAX_MINOR = 1_000_000_000;
+/** Within the acceptance window. A timestamp that does not parse is never fresh (NaN would pass a plain comparison). */
+const fresh = (at: unknown, now: Date): boolean => { const t = typeof at === "string" ? Date.parse(at) : NaN; return Number.isFinite(t) && Math.abs(now.getTime() - t) <= SPEND_WINDOW_MS; };
 
 type Intent = { v: string; leaf: string; amount: number; currency: string; payee: string; purpose: string; nonce: string; at: string };
 type IntentVerdict = { ok: boolean; violations: Violation[]; chain: ChainVerdict };
@@ -370,8 +378,8 @@ async function verifyIntent(version: string, s: { request: Intent; sig: string; 
   const leaf = s.chain[s.chain.length - 1]!.body;
   if (r.leaf !== leaf.id) add("WRONG_LEAF", "the request names a different envelope than the chain presented");
   if (!(await verify(leaf.holder, version, r, s.sig))) add("NOT_THE_HOLDER", "the request is not signed by the key this envelope was given to");
-  if (Math.abs(now.getTime() - Date.parse(r.at)) > SPEND_WINDOW_MS) add("STALE_REQUEST", "the request is outside the 5-minute acceptance window");
-  if (!Number.isSafeInteger(r.amount) || r.amount <= 0) add("BAD_AMOUNT", "amount must be a positive whole number of minor units");
+  if (!fresh(r.at, now)) add("STALE_REQUEST", "the request is outside the 5-minute acceptance window");
+  if (!Number.isSafeInteger(r.amount) || r.amount <= 0 || r.amount > MAX_MINOR) add("BAD_AMOUNT", "amount must be a positive whole number of minor units");
   const c = chain.caps;
   if (r.currency !== c.currency) add("WRONG_CURRENCY", `this envelope is in ${c.currency}`);
   if (r.amount > c.perPayment) add("OVER_PER_PAYMENT", `${money(r.amount, c.currency)} is over the per-payment cap of ${money(c.perPayment, c.currency)}`);
@@ -415,7 +423,7 @@ export async function signAccept(by: KeyPair, promise: string, p: { work?: strin
 }
 export async function verifyAcceptSignature(a: SignedAccept, now = new Date()): Promise<boolean> {
   const r = a?.request;
-  if (!r || r.v !== ACCEPT_VERSION || typeof r.promise !== "string" || typeof r.work !== "string" || !/^([0-9a-f]{64})?$/.test(r.work) || typeof r.note !== "string" || r.note.length > 200 || (r.decline !== undefined && r.decline !== true) || Math.abs(now.getTime() - Date.parse(r.at)) > SPEND_WINDOW_MS) return false;
+  if (!r || r.v !== ACCEPT_VERSION || typeof r.promise !== "string" || typeof r.work !== "string" || !/^([0-9a-f]{64})?$/.test(r.work) || typeof r.note !== "string" || r.note.length > 200 || (r.decline !== undefined && r.decline !== true) || !fresh(r.at, now)) return false;
   return verify(a.by, ACCEPT_VERSION, r, a.sig);
 }
 export async function signKeep(by: KeyPair, promise: string, action: KeepRequest["action"], now = new Date()): Promise<SignedKeep> {
@@ -423,7 +431,7 @@ export async function signKeep(by: KeyPair, promise: string, action: KeepRequest
   return { request, sig: await sign(by.privateKey, KEEP_VERSION, request), by: by.publicKey };
 }
 export async function verifyKeepSignature(k: SignedKeep, now = new Date()): Promise<boolean> {
-  if (!k?.request || k.request.v !== KEEP_VERSION || (k.request.action !== "pay" && k.request.action !== "release") || typeof k.request.promise !== "string" || Math.abs(now.getTime() - Date.parse(k.request.at)) > SPEND_WINDOW_MS) return false;
+  if (!k?.request || k.request.v !== KEEP_VERSION || (k.request.action !== "pay" && k.request.action !== "release") || typeof k.request.promise !== "string" || !fresh(k.request.at, now)) return false;
   return verify(k.by, KEEP_VERSION, k.request, k.sig);
 }
 
@@ -461,8 +469,8 @@ export async function verifyTransfer(t: SignedTransfer, now = new Date()): Promi
   const v: Violation[] = [];
   if (!r || r.v !== TRANSFER_VERSION || typeof t.sig !== "string" || typeof r.from !== "string" || (r.kind !== "pay" && r.kind !== "withdraw") || typeof r.payee !== "string" || typeof r.purpose !== "string" || typeof r.memo !== "string" || typeof r.nonce !== "string" || r.memo.length > 200) return [{ code: "MALFORMED", at: null, detail: "malformed transfer" }];
   if (!(await verify(r.from, TRANSFER_VERSION, r, t.sig))) v.push({ code: "NOT_THE_HOLDER", at: null, detail: "the transfer is not signed by the key that owns the account" });
-  if (Math.abs(now.getTime() - Date.parse(r.at)) > SPEND_WINDOW_MS) v.push({ code: "STALE_REQUEST", at: null, detail: "the request is outside the 5-minute acceptance window" });
-  if (!Number.isSafeInteger(r.amount) || r.amount <= 0) v.push({ code: "BAD_AMOUNT", at: null, detail: "amount must be a positive whole number of minor units" });
+  if (!fresh(r.at, now)) v.push({ code: "STALE_REQUEST", at: null, detail: "the request is outside the 5-minute acceptance window" });
+  if (!Number.isSafeInteger(r.amount) || r.amount <= 0 || r.amount > MAX_MINOR) v.push({ code: "BAD_AMOUNT", at: null, detail: "amount must be a positive whole number of minor units" });
   if (r.currency !== "USD") v.push({ code: "WRONG_CURRENCY", at: null, detail: "balances are in USD" });
   if (r.kind === "pay" && !isAccountPayee(r.payee) && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(r.payee)) v.push({ code: "MALFORMED", at: null, detail: "the payee must be an account (acct:…) or a PayPal address" });
   return v;
@@ -501,8 +509,8 @@ export async function verifyCharge(c: SignedCharge, now = new Date()): Promise<V
   if (!r || r.v !== CHARGE_VERSION || typeof c.sig !== "string" || typeof r.card !== "string" || typeof r.merchant !== "string" || typeof r.memo !== "string" || r.memo.length > 200 || typeof r.nonce !== "string") return [{ code: "MALFORMED", at: null, detail: "malformed charge" }];
   const v: Violation[] = [];
   if (!(await verify(r.merchant, CHARGE_VERSION, r, c.sig))) v.push({ code: "NOT_THE_MERCHANT", at: null, detail: "the charge is not signed by the key it names" });
-  if (Math.abs(now.getTime() - Date.parse(r.at)) > SPEND_WINDOW_MS) v.push({ code: "STALE_REQUEST", at: null, detail: "the request is outside the 5-minute acceptance window" });
-  if (!Number.isSafeInteger(r.amount) || r.amount <= 0) v.push({ code: "BAD_AMOUNT", at: null, detail: "amount must be a positive whole number of minor units" });
+  if (!fresh(r.at, now)) v.push({ code: "STALE_REQUEST", at: null, detail: "the request is outside the 5-minute acceptance window" });
+  if (!Number.isSafeInteger(r.amount) || r.amount <= 0 || r.amount > MAX_MINOR) v.push({ code: "BAD_AMOUNT", at: null, detail: "amount must be a positive whole number of minor units" });
   if (r.currency !== "USD") v.push({ code: "WRONG_CURRENCY", at: null, detail: "balances are in USD" });
   return v;
 }
@@ -513,8 +521,19 @@ export async function signCardCancel(by: KeyPair, card: string, now = new Date()
 }
 export async function verifyCardCancelSignature(c: SignedCardCancel, now = new Date()): Promise<boolean> {
   const r = c?.request;
-  if (!r || r.v !== CARD_CANCEL_VERSION || typeof r.card !== "string" || Math.abs(now.getTime() - Date.parse(r.at)) > SPEND_WINDOW_MS) return false;
+  if (!r || r.v !== CARD_CANCEL_VERSION || typeof r.card !== "string" || !fresh(r.at, now)) return false;
   return verify(c.by, CARD_CANCEL_VERSION, r, c.sig);
+}
+
+/** Prove, for the next five minutes, that the holder of `by` is the one asking to read `subject`. Grants nothing but the read. */
+export async function signRead(who: KeyPair, what: ReadRequest["what"], subject: string, now = new Date()): Promise<SignedRead> {
+  const request: ReadRequest = { v: READ_VERSION, what, subject, nonce: randomId("n"), at: now.toISOString() };
+  return { request, sig: await sign(who.privateKey, READ_VERSION, request), by: who.publicKey };
+}
+export async function verifyReadSignature(r: SignedRead, what: ReadRequest["what"], subject: string, now = new Date()): Promise<boolean> {
+  const q = r?.request;
+  if (!q || q.v !== READ_VERSION || q.what !== what || q.subject !== subject || typeof r.by !== "string" || !fresh(q.at, now)) return false;
+  return verify(r.by, READ_VERSION, q, r.sig);
 }
 
 export async function signFreeze(owner: KeyPair, agent: string, frozen: boolean, now = new Date()): Promise<SignedFreeze> {
@@ -523,7 +542,7 @@ export async function signFreeze(owner: KeyPair, agent: string, frozen: boolean,
 }
 export async function verifyFreezeSignature(f: SignedFreeze, now = new Date()): Promise<boolean> {
   const r = f?.request;
-  if (!r || r.v !== FREEZE_VERSION || typeof r.agent !== "string" || typeof r.frozen !== "boolean" || Math.abs(now.getTime() - Date.parse(r.at)) > SPEND_WINDOW_MS) return false;
+  if (!r || r.v !== FREEZE_VERSION || typeof r.agent !== "string" || typeof r.frozen !== "boolean" || !fresh(r.at, now)) return false;
   return verify(f.by, FREEZE_VERSION, r, f.sig);
 }
 
@@ -532,7 +551,7 @@ export async function signRevoke(by: KeyPair, block: string, now = new Date()): 
   return { request, sig: await sign(by.privateKey, REVOKE_VERSION, request), by: by.publicKey };
 }
 export async function verifyRevokeSignature(r: SignedRevoke, now = new Date()): Promise<boolean> {
-  if (!r?.request || r.request.v !== REVOKE_VERSION || Math.abs(now.getTime() - Date.parse(r.request.at)) > SPEND_WINDOW_MS) return false;
+  if (!r?.request || r.request.v !== REVOKE_VERSION || !fresh(r.request.at, now)) return false;
   return verify(r.by, REVOKE_VERSION, r.request, r.sig);
 }
 

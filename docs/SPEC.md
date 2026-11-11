@@ -21,6 +21,8 @@ Flat "spending limits" don't compose: an orchestrator with a $500 limit that cal
 
 All structures are JSON. Signatures are Ed25519 over `domain + "\n" + canonical(body)`, where `canonical` is JSON with keys sorted at every level. Hashes are SHA-256 of the canonical JSON. Keys are raw 32-byte public keys, base64url.
 
+A timestamp that does not parse is never within the acceptance window. No single amount may exceed 1,000,000,000 minor units.
+
 Encodings are strict. Keys and signatures are base64url with no padding, and a verifier must reject any other spelling of the same bytes: padding, `+` or `/`, whitespace, or non-zero spare bits in the last character. A lenient decoder would let one signed request be presented as several. A request is identified for replay purposes by the hash of its signed content (which carries a nonce), not by the text of its signature.
 
 ### Block
@@ -279,6 +281,26 @@ A promise without `releaseBy` can only be paid by its maker. An acceptance from 
 `POST /api/accounts`. The gateway accepts an opening only if both signatures verify, so nobody can point another agent's account number at their own PayPal address. A later opening signed by the same agent replaces the earlier one; an older one is ignored. Two keys can never hold the same account number.
 
 When a spend or promise names an `acct:` payee, the gateway resolves it under the root lock and fixes the settlement address on the spend at that moment; a later change to the account does not redirect a payment already admitted. An account number nobody opened is refused with `PAYEE_ACCOUNT_UNKNOWN`. The payout goes to the settlement address, and the receipt records the account, the agent and where PayPal sent the money.
+
+### When PayPal does not finish cleanly
+
+The gateway and PayPal cannot commit together, so each step is safe to repeat and each change of status is conditional on the status it expects.
+
+- **One capture, counted once.** A request may arrive many times at once. Every arrival gets the same capture back from PayPal (one idempotency key). Only the arrival that records the capture id adds it to the envelope's books.
+- **A capture PayPal has not completed.** If PayPal answers a capture with `PENDING`, the gateway records it and pays nobody. When asked again it reads the capture: `COMPLETED` continues to the payout; anything else fails the payment, returns the budget and removes the capture from the books.
+- **A payout that cannot be made or delivered.** The capture is refunded to the owner and the budget returns. If PayPal refuses the refund, the payment becomes `REFUND_DUE`: the capture stays in the books and the budget stays used, and each later look tries the refund again.
+- **A refused payout request is not proof that no payout exists.** Before refunding, the gateway re-reads its own record; if another arrival of the same request has recorded a payout, or PayPal's refusal says the request is a duplicate, it does not refund.
+- **Revoked in between.** A payment that was admitted but not yet captured is checked again before the capture; if any envelope on its path was revoked or the root closed, it fails and nothing is captured.
+- **What is recorded.** A refusal is stored against an envelope only when the request is signed by the key that holds the envelope it presents, and every block of that chain is really signed by the holder above it, back to the root this gateway sealed. A chain that breaks the rules (a child wider than its parent) but is genuinely signed is recorded; a chain with a bad signature, a broken link or another root is refused and forgotten. For an account the signer must be the account's key, and for a card its merchant.
+
+### Reading an owner's books
+
+```json
+{ "request": { "v": "envelope-read/1", "what": "treasury", "subject": "<owner key>", "nonce": "n_…", "at": "…" },
+  "sig": "<signature by `by`>", "by": "<owner key>" }
+```
+
+A treasury, and the list of an owner's envelopes, are returned only for a read signed by that owner within five minutes. `what: "demo"` with an envelope id as the subject is what lets the built-in demo agents act: they move only when the envelope's owner asks.
 
 ### Balances
 

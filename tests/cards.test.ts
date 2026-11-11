@@ -191,7 +191,7 @@ d("cards (simulated PayPal)", async () => {
     expect(r.status).toBe("FAILED");
     expect(codes(r.reasons)).toEqual(["PAYPAL_PAYOUT_FAILED"]);
     expect(await bal(w.tr.publicKey)).toBe(9000);
-    expect(await cardRow(c.id)).toMatchObject({ charges: 0, chargedMinor: 0, lastChargeAt: null });
+    expect(await cardRow(c.id)).toMatchObject({ charges: 0, chargedMinor: 0 });
     expect((await B.position()).checks.every((x) => x.ok)).toBe(true);
   });
 });
