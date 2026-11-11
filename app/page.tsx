@@ -18,6 +18,7 @@ const ACCOUNT = [
   { yours: "ID a shop can check", theirs: "A passport, and a signed answer to “is this agent good for $45 to me, right now?”", paypal: "Live look-up of the hold" },
   { yours: "A salary paid in", theirs: "Other agents pay it by its account number. The money is paid out to its owner, or kept in the account.", paypal: "Partial capture; payout if not kept" },
   { yours: "A balance to spend", theirs: "What it earned and kept. It pays other agents at once on its own signature, or sends money out. Its owner can cap a payment and freeze it.", paypal: "Nothing between agents; Payout on the way out" },
+  { yours: "A debit card", theirs: "A Xenoncard: its signed permission for one merchant to charge its balance, so much a charge, so many times, then it ends by itself. Only that merchant's key can charge it.", paypal: "Payout to the merchant" },
   { yours: "A certified cheque", theirs: "Money set aside for one payee before the work starts. Nothing else can spend it; it is paid or released.", paypal: "The same hold, confirmed live" },
   { yours: "Accounts for your kids", theirs: "It tears off smaller envelopes for the agents it hires. Smaller only: never a bigger one.", paypal: "Nothing. It is one signature." },
   { yours: "A statement", theirs: "A receipt for every payment that names everyone who authorized it, back to a person.", paypal: "Partial capture + Payout ids" },
@@ -26,7 +27,7 @@ const ACCOUNT = [
 
 const LAYERS = [
   { name: "Treasury", who: "for the owner", href: "/treasury", cta: "Open the treasury", body: "One place for everything your agents can touch: what PayPal is holding, what was spent, what is set aside, who spent it. Revoke any agent with a signature.", has: ["Your signature required above an amount", "Books reconciled against PayPal", "Ledger export"] },
-  { name: "Accounts", who: "for each agent", href: "/bank", cta: "Open the books", body: "An agent has a number, a passport, a statement, and an account that can be paid and can keep a balance. Its record can be signed as a reference it carries anywhere.", has: ["Identity drawn from its key", "A balance it spends with its own signature", "A signed, portable record"] },
+  { name: "Accounts", who: "for each agent", href: "/bank", cta: "Open the books", body: "An agent has a number, a passport, a statement, and an account that can be paid and can keep a balance. Its record can be signed as a reference it carries anywhere.", has: ["Identity drawn from its key", "A balance it spends with its own signature", "A card only one merchant can charge", "A signed, portable record"] },
   { name: "Protocol", who: "between agents", href: "/spec", cta: "Read the protocol", body: "Signed messages any agent can verify: prove funds, set money aside, release it when a named agent signs for the work, and a receipt that names everyone who authorized it.", has: ["Proof of funds from the live hold", "Payment released on accepted work", "Receipts anyone can check"] },
 ];
 
@@ -237,7 +238,7 @@ export default function Home() {
             <div>
               <p className="label">What has actually run</p>
               <h2 className="title mt-3 text-[2.2rem]">Every figure on that slip came back from PayPal.</h2>
-              <p className="mt-4 text-ink-2">The whole flow runs against the PayPal sandbox with no login page: a hold, money set aside and then paid from one agent to another, partial captures, payouts, denials, a receipt checked against PayPal&rsquo;s own records, and a void. So does an agent&rsquo;s balance: income kept in its account, a payment to another agent with no PayPal call, a freeze, and a withdrawal PayPal paid out.</p>
+              <p className="mt-4 text-ink-2">The whole flow runs against the PayPal sandbox with no login page: a hold, money set aside and then paid from one agent to another, partial captures, payouts, denials, a receipt checked against PayPal&rsquo;s own records, and a void. So does an agent&rsquo;s balance: income kept in its account, a payment to another agent with no PayPal call, a freeze, and a withdrawal PayPal paid out. And a model subscribed to a service with a card of its own, then cancelled it when told the work was off.</p>
               <p className="mt-3 text-ink-2">Real models have used it too. On the envelope page you can hand the brief to a language model and watch it play the agents; in the last stage it is asked to attack the envelope. Earlier, four Claude agents ran a launch through the command line, and one spent twelve attempts trying to get past a $10 envelope. Nothing has moved outside an envelope yet.</p>
               <p className="mt-3 text-sm text-ink-3">Standing on known ideas: attenuating capability chains come from macaroons, Biscuit, UCAN and L402, and other teams are working on agent identity and delegation too. What we have not found anywhere else is the combination: a chain anyone can verify, budgets debited at every level, one real PayPal hold behind the whole tree, and proof of funds tied to that hold.</p>
               <div className="mt-7 flex flex-wrap gap-4">

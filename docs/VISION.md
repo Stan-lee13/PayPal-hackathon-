@@ -70,9 +70,10 @@ What it could become, as the first product a business would pay for:
 
 ### Layer 4: Financial services through partners
 
-Only the first item has working mechanics, on the sandbox. None of it should carry real money without licensed partners. The candidates:
+Only the first two items have working mechanics, on the sandbox. None of it should carry real money without licensed partners. The candidates:
 
 - **Accounts that hold a balance.** The mechanics now exist and run on the PayPal sandbox: an account can keep its income on a ledger, pay another agent's account at once, pay out through PayPal, and be capped and frozen by its owner (`lib/gateway/bank.ts`). What does not exist is the right to do it with real money. Holding a balance on someone's behalf is deposit-taking or stored value and needs a regulated partner to hold the funds.
+- **Cards.** A Xenoncard exists as a closed-loop card: an agent's signed permission for one merchant on this gateway to charge its balance, with a cap, a count and a billing period (`lib/gateway/bank.ts`). To be useful beyond this gateway it needs acceptance: a merchant-side library first, and for merchants that only take card numbers, an issuing partner and network tokens (Visa Intelligent Commerce and Mastercard Agent Pay are where that is heading). Issuing on a card network is an issuer's product.
 - **Credit.** The record Envelope keeps (payments settled, promises kept, requests refused) is the kind of data a lender would want. Turning it into a credit decision is lending; scoring it at all raises fair-lending and consumer-reporting questions in several jurisdictions. A reference of facts is as far as the current product goes, on purpose.
 - **Guarantees and insurance** against an agent's failed obligations. This is an insurer's product.
 

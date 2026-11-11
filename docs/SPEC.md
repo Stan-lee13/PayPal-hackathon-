@@ -181,6 +181,30 @@ An account opening may carry `"mode": "hold"` and `"perPayment": <minor units>`.
 
 A completed transfer has a receipt signed by the gateway under `envelope-transfer-receipt/1`: the request and its signature, the paying account, where the money went (an account here, or a PayPal address with the payout batch id), and the balance after.
 
+### Card, charge and cancellation
+
+A card is a signed statement by an agent with an account. It is not a credential: it contains nothing secret, and holding a copy of it grants nothing.
+
+```json
+{ "body": { "v": "envelope-card/1", "id": "card_…", "holder": "<agent key>", "label": "Lexica Pro",
+            "merchant": "acct:xxxx-xxxx-xxxx", "perCharge": 900, "maxCharges": 2, "every": 2592000,
+            "notAfter": "…", "at": "…" },
+  "sig": "<signature by `holder`>" }
+```
+
+`merchant` must be an account. `every` is the least number of seconds between two charges. A card allows between 1 and 120 charges and lives at most two years.
+
+```json
+{ "request": { "v": "envelope-charge/1", "card": "card_…", "merchant": "<merchant key>", "amount": 900,
+               "currency": "USD", "memo": "", "nonce": "n_…", "at": "…" },
+  "sig": "<signature by `merchant`>" }
+```
+
+```json
+{ "request": { "v": "envelope-card-cancel/1", "card": "card_…", "nonce": "n_…", "at": "…" },
+  "sig": "…", "by": "<the holder's key, or the key of the owner of the holder's account>" }
+```
+
 ## Rules
 
 ### Splitting (offline)
@@ -278,6 +302,24 @@ Owner. A later account opening can change the label, settlement address, mode an
 
 The books. At any time: the sum of balances equals the sum of ledger rows; that sum equals income minus payouts and withdrawals plus reversals; transfers between accounts sum to zero. `GET /api/bank` reports the three checks.
 
+### Cards
+
+Issuing. The gateway accepts a card if its shape and limits are sane, it is signed by `holder` within 5 minutes of `at`, `holder` has an account, and `merchant` is an existing account other than the holder's. The same signed card presented again returns the stored card and changes nothing. Issuing moves no money.
+
+Charging. The gateway checks, in order:
+
+1. shape; the signature by the key in `request.merchant` under the charge domain; `at` within 5 minutes; a positive whole amount in USD;
+2. the card exists; `request.merchant` is the key of the account the card is locked to (`NOT_THE_MERCHANT` otherwise);
+3. under the holder's account lock (and the merchant's, in key order, when the merchant keeps a balance): the same signed charge has not been seen; the card is not cancelled, not expired, and has charges left; the amount is not over `perCharge`; if there was an earlier charge, `every` seconds have passed since it; then the owner's rules for any movement out of the balance: not frozen, not over the cap per payment, not over the daily limit, not over the balance.
+
+If all hold, the balance is debited, the card's count goes up by one, and the money moves as for a transfer: credited at once to a merchant that keeps a balance, or paid out by PayPal to the settlement address in the merchant's signed account. A payout PayPal refuses puts the money back and gives the charge back to the card.
+
+A card is over when it is cancelled, when its last charge is made, or when `notAfter` passes. None of these can be undone; an agent that wants to go on issues a new card.
+
+Cancelling. The holder's key or the key of the owner of the holder's account. Nobody else, the merchant included.
+
+A daily limit. An account opening may carry `"perDay": <minor units>`. Payments and card charges out of the balance in the last 24 hours, net of refused payouts, may not exceed it. Withdrawals to the owner do not count.
+
 ### Checking an agent before working for it
 
 Anyone holding a hello may ask `POST /api/gateway/standing`. The gateway:
@@ -308,7 +350,9 @@ An authorization is a hold placed by PayPal on the payer's funding source. It is
 
 ## Security notes
 
-Balances: a balance on this gateway is a claim on money that sits in the gateway's own PayPal account after a capture. That is stored value. The reference implementation runs on the PayPal sandbox only; a deployment with real money needs a licensed party to hold the funds. The owner's cap limits one payment, not a day's total, so the freeze is the control that stops a compromised agent.
+Balances: a balance on this gateway is a claim on money that sits in the gateway's own PayPal account after a capture. That is stored value. The reference implementation runs on the PayPal sandbox only; a deployment with real money needs a licensed party to hold the funds. The owner's cap limits one payment, not a day's total, so the freeze is the control that stops a compromised agent. An account can also carry a daily limit.
+
+Cards: a card's security does not depend on keeping anything secret. A charge is authenticated by the merchant's signature, and the money can only go to the account the agent named when it signed the card. What a card does not do is check that the merchant delivered anything; within its terms the merchant can charge.
 
 - **Compromised agent**: can spend at most what is left in its own envelope, only to its listed payees and purposes, until it expires or is revoked.
 - **Stolen envelope**: useless without the holder's private key.
