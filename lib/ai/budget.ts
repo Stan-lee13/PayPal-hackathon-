@@ -1,6 +1,6 @@
 /**
  * Keeps Claude affordable for a public demo, without hiding it:
- *  - a hard DAILY spend cap (MERGEPAY_AI_DAILY_BUDGET_USD, default $2): over it, calls are not made and
+ *  - a hard DAILY spend cap (ENVELOPE_AI_DAILY_BUDGET_USD, default $2): over it, calls are not made and
  *    every caller falls back to its labelled deterministic path;
  *  - per-call usage and cost recorded from the API's own `usage` (priced by the model that served it);
  *  - a response cache, so a repeated demo conversation or extraction costs nothing.
@@ -22,7 +22,7 @@ export const PRICE_PER_MTOK: Record<string, { input: number; output: number; cac
 const UNKNOWN_PRICE = { input: 10, output: 50, cacheRead: 1 }; // unknown models are priced conservatively
 
 export function dailyBudgetUsd(): number {
-  const v = Number(process.env.MERGEPAY_AI_DAILY_BUDGET_USD ?? process.env.KEPT_AI_DAILY_BUDGET_USD ?? "2");
+  const v = Number(process.env.ENVELOPE_AI_DAILY_BUDGET_USD ?? "2");
   return Number.isFinite(v) && v >= 0 ? v : 2;
 }
 

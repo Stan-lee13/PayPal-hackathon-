@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { ZodError } from "zod";
 import { UserFacingError } from "./errors";
-import { currentFreelancer } from "./security/session";
 import { appBaseUrl } from "./base-url";
 
 export function json(data: unknown, status = 200) {
@@ -12,7 +11,7 @@ export function json(data: unknown, status = 200) {
 export function errorResponse(e: unknown) {
   if (e instanceof UserFacingError) return json({ error: e.message }, e.status);
   if (e instanceof ZodError) return json({ error: "Invalid request", issues: e.issues.map((i) => i.path.join(".") + ": " + i.message) }, 400);
-  console.error("[mergepay] unhandled", e);
+  console.error("[envelope] unhandled", e);
   return json({ error: "Something went wrong. It has been logged." }, 500);
 }
 
@@ -25,13 +24,6 @@ export function sameOrigin(req: Request): boolean {
   } catch {
     return false;
   }
-}
-
-export async function requireFreelancer(req: Request): Promise<string> {
-  if (!sameOrigin(req)) throw new UserFacingError("Cross-origin request refused.", 403);
-  const m = await currentFreelancer();
-  if (!m) throw new UserFacingError("Sign in first.", 401);
-  return m;
 }
 
 export function clientIp(req: Request): string {
