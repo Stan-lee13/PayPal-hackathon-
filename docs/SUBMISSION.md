@@ -6,7 +6,7 @@ Everything needed to fill in the Devpost form and check the entry before submitt
 
 1. **Make the GitHub repository public.** Stage One requires a public repository with a visible licence (MIT is in the repo).
 2. **Merge pull request #5 into `main`.** Vercel then builds the production site. With no settings at all it is the try-it copy: the whole gateway runs in the visitor's browser on a PayPal simulator. Put that URL in the Devpost "Try it out" field.
-3. **Upload `docs/demo/envelope-demo.mp4` to YouTube as Public** and paste the link into Devpost. It is 2:51 and already narrated (a synthetic voice; the first card says so). Record your own voice over it if you prefer; the script is `scripts/demo-narration.json`.
+3. **Upload `docs/demo/envelope-demo.mp4` to YouTube as Public** and paste the link into Devpost. It is 2:52 and already narrated (a synthetic voice; the first card says so). Record your own voice over it if you prefer; the script is `scripts/demo-narration.json`.
 4. *Optional, for a hosted copy on the real sandbox:* in Vercel → Settings → Environment Variables add `DATABASE_URL` (any Postgres), `PAYPAL_CLIENT_ID` and `PAYPAL_CLIENT_SECRET` (sandbox app), then redeploy.
 5. *Optional, for a live model on the hosted copy:* add `AI_BASE_URL`, `AI_API_KEY` and `AI_MODEL` for any OpenAI-compatible endpoint. Without them the hosted copy offers the scripted agents and says no model is connected.
 
@@ -129,7 +129,7 @@ Claude Code (Anthropic) wrote the code, tests and documents under the author's d
 
 **With a real model**: see "Live agents" in the README. If you have Claude Code installed, `node scripts/claude-bridge.mjs` needs no API key.
 
-## Video (2:51)
+## Video (2:52)
 
 `docs/demo/envelope-demo.mp4`, recorded by `scripts/record-demo.mjs` against the real PayPal sandbox and assembled by `scripts/assemble_demo.py`. Scenes that wait on the model are sped up and labelled.
 
@@ -137,20 +137,20 @@ Claude Code (Anthropic) wrote the code, tests and documents under the author's d
 |---|---|---|
 | 0:00 | The problem | Title card |
 | 0:07 | The idea | Landing page |
-| 0:18 | Seal | The form, signed in the browser; PayPal places the hold (authorization `26586885XV7370446`) |
+| 0:18 | Seal | The form, signed in the browser; PayPal places the hold (authorization `2U1032364V730082P`) |
 | 0:35 | A real model plays the agents | The model splits $45 and $67, sets $45 aside for translator-agent, pays it on delivery, ignores the planted instruction and pays the designer |
-| 1:17 | Compromised agent (scripted) | New payee, overspend, forged bigger envelope: all denied |
-| 1:30 | Result | $112 captured, $88 still held |
-| 1:37 | An agent that earns | translator-agent's passport: $45 earned, who answers for it |
-| 1:42 | Proof of funds | "Good for $20.00": hold `PARTIALLY_CAPTURED`, $88.00 unused, signature checked in the browser |
-| 1:51 | Receipt | Chain of authority, PayPal capture and payout ids, checks pass |
-| 2:01 | Owner approval | ops-agent asks for $80, over the $75 threshold; the owner signs in the browser; PayPal pays |
-| 2:15 | Treasury | Every agent under the owner's signature; "3 of 3 match PayPal" |
-| 2:23 | Revoke and close | PayPal voids the rest of the hold |
-| 2:33 | Numbers | 107 of 107 attacks refused; the try-it copy runs in the browser |
-| 2:44 | Close | End card |
+| 1:15 | Compromised agent (scripted) | New payee, overspend, forged bigger envelope: all denied |
+| 1:28 | Result | $112 captured, $88 still held |
+| 1:34 | An agent's balance | translator-agent kept the $45. It pays proofreader-agent $12 (no PayPal call), is refused a transfer of everything to a stranger (over its owner's $30 cap), and withdraws $20 to its owner through a PayPal payout |
+| 1:50 | Proof of funds | "Good for $20.00": hold `PARTIALLY_CAPTURED`, $88.00 unused, signature checked in the browser |
+| 1:58 | Receipt | Chain of authority, PayPal capture id, checks pass |
+| 2:06 | Owner approval | ops-agent asks for $80, over the $75 threshold; the owner signs in the browser; PayPal pays |
+| 2:17 | Treasury | Every agent under the owner's signature; "3 of 3 match PayPal" |
+| 2:26 | Revoke and close | PayPal voids the rest of the hold |
+| 2:36 | Numbers | 138 of 138 attacks refused; try it in the browser |
+| 2:45 | Close | End card |
 
-The video shows the model paying what it set aside itself. Payment released by a named agent's acceptance is shown by the "Run the launch" button and in `docs/evidence/sandbox-run.json`, not in the video.
+The owner's freeze is not in the video; it is on the agent's page ("Owner freezes it") and in `docs/evidence/sandbox-run.json`. The video shows the model paying what it set aside itself. Payment released by a named agent's acceptance is shown by the "Run the launch" button and in `docs/evidence/sandbox-run.json`, not in the video.
 
 ## Where this entry stands
 
@@ -158,6 +158,7 @@ We read the code of 36 other entries (see `docs/DISCOVERY.md`). Honest reading:
 
 - **Stronger than this entry in places.** Several rivals are more complete products: hundreds of tests, CI, Disputes API evidence, PayPal partner onboarding, passkey approval, a fine-tuned model. Some have had hosted demos for weeks.
 - **Shared with rivals.** Signed delegation chains (one rival, with AP2 SD-JWTs), agent passports, signed receipts verified in the browser, and one hold with partial captures for a single agent all exist elsewhere.
+- **Balances.** Several rivals have allowance wallets or a ledger of what an agent spent. A pattern search of the same codebases found none where an agent keeps income captured from another agent's PayPal hold as a balance and pays a third agent from it on its own signature. That was a search by pattern, not a full read, so treat it as "not seen", not "does not exist".
 - **Not found in any of the 36.** One PayPal hold behind a whole tree of agents; budgets debited at every ancestor backed by that hold; proof of funds tied to the live hold; money set aside through the delegation tree and released by a named key's signature; a gateway that runs unchanged in the visitor's browser. (The treasury view, signed references and acceptance were built after that reading, so rivals were not checked for those specifically; reputation statements and dashboards certainly exist elsewhere.)
 
 A special award (Best Use of Agentic Commerce, Most Creative, Best Use of PayPal + AI) is a realistic target. A top-three place is possible, not assured.
@@ -166,8 +167,8 @@ A special award (Best Use of Agentic Commerce, Most Creative, Best Use of PayPal
 
 | Criterion | Strengths | Weaknesses a judge may raise |
 |---|---|---|
-| Technological implementation | Real sandbox: authorize, partial capture, payout, void, refund path, reconciliation. Ed25519 chains verified in three places. 44 tests and a 138-attack corpus. Gateway runs on a server or in a browser from the same code. | Custodial gateway; test-card funding; no hold reauthorization; no webhooks; fewer tests than the largest entries. |
+| Technological implementation | Real sandbox: authorize, partial capture, payout, void, refund path, reconciliation. Ed25519 chains verified in three places. 44 tests and a 138-attack corpus. Gateway runs on a server or in a browser from the same code. | Balances are stored value and need a licence in real life; a replay bug was found and fixed on the last day and there has been no outside security review; custodial gateway; test-card funding; no hold reauthorization; no webhooks; fewer tests than the largest entries. |
 | Design | A distinctive stationery system applied to every page; passports and receipts that carry real data. | Dense pages; phone layout only spot-checked. |
 | Potential impact | Addresses multi-agent delegation, payee trust and agent-to-agent payment with rails that exist today. | Needs PayPal platform products and compliance work before real money. |
 | Innovation | The combination listed above was not found in 36 rival codebases or in the prior art we read. | Each ingredient has prior art; the entry says so. |
-| Presentation | Narrated 2:51 video on the real sandbox with a real model; a hosted copy that needs no setup; evidence files with PayPal ids. | Synthetic narration; the hosted copy is a simulator unless credentials are added. |
+| Presentation | Narrated 2:52 video on the real sandbox with a real model; a hosted copy that needs no setup; evidence files with PayPal ids. | Synthetic narration; the hosted copy is a simulator unless credentials are added. |
