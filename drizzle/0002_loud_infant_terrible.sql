@@ -1,0 +1,1 @@
+ALTER TABLE "spends" ADD COLUMN "delivery" jsonb;

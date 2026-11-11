@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 import { fingerprint, PROMISE_VERSION, verifyChain, verifyDetached, verifyPromise, verifySpend, type Envelope } from "@/lib/envelope/core";
 import { Figure, Stamp, usd } from "@/components/stationery";
 
-type ReceiptT = { v: string; spend: string; request: { amount: number; currency: string; payee: string; purpose: string; memo: string; at: string; leaf: string; nonce: string; v: string }; requestSig: string; paidTo?: { account: string; agent: string; agentLabel: string; settledTo: string }; chain: Array<{ id: string; hash: string; holder: string; holderLabel: string }>; principal: string; paypal: { mode: string; authorizationId: string; captureId: string; payoutBatchId: string; payoutItemId: string | null }; issuedAt: string; gateway: string; sig: string };
+type ReceiptT = { v: string; spend: string; request: { amount: number; currency: string; payee: string; purpose: string; memo: string; at: string; leaf: string; nonce: string; v: string }; requestSig: string; releasedBy?: { key: string; work: string; note: string; at: string }; paidTo?: { account: string; agent: string; agentLabel: string; settledTo: string }; chain: Array<{ id: string; hash: string; holder: string; holderLabel: string }>; principal: string; paypal: { mode: string; authorizationId: string; captureId: string; payoutBatchId: string; payoutItemId: string | null }; issuedAt: string; gateway: string; sig: string };
 type Data = { ok: boolean; checks: Array<{ name: string; ok: boolean; detail?: string }>; receipt: ReceiptT; chain: Envelope; spend: { id: string; status: string; payoutStatus: string | null; payoutTransactionId: string | null; agentNote: string | null } };
 
 /** A barcode drawn from the spend id: decoration, but the same id always draws the same bars. */
@@ -64,7 +64,7 @@ export function ReceiptView({ id }: { id: string }) {
           <p className="text-center text-[.68rem] tracking-[.34em]">ENVELOPE · RECEIPT</p>
           <h1 className="mt-5 text-center font-sans"><span className="sr-only">Receipt: </span><Figure minor={r.request.amount} className="text-[3.4rem]" /></h1>
           <p className="mt-2 text-center">to {r.paidTo ? <><Link href={`/a/${r.paidTo.agent}`} className="link !text-ink"><b>{r.paidTo.agentLabel}</b></Link> <span className="text-ink-2">account {r.paidTo.account}</span></> : <b className="break-all">{r.request.payee}</b>}</p>
-          {r.request.v === PROMISE_VERSION && <p className="text-center text-ink-2">set aside first, paid when the work was done</p>}
+          {r.request.v === PROMISE_VERSION && <p className="text-center text-ink-2">{r.releasedBy ? "set aside first, released when the work was accepted" : "set aside first, paid when the work was done"}</p>}
           <p className="text-center text-ink-2">{r.request.purpose}{r.request.memo ? ` · ${r.request.memo}` : ""}</p>
           <p className="text-center text-ink-2">{new Date(r.request.at).toISOString().replace("T", " ").slice(0, 19)} UTC</p>
           <Stamp tone="green" size="lg" land className="absolute right-4 top-[5.2rem]">Paid</Stamp>
@@ -80,6 +80,18 @@ export function ReceiptView({ id }: { id: string }) {
             ))}
             <li className="is-end"><p><b>{r.paidTo ? r.paidTo.agentLabel : r.request.payee}</b> received {usd(r.request.amount)}</p>{r.paidTo && <p className="text-ink-2">an agent with its own account ({r.paidTo.account}); PayPal paid its owner at {r.paidTo.settledTo}</p>}{d.spend.agentNote && <p className="text-ink-2">Agent's stated reason: “{d.spend.agentNote}”</p>}</li>
           </ol>
+
+          {r.releasedBy && (
+            <>
+              <h2 className="mt-3 border-t border-dashed border-ink pt-4 text-[.68rem] tracking-[.2em]">RELEASED ON ACCEPTED WORK</h2>
+              <dl className="mt-2 space-y-1">
+                <div className="leader"><dt className="text-ink-2">Accepted by</dt><i /><dd>{d.chain.find((b) => b.body.holder === r.releasedBy!.key)?.body.holderLabel ?? "named key"} · {fingerprint(r.releasedBy.key)}</dd></div>
+                {r.releasedBy.work && <div className="leader"><dt className="text-ink-2">Work fingerprint</dt><i /><dd>{r.releasedBy.work.slice(0, 20)}…</dd></div>}
+                <div className="leader"><dt className="text-ink-2">Signed at</dt><i /><dd>{new Date(r.releasedBy.at).toISOString().replace("T", " ").slice(0, 19)} UTC</dd></div>
+              </dl>
+              {r.releasedBy.note && <p className="mt-1.5 text-ink-2">“{r.releasedBy.note}”</p>}
+            </>
+          )}
 
           <h2 className="mt-3 border-t border-dashed border-ink pt-4 text-[.68rem] tracking-[.2em]">PAYPAL</h2>
           <dl className="mt-2 space-y-1">

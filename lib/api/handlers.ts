@@ -76,6 +76,27 @@ export const handlers: Record<string, Handler> = {
     return { body: { ...p, mode: paypalMode(), demo: await isDemoAgent(key) } };
   },
 
+  /** An agent's record, signed by the gateway so the agent can show it to anyone. */
+  "GET /api/agents/:key/reference": async ({ params }) => {
+    if (!KEY.test(params.key!)) return { status: 400, body: { error: "Not an agent key." } };
+    const r = await G.reference(params.key!);
+    return r ? { body: { reference: r } } : { status: 404, body: { error: "No agent with that key has been seen by this gateway." } };
+  },
+
+  /** One owner's treasury: every envelope sealed with that key, the agents under them, and where the money went. */
+  "GET /api/treasury/:principal": async ({ params }) => {
+    if (!KEY.test(params.principal!)) return { status: 400, body: { error: "Not an owner key." } };
+    const t = await G.treasury(params.principal!);
+    return t ? { body: t } : { status: 404, body: { error: "No envelope has been sealed with that key." } };
+  },
+
+  /** Check that owner's recent payments against PayPal's own records. */
+  "POST /api/treasury/:principal/reconcile": async ({ params }) => {
+    if (!KEY.test(params.principal!)) return { status: 400, body: { error: "Not an owner key." } };
+    const r = await G.reconcileTreasury(params.principal!);
+    return r ? { body: r } : { status: 404, body: { error: "No envelope has been sealed with that key." } };
+  },
+
   /** Open an account that can receive: signed by the agent's key and by its owner's key. */
   "POST /api/accounts": async ({ body }) => {
     const { signed } = z.object({ signed: z.object({ body: z.any(), agentSig: z.string(), ownerSig: z.string() }) }).parse(body);
@@ -102,6 +123,13 @@ export const handlers: Record<string, Handler> = {
     const b = z.object({ signed: z.object({ request: z.any(), sig: z.string(), by: z.string() }), note: z.string().max(500).optional() }).parse(body);
     const r = await G.keep(b.signed as never, b.note);
     return { status: spendStatus(r.status === "LAPSED" && (b.signed.request as { action?: string })?.action === "release" ? "OK" : r.status), body: spendOut(r) };
+  },
+
+  /** The key a promise named signs that the work is delivered and accepted; that signature pays it. */
+  "POST /api/gateway/accept": async ({ body }) => {
+    const b = z.object({ signed: z.object({ request: z.any(), sig: z.string(), by: z.string() }) }).parse(body);
+    const r = await G.accept(b.signed as never);
+    return { status: spendStatus(r.status), body: spendOut(r) };
   },
 
   /** "Is this agent good for the money?" Read-only; moves no money. */

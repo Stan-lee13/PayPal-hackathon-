@@ -27,6 +27,8 @@ export const HELLO_VERSION = "envelope-hello/1" as const;
 export const PROMISE_VERSION = "envelope-promise/1" as const;
 /** The holder's later decision on its own promise: pay it or release it. */
 export const KEEP_VERSION = "envelope-keep/1" as const;
+/** A statement from the key a promise named: "the work is delivered and accepted; release the money". */
+export const ACCEPT_VERSION = "envelope-accept/1" as const;
 /** An agent's account for RECEIVING money: where payments to its account number are settled. */
 export const ACCOUNT_VERSION = "envelope-account/1" as const;
 
@@ -83,10 +85,20 @@ export type HelloRequest = Omit<SpendRequest, "v" | "memo"> & { v: typeof HELLO_
 export type SignedHello = { request: HelloRequest; sig: string; chain: Envelope };
 
 /** "Set this much aside for this payee until `ttl` seconds from now." Reserves at every level like a spend; moves no money. */
-export type PromiseRequest = Omit<SpendRequest, "v"> & { v: typeof PROMISE_VERSION; ttl: number };
+export type PromiseRequest = Omit<SpendRequest, "v"> & {
+  v: typeof PROMISE_VERSION; ttl: number;
+  /**
+   * Optional: a public key whose signed acceptance pays this promise without asking its maker again.
+   * Name the payee for "paid on delivery", or a third agent that checks the work for "paid on verified work".
+   */
+  releaseBy?: string;
+};
 export type SignedPromise = { request: PromiseRequest; sig: string; chain: Envelope };
 export type KeepRequest = { v: typeof KEEP_VERSION; promise: string; action: "pay" | "release"; nonce: string; at: string };
 export type SignedKeep = { request: KeepRequest; sig: string; by: string };
+/** `work` is a SHA-256 fingerprint of what was delivered (or empty); it ends up on the receipt. */
+export type AcceptRequest = { v: typeof ACCEPT_VERSION; promise: string; work: string; note: string; nonce: string; at: string };
+export type SignedAccept = { request: AcceptRequest; sig: string; by: string };
 
 /**
  * Opening an account that can receive. Signed twice: by the agent's own key (so nobody can point
@@ -321,16 +333,27 @@ export const verifyHello = (s: SignedHello, now = new Date()): Promise<IntentVer
 
 /** Longest a promise may hold money aside. */
 export const PROMISE_MAX_TTL_S = 3600;
-export async function signPromise(chain: Envelope, holderKey: KeyPair, p: { amount: number; payee: string; purpose: string; memo?: string; ttl?: number }, now = new Date()): Promise<SignedPromise> {
+export async function signPromise(chain: Envelope, holderKey: KeyPair, p: { amount: number; payee: string; purpose: string; memo?: string; ttl?: number; releaseBy?: string }, now = new Date()): Promise<SignedPromise> {
   const leaf = chain[chain.length - 1]!.body;
-  const request: PromiseRequest = { v: PROMISE_VERSION, leaf: leaf.id, amount: p.amount, currency: leaf.caps.currency, payee: p.payee.trim().toLowerCase(), purpose: p.purpose.trim().toLowerCase(), memo: (p.memo ?? "").slice(0, 200), ttl: p.ttl ?? 900, nonce: randomId("n"), at: now.toISOString() };
+  const request: PromiseRequest = { v: PROMISE_VERSION, leaf: leaf.id, amount: p.amount, currency: leaf.caps.currency, payee: p.payee.trim().toLowerCase(), purpose: p.purpose.trim().toLowerCase(), memo: (p.memo ?? "").slice(0, 200), ttl: p.ttl ?? 900, ...(p.releaseBy ? { releaseBy: p.releaseBy } : {}), nonce: randomId("n"), at: now.toISOString() };
   return { request, sig: await sign(holderKey.privateKey, PROMISE_VERSION, request), chain };
 }
 export async function verifyPromise(s: SignedPromise, now = new Date()): Promise<IntentVerdict> {
   const v = await verifyIntent(PROMISE_VERSION, s, now);
   const ttl = s?.request?.ttl;
   if (!Number.isSafeInteger(ttl) || ttl < 30 || ttl > PROMISE_MAX_TTL_S) { v.violations.push({ code: "MALFORMED", at: s?.request?.leaf ?? null, detail: `a promise lasts between 30 seconds and ${PROMISE_MAX_TTL_S / 60} minutes` }); v.ok = false; }
+  const rb = s?.request?.releaseBy;
+  if (rb !== undefined && (typeof rb !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(rb))) { v.violations.push({ code: "MALFORMED", at: s?.request?.leaf ?? null, detail: "releaseBy must be a public key" }); v.ok = false; }
   return v;
+}
+export async function signAccept(by: KeyPair, promise: string, p: { work?: string; note?: string } = {}, now = new Date()): Promise<SignedAccept> {
+  const request: AcceptRequest = { v: ACCEPT_VERSION, promise, work: (p.work ?? "").slice(0, 64), note: (p.note ?? "").slice(0, 200), nonce: randomId("n"), at: now.toISOString() };
+  return { request, sig: await sign(by.privateKey, ACCEPT_VERSION, request), by: by.publicKey };
+}
+export async function verifyAcceptSignature(a: SignedAccept, now = new Date()): Promise<boolean> {
+  const r = a?.request;
+  if (!r || r.v !== ACCEPT_VERSION || typeof r.promise !== "string" || typeof r.work !== "string" || !/^([0-9a-f]{64})?$/.test(r.work) || typeof r.note !== "string" || r.note.length > 200 || Math.abs(now.getTime() - Date.parse(r.at)) > SPEND_WINDOW_MS) return false;
+  return verify(a.by, ACCEPT_VERSION, r, a.sig);
 }
 export async function signKeep(by: KeyPair, promise: string, action: KeepRequest["action"], now = new Date()): Promise<SignedKeep> {
   const request: KeepRequest = { v: KEEP_VERSION, promise, action, nonce: randomId("n"), at: now.toISOString() };

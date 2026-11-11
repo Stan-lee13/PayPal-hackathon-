@@ -65,6 +65,8 @@ export type Receipt = {
   requestSig: string;
   /** Present when the payee is an agent's account: whose account it is and where PayPal sent the money. */
   paidTo?: { account: string; agent: string; agentLabel: string; settledTo: string };
+  /** Present when the money was released by the key the promise named: who signed for the work, and its fingerprint. */
+  releasedBy?: { key: string; work: string; note: string; at: string };
   /** The authority chain: block ids and hashes, root first. */
   chain: Array<{ id: string; hash: string; holder: string; holderLabel: string }>;
   principal: string;
@@ -105,6 +107,8 @@ export const spends = pgTable("spends", {
   /** Set for promises: money set aside for the payee until this time. */
   promiseExpiresAt: ts("promise_expires_at"),
   promiseNote: jsonb("promise_note").$type<PromiseNote>(),
+  /** The signed acceptance that released a promise, when it was released by the key it named. */
+  delivery: jsonb("delivery").$type<{ by: string; work: string; note: string; at: string; sig: string }>(),
   createdAt: ts("created_at").notNull().defaultNow(),
   settledAt: ts("settled_at"),
 }, (t) => [index("spends_root").on(t.rootId, t.createdAt), index("spends_payee_agent").on(t.payeeAgent, t.createdAt)]);
@@ -118,6 +122,8 @@ export type PromiseNote = {
   root: string;
   amount: number; currency: string; payee: string; purpose: string;
   expiresAt: string;
+  /** Set when the promise names a key whose signed acceptance pays it. */
+  releaseBy?: string;
   paypal: { mode: string; authorizationId: string; status: string };
   issuedAt: string; gateway: string; sig: string;
 };

@@ -15,6 +15,13 @@
       "when": 1794395409164,
       "tag": "0001_clumsy_gamora",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794402817905,
+      "tag": "0002_loud_infant_terrible",
+      "breakpoints": true
     }
   ]
 }

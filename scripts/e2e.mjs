@@ -5,8 +5,8 @@
  *
  *   BASE=http://localhost:3000 node scripts/e2e.mjs            # optional: OUT=<dir> for screenshots
  *
- * Covers: seal with a key held in the browser, agents split, money set aside and paid agent to
- * agent, a direct payment, the earning agent's passport, a receipt checked against PayPal and in
+ * Covers: seal with a key held in the browser, agents split, money set aside and released when a
+ * named agent signs for the delivered work, a direct payment, the earning agent's passport, a receipt checked against PayPal and in
  * the browser, proof of funds, three attacks denied, close, and a second tab seeing the same data.
  */
 import { createRequire } from "node:module";
@@ -74,6 +74,22 @@ try {
   await page.getByText(/You closed the envelope\. PayPal released/).waitFor(T);
   await page.getByText("Closed", { exact: true }).first().waitFor(T);
   console.log("closed");
+  // the owner's treasury: totals, agents, and the books checked against PayPal
+  await page.goto(`${BASE}/treasury`);
+  await page.getByTestId("totals").waitFor(T);
+  await page.getByTestId("agents").getByText("creative-agent").first().waitFor(T);
+  await page.getByRole("button", { name: "Reconcile with PayPal" }).click();
+  await page.getByTestId("books").getByText(/\d+ of \d+ match PayPal/).waitFor(T);
+  const books = await page.getByTestId("books").getByText(/\d+ of \d+ match PayPal/).innerText();
+  if (OUT) await page.screenshot({ path: `${OUT}/local-6-treasury.png`, fullPage: true }).catch(() => {});
+  const m = books.match(/(\d+) of (\d+)/i);
+  if (!m || m[1] !== m[2]) throw new Error(`Treasury books do not match PayPal: ${books}`);
+  console.log("treasury:", books.toLowerCase());
+  // a signed, portable record
+  await page.getByTestId("agents").getByRole("link", { name: "localization-agent" }).first().click();
+  await page.getByRole("button", { name: "Get a signed reference" }).click();
+  await page.getByTestId("reference").getByText("Signature checked in your browser.").waitFor(T);
+  console.log("reference signed and verified");
   const p2 = await ctx.newPage();
   await p2.goto(`${BASE}/console`);
   await p2.getByText("Store launch budget").first().waitFor(T);

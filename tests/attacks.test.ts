@@ -12,7 +12,7 @@ d("attack corpus (simulated PayPal)", () => {
     const rows = await runCorpus(await corpusDeps());
     const failed = rows.filter((r) => !r.refused || r.moneyMoved);
     expect(failed, JSON.stringify(failed, null, 2)).toEqual([]);
-    expect(rows.length).toBeGreaterThanOrEqual(85);
+    expect(rows.length).toBeGreaterThanOrEqual(98);
     expect(new Set(rows.map((r) => r.category)).size).toBe(8);
   }, 120_000);
 });

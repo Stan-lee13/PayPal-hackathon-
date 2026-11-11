@@ -9,7 +9,7 @@ import { Mission } from "./mission";
 import { Figure, Flap, Meter, Postmark, Sigil, SpendStamp, Stamp, usd } from "@/components/stationery";
 
 type BlockT = { id: string; parentId: string | null; depth: number; holder: string; holderLabel: string; caps: Caps; spentMinor: number; reservedMinor: number; revokedAt: string | null };
-type SpendT = { id: string; leafLabel: string; amountMinor: number; payee: string; purpose: string; memo: string; agentNote: string | null; status: string; reasons: Array<{ code: string; detail: string }>; captureId: string | null; payoutBatchId: string | null; payoutStatus: string | null; createdAt: string; hasReceipt: boolean; promiseExpiresAt: string | null };
+type SpendT = { id: string; leafLabel: string; amountMinor: number; payee: string; purpose: string; memo: string; agentNote: string | null; status: string; reasons: Array<{ code: string; detail: string }>; captureId: string | null; payoutBatchId: string | null; payoutStatus: string | null; createdAt: string; hasReceipt: boolean; promiseExpiresAt: string | null; delivery: { by: string; work: string; note: string } | null; signed?: never };
 type Data = {
   mode: string; demoAgents: boolean;
   root: { id: string; principal: string; principalName: string; title: string; limitMinor: number; capturedMinor: number; releasedMinor: number | null; status: string; authorizationId: string | null; paypalOrderId: string | null; authorizationExpiresAt: string | null; closeReason: string | null; createdAt: string };
@@ -20,7 +20,7 @@ type Data = {
 };
 
 const SPEND_LABEL: Record<string, string> = { PAID: "Paid", DENIED: "Denied", PAYOUT_PENDING: "Paid · PayPal processing", UNCLAIMED: "Paid · payee hasn't claimed", RESERVED: "In flight", CAPTURED: "In flight", FAILED: "Failed · refunded", PROMISED: "Set aside", LAPSED: "Released" };
-const RUN = ["split-localization", "split-creative", "promise-translator", "keep-translator", "pay-designer"] as const;
+const RUN = ["split-localization", "split-creative", "promise-translator", "accept-translator", "pay-designer"] as const;
 const ATTACK = ["attack-payee", "attack-overspend", "attack-forge"] as const;
 const hhmm = (iso: string) => new Date(iso).toISOString().slice(11, 16);
 /** "11 Nov 14:17 UTC" with non-breaking spaces, so a date never wraps in the middle. */
@@ -195,6 +195,7 @@ export function EnvelopeView({ id }: { id: string }) {
                     <Figure minor={s.amountMinor} className={`shrink-0 text-[1.35rem] ${s.status === "DENIED" ? "text-ink-3 line-through decoration-red decoration-2" : ""}`} />
                   </div>
                   <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1"><SpendStamp status={s.status} land /><span className="text-xs text-ink-2">{s.purpose}{s.memo ? ` · ${s.memo}` : ""}{s.status === "PROMISED" && s.promiseExpiresAt ? ` · held for this payee until ${hhmm(s.promiseExpiresAt)} UTC` : ""}</span></p>
+                  {s.delivery && <p className="mono mt-2 text-[.7rem] leading-snug text-green">released by {blocks.find((b) => b.holder === s.delivery!.by)?.holderLabel ?? fingerprint(s.delivery.by)}&rsquo;s signature{s.delivery.work ? ` · work ${s.delivery.work.slice(0, 12)}…` : ""}</p>}
                   {s.agentNote && <p className="mt-2 font-serif text-[.9rem] italic leading-snug text-ink-2">Agent: “{s.agentNote}”</p>}
                   {s.reasons.length > 0 && <ul className="mono mt-2 space-y-0.5 text-[.72rem] leading-snug text-red">{s.reasons.map((r, i) => <li key={i}><b>{r.code}</b> · {r.detail}</li>)}</ul>}
                   {s.captureId && <p className="mono mt-2 text-[.68rem] text-ink-2">capture {s.captureId} · payout {s.payoutBatchId}{s.payoutStatus ? ` (${s.payoutStatus})` : ""}</p>}

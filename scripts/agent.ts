@@ -115,7 +115,9 @@ switch (cmd) {
   case "promise": {
     // Set money aside for a payee before work starts. Prints a note the payee can verify.
     const me = await key(need("as"));
-    const signed = await E.signPromise(envelope(args.as!), me, { amount: cents(need("amount")), payee: need("payee"), purpose: need("purpose"), memo: args.memo, ttl: args.minutes ? Math.round(Number(args.minutes) * 60) : 900 });
+    const signed = await E.signPromise(envelope(args.as!), me, { amount: cents(need("amount")), payee: need("payee"), purpose: need("purpose"), memo: args.memo, ttl: args.minutes ? Math.round(Number(args.minutes) * 60) : 900,
+      // --release-by <public key | local key name>: that key's signed acceptance pays the promise
+      releaseBy: args["release-by"] ? (/^[A-Za-z0-9_-]{43}$/.test(args["release-by"]) ? args["release-by"] : (await key(args["release-by"])).publicKey) : undefined });
     const r = await post("/api/gateway/promise", { signed, note: args.note });
     if (r.json.status !== "PROMISED") {
       console.log(`${r.json.status ?? "ERROR"}. Nothing was set aside.${r.json.error ? " " + r.json.error : ""}`);
@@ -142,6 +144,30 @@ switch (cmd) {
     console.log(`${r.json.status}: the promise was paid${r.json.duplicate ? " (already done; not paid twice)" : ""}`);
     if (r.json.paypal) console.log(`  PayPal capture ${r.json.paypal.captureId}, payout ${r.json.paypal.payoutBatchId} (${r.json.paypal.payoutStatus ?? "pending"})`);
     console.log(`  Receipt: ${GATEWAY}/r/${r.json.spendId}`);
+    break;
+  }
+  case "accept": {
+    // Run by the key a promise named with --release-by: "the work is delivered and accepted". Pays the promise.
+    const me = await key(need("as"));
+    const work = args["work-file"] ? await E.sha256(readFileSync(args["work-file"], "utf8")) : args.work ?? "";
+    const r = await post("/api/gateway/accept", { signed: await E.signAccept(me, positional[0] ?? need("promise"), { work, note: args.note }) });
+    if (!r.json.status) { console.error(`Gateway: ${r.json.error ?? r.status}`); process.exit(1); }
+    if (["LAPSED", "DENIED", "FAILED"].includes(r.json.status)) { console.log(`${r.json.status}. Nothing was paid.`); for (const x of r.json.reasons ?? []) console.log(`  ${x.code}: ${x.meaning} (${x.detail})`); process.exit(3); }
+    console.log(`${r.json.status}: your acceptance released the money${r.json.duplicate ? " (already done; not paid twice)" : ""}${work ? `. Work fingerprint ${work.slice(0, 16)}… is on the receipt` : ""}`);
+    if (r.json.paypal) console.log(`  PayPal capture ${r.json.paypal.captureId}, payout ${r.json.paypal.payoutBatchId} (${r.json.paypal.payoutStatus ?? "pending"})`);
+    console.log(`  Receipt: ${GATEWAY}/r/${r.json.spendId}`);
+    break;
+  }
+  case "reference": {
+    // An agent's record, signed by the gateway. Prints a token the agent can hand to anyone.
+    const who = positional[0] ?? need("agent");
+    const pk = /^[A-Za-z0-9_-]{43}$/.test(who) ? who : (await key(who)).publicKey;
+    const r = await fetch(`${GATEWAY}/api/agents/${pk}/reference`).then(async (x) => ({ status: x.status, json: await x.json() as Record<string, any> })); // eslint-disable-line @typescript-eslint/no-explicit-any
+    if (r.status !== 200) { console.error(r.json.error ?? r.status); process.exit(1); }
+    const f = r.json.reference.facts;
+    console.log(`${r.json.reference.label} · account ${r.json.reference.account} · known since ${r.json.reference.knownSince}`);
+    console.log(`  ${f.paymentsSettled} payment(s) settled (${usd(f.paidMinor)}), promises kept ${f.promisesKept} of ${f.promisesKept + f.promisesLapsed}, ${f.requestsRefused} request(s) refused, paid ${f.timesPaid} time(s) (${usd(f.earnedMinor)})`);
+    console.log(E.b64u(new TextEncoder().encode(JSON.stringify(r.json.reference))));
     break;
   }
   case "verify-promise": {
@@ -217,5 +243,5 @@ switch (cmd) {
     break;
   }
   default:
-    console.log("Commands: keygen, seal, split, pay, promise, keep, release, verify-promise, open-account, show, revoke, close, hello, check, whois. See the header of scripts/agent.ts.");
+    console.log("Commands: keygen, seal, split, pay, promise, keep, release, accept, verify-promise, reference, open-account, show, revoke, close, hello, check, whois. See the header of scripts/agent.ts.");
 }

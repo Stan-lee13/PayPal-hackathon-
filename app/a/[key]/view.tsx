@@ -28,6 +28,13 @@ export function AgentView({ agentKey }: { agentKey: string }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [answer, setAnswer] = useState<{ s: Standing; signed: boolean } | null>(null);
+  const [ref, setRef] = useState<{ token: string; signed: boolean; asOf: string; gateway: string } | null>(null);
+  async function getReference() {
+    const r = await api(`/api/agents/${agentKey}/reference`);
+    if (!r.ok) return;
+    const { sig, ...body } = r.json.reference;
+    setRef({ token: btoa(unescape(encodeURIComponent(JSON.stringify(r.json.reference)))), signed: await verifyDetached(r.json.reference.gateway, "envelope-reference/1", body, sig), asOf: r.json.reference.asOf, gateway: r.json.reference.gateway });
+  }
   const seeded = useRef(false);
 
   const load = useCallback(async () => {
@@ -98,6 +105,16 @@ export function AgentView({ agentKey }: { agentKey: string }) {
             <div><Figure minor={p.record.setAsideForItMinor} className="text-[1.9rem] text-blue" /><p className="label mt-1.5">Set aside for it</p></div>
           </>}
           {(p.record.promisesKept > 0 || p.record.promisesLapsed > 0) && <div><p className="figure text-[1.9rem]">{p.record.promisesKept}<span className="text-ink-3">/{p.record.promisesKept + p.record.promisesLapsed}</span></p><p className="label mt-1.5">Promises kept</p></div>}
+        </section>
+
+        <section data-testid="reference" className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
+          <div className="min-w-0 flex-1 basis-72">
+            <h2 className="label">A record it can take anywhere</h2>
+            <p className="mt-1.5 text-sm text-ink-2">The figures above, signed by the gateway: payments settled, promises kept, requests refused, money earned. Facts only, no score. Anyone can check the signature without asking this site.</p>
+            {ref && <p className="mt-2 text-xs text-ink-2">Signed {new Date(ref.asOf).toISOString().slice(11, 19)} UTC by the gateway <span className="mono">{fingerprint(ref.gateway)}</span>. <b className={ref.signed ? "text-green" : "text-red"}>{ref.signed ? "Signature checked in your browser." : "Signature INVALID."}</b></p>}
+            {ref && <pre className="code mt-2 max-h-24 overflow-auto p-2.5 text-[.62rem] leading-snug break-all whitespace-pre-wrap">{ref.token}</pre>}
+          </div>
+          <button type="button" className="btn btn-sm" onClick={getReference}>{ref ? "Sign a fresh one" : "Get a signed reference"}</button>
         </section>
 
         {p.receives && (

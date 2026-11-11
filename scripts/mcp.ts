@@ -141,6 +141,7 @@ const TOOLS: Array<{ name: string; description: string; inputSchema: object; run
         payee: { type: "string", description: "The payee: a PayPal email, or an agent's account written as acct:xxxx-xxxx-xxxx" },
         purpose: { type: "string", description: "One of the envelope's allowed purposes" },
         minutes: { type: "number", description: "How long to hold it (1 to 60 minutes, default 15)" },
+        release_by: { type: "string", description: "Optional public key of an agent whose signed acceptance of the work pays this promise without asking you again (the payee for paid-on-delivery, or a checker you both accept)" },
         memo: { type: "string", description: "What the payment will be for" },
         note: { type: "string", description: "Why you are setting this aside (shown to the owner; never used to decide)" },
       },
@@ -149,7 +150,7 @@ const TOOLS: Array<{ name: string; description: string; inputSchema: object; run
     },
     async run(a) {
       const minutes = typeof a.minutes === "number" && a.minutes >= 1 && a.minutes <= 60 ? a.minutes : 15;
-      const signed = await E.signPromise(envelope(), await key(AGENT, false), { amount: cents(a.amount, "amount"), payee: text(a.payee, "payee", 254), purpose: text(a.purpose, "purpose", 60), memo: typeof a.memo === "string" ? a.memo.slice(0, 200) : undefined, ttl: Math.round(minutes * 60) });
+      const signed = await E.signPromise(envelope(), await key(AGENT, false), { amount: cents(a.amount, "amount"), payee: text(a.payee, "payee", 254), purpose: text(a.purpose, "purpose", 60), memo: typeof a.memo === "string" ? a.memo.slice(0, 200) : undefined, ttl: Math.round(minutes * 60), releaseBy: typeof a.release_by === "string" && /^[A-Za-z0-9_-]{43}$/.test(a.release_by) ? a.release_by : undefined });
       const r = await post("/api/gateway/promise", { signed, note: typeof a.note === "string" ? a.note.slice(0, 500) : undefined });
       if (r.json.status !== "PROMISED") {
         if (!r.json.status) throw new ToolError(`Gateway error: ${r.json.error ?? r.status}`);
@@ -178,6 +179,30 @@ const TOOLS: Array<{ name: string; description: string; inputSchema: object; run
       if (action === "release") return r.json.status === "LAPSED" ? "Released. The money is back in the envelope." : `Not released: the promise is ${r.json.status}.`;
       if (["LAPSED", "DENIED", "FAILED"].includes(r.json.status)) return [`${r.json.status}. Nothing was paid.`, ...(r.json.reasons ?? []).map((x: { code: string; meaning: string; detail: string }) => `  ${x.code}: ${x.meaning} (${x.detail})`)].join("\n");
       const lines = [`${r.json.status}: the promise was paid${r.json.duplicate ? " (already done; not paid twice)" : ""}`];
+      if (r.json.paypal) lines.push(`PayPal capture ${r.json.paypal.captureId}, payout ${r.json.paypal.payoutBatchId} (${r.json.paypal.payoutStatus ?? "pending"})`);
+      lines.push(`Receipt: ${GATEWAY}/r/${r.json.spendId}`);
+      return lines.join("\n");
+    },
+  },
+  {
+    name: "envelope_accept",
+    description: "Sign that work has been delivered and accepted, for a promise that named THIS agent's key as the one that can release it. Your signature pays the promise: PayPal captures from the hold and pays the payee. Include a fingerprint of the work so it is recorded on the receipt.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        promise: { type: "string", description: "The promise id" },
+        work: { type: "string", description: "SHA-256 fingerprint (64 hex characters) of what was delivered, if you have one" },
+        note: { type: "string", description: "What you checked (recorded on the receipt)" },
+      },
+      required: ["promise"],
+      additionalProperties: false,
+    },
+    async run(a) {
+      const work = typeof a.work === "string" && /^[0-9a-f]{64}$/.test(a.work) ? a.work : "";
+      const r = await post("/api/gateway/accept", { signed: await E.signAccept(await key(AGENT, false), text(a.promise, "promise", 60), { work, note: typeof a.note === "string" ? a.note.slice(0, 200) : undefined }) });
+      if (!r.json.status) throw new ToolError(`Gateway: ${r.json.error ?? r.status}`);
+      if (["LAPSED", "DENIED", "FAILED"].includes(r.json.status)) return [`${r.json.status}. Nothing was paid.`, ...(r.json.reasons ?? []).map((x: { code: string; meaning: string; detail: string }) => `  ${x.code}: ${x.meaning} (${x.detail})`)].join("\n");
+      const lines = [`${r.json.status}: your acceptance released the money${r.json.duplicate ? " (already done; not paid twice)" : ""}`];
       if (r.json.paypal) lines.push(`PayPal capture ${r.json.paypal.captureId}, payout ${r.json.paypal.payoutBatchId} (${r.json.paypal.payoutStatus ?? "pending"})`);
       lines.push(`Receipt: ${GATEWAY}/r/${r.json.spendId}`);
       return lines.join("\n");

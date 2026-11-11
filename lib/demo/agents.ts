@@ -73,7 +73,7 @@ export async function hasDemoAgents(rootId: string): Promise<boolean> {
   return Boolean(await getDb().query.demoKeys.findFirst({ where: eq(demoKeys.rootId, rootId) }));
 }
 
-export const DEMO_ACTIONS = ["split-localization", "split-creative", "promise-translator", "keep-translator", "pay-translator", "pay-designer", "attack-payee", "attack-overspend", "attack-forge"] as const;
+export const DEMO_ACTIONS = ["split-localization", "split-creative", "promise-translator", "accept-translator", "keep-translator", "pay-translator", "pay-designer", "attack-payee", "attack-overspend", "attack-forge"] as const;
 export type DemoAction = (typeof DEMO_ACTIONS)[number];
 
 /** One scripted step. Amounts scale with the root so any envelope size works. */
@@ -111,8 +111,20 @@ export async function act(rootId: string, action: DemoAction): Promise<{ action:
       if (!a.chain) throw new UserFacingError("Run the splits first.", 409);
       const leaf = a.chain[a.chain.length - 1]!.body.caps;
       const amount = Math.floor((leaf.limit * 0.75) / 100) * 100;
-      const result = await G.promise(await E.signPromise(a.chain, a.key, { amount, payee: leaf.payees![0]!, purpose: leaf.purposes![0]!, memo: "Store strings: FR + YO", ttl: 900 }), "The translator wants to know the money is there before starting. Setting the fee aside for it.");
-      return { action, narration: `${a.row.label} set $${(amount / 100).toFixed(2)} aside for ${await who(leaf.payees![0]!)} before any work started. Nothing else can spend it for 15 minutes.`, result };
+      // Payable when ops-agent, who ordered the work, signs that it has checked the delivery.
+      const result = await G.promise(await E.signPromise(a.chain, a.key, { amount, payee: leaf.payees![0]!, purpose: leaf.purposes![0]!, memo: "Store strings: FR + YO", ttl: 900, releaseBy: ops.key.publicKey }), "The translator wants to know the money is there before starting. Setting the fee aside, payable when ops-agent accepts the work.");
+      return { action, narration: `${a.row.label} set $${(amount / 100).toFixed(2)} aside for ${await who(leaf.payees![0]!)} before any work started, payable when ops-agent signs for the delivery. Nothing else can spend it for 15 minutes.`, result };
+    }
+    case "accept-translator": {
+      const a = await agent(rootId, "localization-agent");
+      if (!a.chain) throw new UserFacingError("Run the splits first.", 409);
+      const leafId = a.chain[a.chain.length - 1]!.body.id;
+      const open = await getDb().query.spends.findFirst({ where: and(eq(spends.leafId, leafId), eq(spends.status, "PROMISED")), orderBy: desc(spends.createdAt) });
+      if (!open) throw new UserFacingError("There is no open promise to accept.", 409);
+      // The delivery is fingerprinted; the fingerprint is what ops-agent signs and what the receipt will carry.
+      const work = await E.sha256(`store-strings.fr.json + store-strings.yo.json for ${rootId}`);
+      const result = await G.accept(await E.signAccept(ops.key, open.id, { work, note: "Both language files received and checked against the brief." }));
+      return { action, narration: `The translator delivered (fingerprint ${work.slice(0, 12)}…). ops-agent checked it and signed. That signature released the $${(open.amountMinor / 100).toFixed(2)}; nobody asked localization-agent again.`, result };
     }
     case "keep-translator": {
       const a = await agent(rootId, "localization-agent");

@@ -1,9 +1,9 @@
 {
-  "ranAt": "2026-11-11T12:09:07.481Z",
+  "ranAt": "2026-11-11T13:22:08.921Z",
   "paypal": "built-in simulator",
   "summary": {
-    "attacks": 90,
-    "refused": 90,
+    "attacks": 98,
+    "refused": 98,
     "movedMoney": 0
   },
   "byCategory": {
@@ -33,8 +33,8 @@
       "movedMoney": 0
     },
     "Promise": {
-      "attacks": 12,
-      "refused": 12,
+      "attacks": 20,
+      "refused": 20,
       "movedMoney": 0
     },
     "Account": {
@@ -577,6 +577,62 @@
     {
       "category": "Promise",
       "attack": "pay a promise after the owner revoked the agent",
+      "refused": true,
+      "how": "REVOKED",
+      "moneyMoved": false
+    },
+    {
+      "category": "Promise",
+      "attack": "the payee signs its own acceptance when another key was named",
+      "refused": true,
+      "how": "refused: This promise names a different key as the one that can release it.",
+      "moneyMoved": false
+    },
+    {
+      "category": "Promise",
+      "attack": "an outsider signs the acceptance",
+      "refused": true,
+      "how": "refused: This promise names a different key as the one that can release it.",
+      "moneyMoved": false
+    },
+    {
+      "category": "Promise",
+      "attack": "the payee collects a promise that named no release key",
+      "refused": true,
+      "how": "refused: This promise can only be paid by the agent that made it.",
+      "moneyMoved": false
+    },
+    {
+      "category": "Promise",
+      "attack": "a genuine acceptance pointed at a different promise",
+      "refused": true,
+      "how": "refused: That acceptance isn't properly signed, or is too old.",
+      "moneyMoved": false
+    },
+    {
+      "category": "Promise",
+      "attack": "a keep signature replayed as an acceptance",
+      "refused": true,
+      "how": "refused: That acceptance isn't properly signed, or is too old.",
+      "moneyMoved": false
+    },
+    {
+      "category": "Promise",
+      "attack": "an acceptance dated ten minutes ago",
+      "refused": true,
+      "how": "refused: That acceptance isn't properly signed, or is too old.",
+      "moneyMoved": false
+    },
+    {
+      "category": "Promise",
+      "attack": "release key set to something that is not a key",
+      "refused": true,
+      "how": "MALFORMED",
+      "moneyMoved": false
+    },
+    {
+      "category": "Promise",
+      "attack": "the named key accepts after the owner revoked the payer",
       "refused": true,
       "how": "REVOKED",
       "moneyMoved": false

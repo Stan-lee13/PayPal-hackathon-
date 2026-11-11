@@ -321,6 +321,7 @@ export async function settle(spendId: string): Promise<Spend> {
   const payeeAcct = s.payeeAgent ? await db.query.accounts.findFirst({ where: eq(accounts.agent, s.payeeAgent) }) : null;
   const receiptBody: Omit<Receipt, "sig"> = {
     v: RECEIPT_VERSION, spend: s.id, decision: "PAID", request: s.signed.request, requestSig: s.signed.sig,
+    ...(s.delivery ? { releasedBy: { key: s.delivery.by, work: s.delivery.work, note: s.delivery.note, at: s.delivery.at } } : {}),
     ...(s.payeeAgent && s.payoutTo ? { paidTo: { account: E.accountNumber(s.payeeAgent), agent: s.payeeAgent, agentLabel: payeeAcct?.label ?? "agent", settledTo: s.payoutTo } } : {}),
     chain: await Promise.all(chain.map(async (b) => ({ id: b.body.id, hash: await E.blockHash(b), holder: b.body.holder, holderLabel: b.body.holderLabel }))),
     principal: root.principal,
@@ -480,6 +481,7 @@ export async function promise(signed: E.SignedPromise, agentNote?: string): Prom
     sponsors: [{ role: "owner", label: root.principalName, key: root.principal }, ...chain.slice(0, -1).map((b) => ({ role: "agent" as const, label: b.body.holderLabel, key: b.body.holder }))],
     root: root.id, amount: s.amountMinor, currency: s.currency, payee: s.payee, purpose: s.purpose,
     expiresAt: s.promiseExpiresAt!.toISOString(),
+    ...((s.signed.request as E.PromiseRequest).releaseBy ? { releaseBy: (s.signed.request as E.PromiseRequest).releaseBy } : {}),
     paypal: { mode: paypalMode(), authorizationId: root.authorizationId!, status },
     issuedAt: new Date().toISOString(), gateway: key.publicKey,
   };
@@ -497,17 +499,37 @@ export async function verifyPromiseNote(n: PromiseNote, now = new Date()): Promi
 /** The agent that made a promise pays it (capture + payout from the money already set aside) or releases it. */
 export async function keep(signed: E.SignedKeep, agentNote?: string): Promise<SpendResult> {
   if (!(await E.verifyKeepSignature(signed))) throw new UserFacingError("That isn't properly signed, or is too old.", 401);
-  const db = getDb();
-  const s0 = await db.query.spends.findFirst({ where: eq(spends.id, signed.request.promise) });
+  const s0 = await getDb().query.spends.findFirst({ where: eq(spends.id, signed.request.promise) });
   if (!s0 || !s0.promiseExpiresAt) throw new UserFacingError("No such promise.", 404);
   if (signed.by !== s0.signed.chain[s0.signed.chain.length - 1]!.body.holder) throw new UserFacingError("Only the agent that made a promise can pay or release it.", 403);
+  return decidePromise(s0, signed.request.action, { agentNote });
+}
+
+/**
+ * The key a promise named (`releaseBy`) signs that the work is delivered and accepted, and the money
+ * set aside is paid without going back to the promise's maker. The maker agreed to this when it
+ * signed the promise. The gateway checks one thing: that the signature is from the named key.
+ * Revocation and expiry still apply; the fingerprint of the delivered work goes on the receipt.
+ */
+export async function accept(signed: E.SignedAccept): Promise<SpendResult> {
+  if (!(await E.verifyAcceptSignature(signed))) throw new UserFacingError("That acceptance isn't properly signed, or is too old.", 401);
+  const s0 = await getDb().query.spends.findFirst({ where: eq(spends.id, signed.request.promise) });
+  if (!s0 || !s0.promiseExpiresAt) throw new UserFacingError("No such promise.", 404);
+  const named = (s0.signed.request as E.PromiseRequest).releaseBy;
+  if (!named) throw new UserFacingError("This promise can only be paid by the agent that made it.", 403);
+  if (signed.by !== named) throw new UserFacingError("This promise names a different key as the one that can release it.", 403);
+  return decidePromise(s0, "pay", { delivery: { by: signed.by, work: signed.request.work, note: signed.request.note, at: signed.request.at, sig: signed.sig } });
+}
+
+async function decidePromise(s0: Spend, action: "pay" | "release", o: { agentNote?: string; delivery?: NonNullable<Spend["delivery"]> }): Promise<SpendResult> {
+  const db = getDb();
   const root = (await db.query.roots.findFirst({ where: eq(roots.id, s0.rootId) }))!;
   const out = await db.transaction(async (tx) => {
     await lockRoot(tx, root.id);
     const lapsed = await sweep(tx, root.id);
     const s = (await tx.query.spends.findFirst({ where: eq(spends.id, s0.id) }))!;
     if (s.status !== "PROMISED") return { row: s, changed: false, lapsed };
-    if (signed.request.action === "release") {
+    if (action === "release") {
       const u = await lapse(tx, s, { code: "PROMISE_LAPSED", at: s.leafId, detail: "released by the agent that made it" });
       return { row: u ?? s, changed: true, lapsed: u ? [...lapsed, u] : lapsed };
     }
@@ -519,11 +541,11 @@ export async function keep(signed: E.SignedKeep, agentNote?: string): Promise<Sp
       const u = await lapse(tx, s, { code: "REVOKED", at: root.id, detail: dead });
       return { row: u ?? s, changed: true, lapsed: u ? [...lapsed, u] : lapsed };
     }
-    const [u] = await tx.update(spends).set({ status: "RESERVED", agentNote: agentNote?.trim().slice(0, 500) || s.agentNote }).where(and(eq(spends.id, s.id), eq(spends.status, "PROMISED"))).returning();
+    const [u] = await tx.update(spends).set({ status: "RESERVED", agentNote: o.agentNote?.trim().slice(0, 500) || s.agentNote, ...(o.delivery ? { delivery: o.delivery } : {}) }).where(and(eq(spends.id, s.id), eq(spends.status, "PROMISED"))).returning();
     return { row: u ?? s, changed: Boolean(u), lapsed };
   });
   await trailLapsed(root, out.lapsed);
-  if (out.changed && out.row.status === "RESERVED") await trail(root, "agent", "promise.kept", "PENDING", out.row.id, { agent: out.row.leafLabel, amount: out.row.amountMinor, payee: out.row.payee });
+  if (out.changed && out.row.status === "RESERVED") await trail(root, "agent", o.delivery ? "promise.released_on_acceptance" : "promise.kept", "PENDING", out.row.id, { agent: out.row.leafLabel, amount: out.row.amountMinor, payee: out.row.payee, ...(o.delivery ? { acceptedBy: E.fingerprint(o.delivery.by), work: o.delivery.work || null } : {}) });
   // RESERVED (just now, or an earlier attempt that was interrupted) continues to PayPal.
   const done = out.row.status === "RESERVED" || out.row.status === "CAPTURED" ? await settle(out.row.id) : out.row;
   return { status: done.status, spend: done, reasons: done.reasons, receipt: done.receipt, duplicate: !out.changed };
@@ -747,6 +769,126 @@ export async function agentProfile(key: string) {
     statement: mine.slice(0, 60).map(strip),
     incoming: incoming.filter((x) => x.status !== "DENIED").slice(0, 60).map(strip),
   };
+}
+
+export const REFERENCE_VERSION = "envelope-reference/1" as const;
+/** An agent's record as this gateway has seen it, signed so the agent can show it to anyone. Facts only: no score. */
+export type Reference = {
+  v: typeof REFERENCE_VERSION;
+  agent: string; label: string; account: string;
+  knownSince: string; asOf: string;
+  /** The owner who answers for the agent's account, when it has opened one. */
+  answersForIt: string | null;
+  facts: {
+    paymentsSettled: number; paidMinor: number;
+    promisesKept: number; promisesLapsed: number;
+    requestsRefused: number; refusedFor: string[];
+    envelopesHeld: number; envelopesRevoked: number;
+    timesPaid: number; earnedMinor: number;
+  };
+  paypalMode: string; gateway: string; sig: string;
+};
+
+export async function reference(key: string): Promise<Reference | null> {
+  const p = await agentProfile(key);
+  if (!p) return null;
+  const gw = await gatewayKey();
+  const body: Omit<Reference, "sig"> = {
+    v: REFERENCE_VERSION, agent: key, label: p.label, account: p.account, knownSince: p.firstSeenAt, asOf: new Date().toISOString(),
+    answersForIt: p.receives?.owner.label ?? null,
+    facts: {
+      paymentsSettled: p.record.payments, paidMinor: p.record.paidMinor,
+      promisesKept: p.record.promisesKept, promisesLapsed: p.record.promisesLapsed,
+      requestsRefused: p.record.refused, refusedFor: p.record.refusedCodes,
+      envelopesHeld: p.accounts.length, envelopesRevoked: p.record.revoked,
+      timesPaid: p.record.received, earnedMinor: p.record.receivedMinor,
+    },
+    paypalMode: paypalMode(), gateway: gw.publicKey,
+  };
+  return { ...body, sig: await E.signDetached(gw.privateKey, REFERENCE_VERSION, body) };
+}
+export async function verifyReference(r: Reference): Promise<boolean> {
+  if (!r || r.v !== REFERENCE_VERSION) return false;
+  const { sig, ...body } = r;
+  return E.verifyDetached(r.gateway, REFERENCE_VERSION, body, sig);
+}
+
+// ---------------------------------------------------------------------------
+// Treasury: one owner's view across every envelope they sealed
+// ---------------------------------------------------------------------------
+
+const SETTLED = ["PAID", "UNCLAIMED", "PAYOUT_PENDING"];
+
+/** Everything one owner's key has sealed: what PayPal is holding, what agents spent, what is set aside, and who did what. */
+export async function treasury(principal: string) {
+  const db = getDb();
+  const rootRows = await db.select().from(roots).where(eq(roots.principal, principal)).orderBy(desc(roots.createdAt)).limit(50);
+  if (rootRows.length === 0) return null;
+  const ids = rootRows.map((r) => r.id);
+  for (const id of ids) await sweepExpired(id);
+  const [bs, ss] = await Promise.all([
+    db.select().from(blocks).where(inArray(blocks.rootId, ids)).orderBy(asc(blocks.depth), asc(blocks.firstSeenAt)),
+    db.select().from(spends).where(inArray(spends.rootId, ids)).orderBy(desc(spends.createdAt)).limit(1000),
+  ]);
+  const rootById = new Map(rootRows.map((r) => [r.id, r]));
+  const blockById = new Map(bs.map((b) => [b.id, b]));
+  const now = Date.now();
+  const open = rootRows.filter((r) => r.status === "ACTIVE");
+  const numbers = [...new Set(ss.map((x) => x.payee).filter(E.isAccountPayee).map((x) => x.slice(5).toUpperCase()))];
+  const named = numbers.length ? await db.select().from(accounts).where(inArray(accounts.account, numbers)) : [];
+  const nameOf = new Map(named.map((a) => [`acct:${a.account.toLowerCase()}`, { label: a.label, key: a.agent, owner: a.ownerName }]));
+
+  const agents = bs.map((b) => {
+    const root = rootById.get(b.rootId)!;
+    const line: BlockRow[] = [];
+    for (let x: BlockRow | undefined = b; x; x = x.parentId ? blockById.get(x.parentId) : undefined) line.unshift(x);
+    const state = root.status !== "ACTIVE" ? "CLOSED" : line.some((x) => x.revokedAt) ? "REVOKED" : Date.parse(b.caps.notAfter) < now ? "EXPIRED" : "LIVE";
+    const mine = ss.filter((x) => x.leafId === b.id);
+    return {
+      blockId: b.id, rootId: b.rootId, rootTitle: root.title, depth: b.depth, key: b.holder, label: b.holderLabel, account: E.accountNumber(b.holder),
+      under: line.slice(0, -1).map((x) => x.holderLabel),
+      limitMinor: b.caps.limit, spentMinor: b.spentMinor, setAsideMinor: b.reservedMinor,
+      leftMinor: state === "LIVE" ? Math.max(0, Math.min(...line.map((x) => x.caps.limit - x.spentMinor - x.reservedMinor))) : 0,
+      refused: mine.filter((x) => x.status === "DENIED").length, state,
+    };
+  });
+  const paid = ss.filter((x) => SETTLED.includes(x.status));
+  const byPayee = new Map<string, { payee: string; who: string | null; key: string | null; owner: string | null; totalMinor: number; payments: number }>();
+  for (const x of paid) {
+    const e = byPayee.get(x.payee) ?? { payee: x.payee, who: nameOf.get(x.payee)?.label ?? null, key: nameOf.get(x.payee)?.key ?? null, owner: nameOf.get(x.payee)?.owner ?? null, totalMinor: 0, payments: 0 };
+    e.totalMinor += x.amountMinor; e.payments += 1;
+    byPayee.set(x.payee, e);
+  }
+  return {
+    principal, mode: paypalMode(), ownerName: rootRows[0]!.principalName,
+    totals: {
+      envelopes: rootRows.length, open: open.length,
+      heldNowMinor: open.reduce((n, r) => n + r.limitMinor - r.capturedMinor, 0),
+      spentMinor: rootRows.reduce((n, r) => n + r.capturedMinor, 0),
+      setAsideMinor: ss.filter((x) => x.status === "PROMISED").reduce((n, x) => n + x.amountMinor, 0),
+      releasedMinor: rootRows.reduce((n, r) => n + (r.releasedMinor ?? 0), 0),
+      payments: paid.length, refused: ss.filter((x) => x.status === "DENIED").length,
+      agents: new Set(bs.map((b) => b.holder)).size,
+    },
+    envelopes: rootRows.map((r) => ({ id: r.id, title: r.title, status: r.status, limitMinor: r.limitMinor, capturedMinor: r.capturedMinor, releasedMinor: r.releasedMinor, authorizationId: r.authorizationId, createdAt: r.createdAt.toISOString() })),
+    agents,
+    payees: [...byPayee.values()].sort((a, b) => b.totalMinor - a.totalMinor),
+    activity: ss.slice(0, 40).map((x) => ({ id: x.id, rootId: x.rootId, at: x.createdAt.toISOString(), agent: x.leafLabel, payee: x.payee, who: nameOf.get(x.payee)?.label ?? null, purpose: x.purpose, amountMinor: x.amountMinor, status: x.status, reasons: x.reasons.map((y) => y.code), captureId: x.captureId, payoutBatchId: x.payoutBatchId, payoutStatus: x.payoutStatus, hasReceipt: Boolean(x.receipt) })),
+  };
+}
+
+/** Check every recent payment of one owner against PayPal's own records. */
+export async function reconcileTreasury(principal: string) {
+  const db = getDb();
+  const rootRows = await db.select({ id: roots.id }).from(roots).where(eq(roots.principal, principal)).orderBy(desc(roots.createdAt)).limit(50);
+  if (rootRows.length === 0) return null;
+  const ss = await db.select().from(spends).where(and(inArray(spends.rootId, rootRows.map((r) => r.id)), inArray(spends.status, SETTLED as Spend["status"][]))).orderBy(desc(spends.createdAt)).limit(20);
+  const results = [];
+  for (const s of ss) {
+    try { const r = await reconcile(s.id); results.push({ id: s.id, amountMinor: s.amountMinor, ok: r.ok, failed: r.checks.filter((c) => !c.ok).map((c) => c.name) }); }
+    catch { results.push({ id: s.id, amountMinor: s.amountMinor, ok: false, failed: ["could not be checked"] }); }
+  }
+  return { checked: results.length, matched: results.filter((r) => r.ok).length, matchedMinor: results.filter((r) => r.ok).reduce((n, r) => n + r.amountMinor, 0), results, mode: paypalMode(), at: new Date().toISOString() };
 }
 
 /** Agents the gateway has seen most recently. */

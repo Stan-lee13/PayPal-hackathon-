@@ -196,6 +196,24 @@ export async function runCorpus(deps: { G: G; sim: Sim; reset: () => Promise<voi
   const p3 = await promise();
   await G.revoke(await E.signRevoke(w.ada, w.locChain[1]!.body.id));
   await attack("Promise", "pay a promise after the owner revoked the agent", async () => G.keep(await E.signKeep(w.loc, p3.spend!.id, "pay")));
+  // promises that a named key can release
+  w = await world();
+  const work = await E.sha256("delivered files");
+  const named = await E.signPromise(w.locChain, w.loc, { amount: 2000, payee: w.acct, purpose: "translation", ttl: 600, releaseBy: w.ops.publicKey }).then((s) => G.promise(s));
+  const unnamed = await E.signPromise(w.locChain, w.loc, { amount: 1000, payee: w.acct, purpose: "translation", ttl: 600 }).then((s) => G.promise(s));
+  await attack("Promise", "the payee signs its own acceptance when another key was named", async () => G.accept(await E.signAccept(w.tr, named.spend!.id, { work })));
+  await attack("Promise", "an outsider signs the acceptance", async () => G.accept(await E.signAccept(w.rogue, named.spend!.id, { work })));
+  await attack("Promise", "the payee collects a promise that named no release key", async () => G.accept(await E.signAccept(w.tr, unnamed.spend!.id, { work })));
+  await attack("Promise", "a genuine acceptance pointed at a different promise", async () => { const a = await E.signAccept(w.ops, named.spend!.id, { work }); return G.accept({ ...a, request: { ...a.request, promise: unnamed.spend!.id } }); });
+  await attack("Promise", "a keep signature replayed as an acceptance", async () => { const k = await E.signKeep(w.ops, named.spend!.id, "pay"); return G.accept({ request: { v: E.ACCEPT_VERSION, promise: named.spend!.id, work: "", note: "", nonce: k.request.nonce, at: k.request.at }, sig: k.sig, by: k.by }); });
+  await attack("Promise", "an acceptance dated ten minutes ago", async () => G.accept(await E.signAccept(w.ops, named.spend!.id, { work }, new Date(Date.now() - 600_000))));
+  await attack("Promise", "release key set to something that is not a key", async () => G.promise(await E.signPromise(w.locChain, w.loc, { amount: 500, payee: w.acct, purpose: "translation", ttl: 600, releaseBy: "anyone" })));
+  await G.revoke(await E.signRevoke(w.ada, w.locChain[1]!.body.id));
+  await attack("Promise", "the named key accepts after the owner revoked the payer", async () => G.accept(await E.signAccept(w.ops, named.spend!.id, { work })));
+  w = await world();
+  const p3again = await E.signPromise(w.locChain, w.loc, { amount: 4000, payee: w.acct, purpose: "translation", ttl: 600 }).then((s) => G.promise(s));
+  void p3again;
+
   await attack("Promise", "forged note: amount edited", async () => G.verifyPromiseNote({ ...p3.note!, amount: 999999 }));
   await attack("Promise", "forged note: signed by a different key", async () => { const { sig: _s, ...body } = p3.note!; const fake = { ...body, gateway: w.rogue.publicKey }; return G.verifyPromiseNote({ ...fake, sig: await E.signDetached(w.rogue.privateKey, G.PROMISE_NOTE_VERSION, fake) }).then(async (ok) => (ok && fake.gateway !== (await G.gatewayKey()).publicKey ? "valid only under the attacker's key; a payee pins the gateway's key" : ok)); });
 

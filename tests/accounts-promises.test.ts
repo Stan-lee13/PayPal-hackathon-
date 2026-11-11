@@ -162,6 +162,44 @@ d("accounts and promises (simulated PayPal)", async () => {
     expect((await G.agentProfile(w.loc.publicKey))!.record).toMatchObject({ promisesKept: 0, promisesLapsed: 3 });
   });
 
+  it("a promise can name a key whose signed acceptance pays it, and the receipt carries the work's fingerprint", async () => {
+    const w = await world();
+    const checker = await E.generateKeyPair();
+    const work = await E.sha256("fr.json + yo.json, as delivered");
+    // "paid on verified work": the promise names a third agent that checks the delivery
+    const p = await G.promise(await E.signPromise(w.locChain, w.loc, { amount: 4500, payee: w.payee, purpose: "translation", ttl: 600, releaseBy: checker.publicKey }));
+    expect(p.status).toBe("PROMISED");
+    expect(p.note!.releaseBy).toBe(checker.publicKey);
+    expect(await G.verifyPromiseNote(p.note!)).toBe(true);
+    // nobody else can release it: not the payee, not an outsider, not an edited statement
+    await expect(G.accept(await E.signAccept(w.tr, p.spend!.id, { work }))).rejects.toThrow(/names a different key/);
+    await expect(G.accept(await E.signAccept(w.rogue, p.spend!.id, { work }))).rejects.toThrow(/names a different key/);
+    const real = await E.signAccept(checker, p.spend!.id, { work, note: "Both files checked against the brief." });
+    await expect(G.accept({ ...real, request: { ...real.request, promise: "pr_other" } })).rejects.toThrow(/properly signed/);
+    expect((await sim.simCalls()).some((c) => c.includes("/capture"))).toBe(false);
+    // the named key signs: PayPal captures and pays, with no further word from the payer
+    const paid = await G.accept(real);
+    expect(paid.status).toBe("PAID");
+    expect(paid.receipt!.releasedBy).toEqual({ key: checker.publicKey, work, note: "Both files checked against the brief.", at: real.request.at });
+    expect(paid.receipt!.paidTo!.settledTo).toBe("bea@example.com");
+    expect(await G.verifyReceipt(paid.receipt!)).toBe(true);
+    expect(await blockRow(w.root.id)).toMatchObject({ reservedMinor: 0, spentMinor: 4500 });
+    // accepting twice pays once
+    expect(await G.accept(await E.signAccept(checker, p.spend!.id, { work }))).toMatchObject({ status: "PAID", duplicate: true });
+    expect((await sim.simCalls()).filter((c) => c.includes("/capture"))).toHaveLength(1);
+
+    // a promise that names no key can only be paid by its maker
+    const plain = await G.promise(await E.signPromise(w.locChain, w.loc, { amount: 1000, payee: w.payee, purpose: "translation", ttl: 600 }));
+    await expect(G.accept(await E.signAccept(w.tr, plain.spend!.id))).rejects.toThrow(/only be paid by the agent that made it/);
+    // "paid on delivery": naming the payee itself; but the owner's revocation still wins
+    await G.keep(await E.signKeep(w.loc, plain.spend!.id, "release"));
+    const cod = await G.promise(await E.signPromise(w.locChain, w.loc, { amount: 1000, payee: w.payee, purpose: "translation", ttl: 600, releaseBy: w.tr.publicKey }));
+    await G.revoke(await E.signRevoke(w.ada, w.locChain[1]!.body.id));
+    const late = await G.accept(await E.signAccept(w.tr, cod.spend!.id, { work }));
+    expect(late.status).toBe("LAPSED");
+    expect((await sim.simCalls()).filter((c) => c.includes("/capture"))).toHaveLength(1);
+  });
+
   it("closing the envelope releases open promises and voids the whole hold", async () => {
     const w = await world();
     const p = await G.promise(await E.signPromise(w.locChain, w.loc, { amount: 3000, payee: w.payee, purpose: "translation", ttl: 600 }));
