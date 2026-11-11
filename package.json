@@ -1,8 +1,8 @@
 {
-  "name": "mergepay",
+  "name": "envelope",
   "version": "0.1.0",
   "private": true,
-  "description": "MergePay: bill a pull request from your editor with a PayPal invoice; it merges when PayPal confirms payment.",
+  "description": "Envelope: spending authority for AI agents that can be split but never enlarged, backed by a PayPal hold.",
   "license": "MIT",
   "scripts": {
     "dev": "next dev -p 3000",
@@ -13,21 +13,14 @@
     "test:watch": "vitest",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx scripts/migrate.ts",
-    "db:seed": "tsx scripts/seed.ts",
-    "db:reset": "tsx scripts/reset.ts",
-    "paypal:webhook:register": "tsx scripts/register-webhook.ts",
-    "e2e:demo": "node scripts/e2e-demo.mjs"
+    "sandbox:run": "tsx scripts/sandbox-run.ts",
+    "e2e": "node scripts/e2e.mjs",
+    "agent": "tsx scripts/agent.ts"
   },
   "engines": {
     "node": ">=20.11"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^1.5.0",
-    "@paypal/react-paypal-js": "^10.6.1",
-    "ag-grid-community": "36.2.0",
-    "ag-grid-react": "36.2.0",
-    "ag-studio": "3.0.0",
-    "ag-studio-react": "3.0.0",
     "drizzle-orm": "^0.45.4",
     "next": "^15.5.29",
     "postgres": "^3.4.9",

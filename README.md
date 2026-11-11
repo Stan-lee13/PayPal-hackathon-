@@ -1,107 +1,107 @@
-# MergePay
+# Envelope
 
-**Get paid before you merge.**
+**Give your agent an envelope, not your wallet.**
 
-MergePay lets a freelance developer bill a client for a GitHub pull request without leaving the editor. Ask the agent in Cursor or Claude Code to "bill this PR". MergePay:
-
-1. Drafts a PayPal invoice, priced from what the client agreed to.
-2. Sends it once the developer says so.
-3. Merges the pull request the moment PayPal confirms the invoice is paid in full.
+Envelope is spending authority for AI agents that can be **split but never enlarged**. A person seals an envelope ("$200, only to these two payees, only for translation and design, until tonight") and PayPal places a hold for the whole amount. The agent can split off smaller envelopes for the agents it hires. Nobody down the chain can spend more, pay anyone else, or outlive it, and every payment comes back with a receipt showing exactly who authorized it.
 
 ```
- editor agent ──MCP──▶ draft_invoice ──▶ send_invoice ──▶ PayPal emails the client
-                         │  prices: contract       │                │ client checks preview, pays
-                         │  words: Claude / rules  │                ▼
-                         │  scope check            │     INVOICING.INVOICE.PAID webhook (signature-verified)
-                         ▼                         ▼                │
-                   developer reviews      PR comment: "invoice sent" ▼
-                                                    GET invoice from PayPal: PAID, $0 due?
-                                                                    │ yes
-                                                                    ▼
-                                         merge exactly the invoiced commit ──▶ PR comment: "paid, merged"
+ Ada ──seals──▶ ops-agent  $200          PayPal: authorization (hold) $200
+                 ├─ splits ─▶ localization-agent  $45, translator only
+                 │              └─ pays $45 ──▶ PayPal: partial capture $45 + payout
+                 └─ splits ─▶ creative-agent  $70, designer only
+                                ├─ pays $70 ──▶ PayPal: partial capture $70 + payout
+                                └─ "pay attacker@evil" ──▶ DENIED  PAYEE_NOT_ALLOWED
+ Ada ──closes─▶                          PayPal: void → $85 released, $115 charged
 ```
 
-**Try it:** open `/demo` on the running app. It's the same agent conversation, in the browser, calling the same tools over the same code path as the editor. No install or sign-in needed.
+Built for the PayPal AI Hackathon 2026. Sandbox only. The people and agents in the demo are fictional.
 
-> Built for the PayPal AI Hackathon 2026. The demo freelancer (Tobi Adeyemi), client (Funmi Bello of Lagos Roast Coffee) and repository are fictional. Every page says whether PayPal and GitHub are real (sandbox / live API) or the built-in simulators.
+## The problem
 
-## Why it's safe to let an agent do this
+An agent that can pay holds a credential. When it delegates work to another agent, it either hands over the same credential or becomes a bottleneck approving every payment. Flat spending limits don't compose: an orchestrator with a $500 limit that calls five sub-agents has five $500 problems. And afterwards nobody can answer the questions that matter: who authorized this dollar, under what limits, and how bad could it have been?
 
-An agent that moves money and touches a client's code has to be boring about both.
+## The mechanism
 
-| Guarantee | How |
+| Verb | Who | What happens | PayPal |
+|---|---|---|---|
+| **Seal** | The owner, in their browser | Signs a root envelope (Ed25519). The gateway can enforce it but can't forge one. | `POST /v2/checkout/orders` with `intent: AUTHORIZE`: a hold for the whole limit |
+| **Split** | Any agent holding an envelope | Appends one signed block for another agent. It may only narrow: less money, fewer payees and purposes, earlier expiry. Offline; no server. | none |
+| **Spend** | The agent holding it | Signs a request with its own key. The gateway verifies the whole chain, then under a lock checks revocation and the budget of **every** envelope up the chain, reserves, and pays. | `POST /v2/payments/authorizations/{id}/capture` (partial) then `POST /v1/payments/payouts` |
+| **Close / revoke** | The owner, or a holder above | Revoking one envelope kills everything split from it. Closing the root releases what was never spent. | `POST /v2/payments/authorizations/{id}/void` |
+
+Every payment produces a **receipt** signed by the gateway that binds the PayPal capture and payout ids to the request and the full chain. The receipt page re-checks it two ways: against PayPal's own GET endpoints, and in your browser with the same verification code the gateway runs.
+
+The rules are signatures and arithmetic. **No model output decides whether money moves.** An agent's stated reason is stored for the owner and never read by the gateway.
+
+Protocol: [`docs/SPEC.md`](docs/SPEC.md). Core (pure, isomorphic): [`lib/envelope/core.ts`](lib/envelope/core.ts). Gateway: [`lib/gateway/service.ts`](lib/gateway/service.ts).
+
+## What it stops
+
+| Attack or failure | Result |
 |---|---|
-| **The contract sets the numbers** | `lib/agent/pricing.ts` is the only place an amount is decided. It works from the agreed price per issue, or the hours the developer states × the agreed rate. Claude writes descriptions and a scope check only. A validator throws out any AI text that mentions money, names files the PR doesn't change, or claims issues the PR doesn't close (`lib/agent/describe.ts`). |
-| **The client agrees first** | The client accepts the prices and merge-on-payment on their own page (`/c/{token}`). `send_invoice` refuses until they have. |
-| **Nothing is sent without the developer** | `send_invoice`, `remind_client` and `cancel_invoice` require `confirm: true`, and the tool descriptions tell the agent to ask first. |
-| **Paid means paid** | The webhook body is never trusted. MergePay re-reads the invoice from PayPal and requires status `PAID`, nothing due and no external transaction. `PARTIALLY_PAID`, `PAYMENT_PENDING` and `MARKED_AS_PAID` never merge. |
-| **Only what was paid for merges** | The invoice pins the PR's head commit, and the merge call passes that `sha`. If anything was pushed after invoicing, nothing merges and both sides are told why. |
-| **Work nobody agreed to isn't billed** | The scope check flags it (e.g. an analytics rewrite in a checkout PR). It's billed only if the developer adds it as an extra, labelled "change request" on the invoice. |
-| **Never billed twice** | One live invoice per PR. An issue already billed on another invoice isn't billed again. PayPal-Request-Id makes create and send idempotent. |
-| **Tamper-evident trail** | Every step goes on a SHA-256 hash chain per invoice (`lib/ledger/chain.ts`). The invoice page re-verifies it. |
-| **Missed webhooks heal** | `invoice_status` re-reads the invoice and completes a merge that a lost webhook would have missed. Duplicate deliveries are ignored. |
-
-## PayPal integration
-
-- **Invoicing API v2** (`lib/paypal/invoicing.ts`): `generate-next-invoice-number`, create a draft (`Prefer: return=representation`), `send`, authoritative `GET`, `remind`, `cancel`.
-- **Webhooks** (`lib/services/webhooks.ts`, `lib/paypal/webhook-verify.ts`): `INVOICING.INVOICE.PAID`, `.CANCELLED`, `.REFUNDED` and `.UPDATED`. Signatures are verified locally (CRC32 + SHA256withRSA against PayPal's certificate, on PayPal-owned hosts only), with the verify-webhook-signature API as a fallback. Events are de-duplicated on the event id.
-- OAuth client-credentials, idempotent retries (`lib/paypal/client.ts`).
-
-## The MCP server
-
-`POST /api/mcp`: Streamable HTTP, stateless JSON-RPC, with a bearer token. Only the token's SHA-256 is stored. Setup snippets for Cursor, Claude Code and Windsurf are at `/connect`.
-
-| Tool | What it does |
-|---|---|
-| `list_contracts` | Contracts, prices, whether the client accepted, the client's link |
-| `draft_invoice` | Read the PR and its issues, price from the contract, describe, scope-check; saves a draft (nothing sent) |
-| `send_invoice` | `confirm: true` → PayPal invoice created and emailed; note posted on the PR |
-| `invoice_status` | Ask PayPal; completes the merge if paid |
-| `list_invoices` | Newest first, filter by status |
-| `remind_client` | PayPal reminder email (`confirm: true`) |
-| `cancel_invoice` | Cancel a draft or unpaid invoice (`confirm: true`) |
-
-## AI
-
-Claude (`claude-opus-5-5` by default) writes the client-readable line-item descriptions and the scope check, returned as structured output. Its output is validated against the PR, and it can never change an amount.
-
-Every call runs under a hard daily spend cap (`MERGEPAY_AI_DAILY_BUDGET_USD`, default $2). Costs are recorded per call, and identical inputs are answered from a cache. Without a key, or over the cap, MergePay's rules write the same output, labelled "rules". The demo works fully without a key.
-
-## Run it
-
-```bash
-npm install
-bash scripts/local-postgres.sh        # Postgres on :5433 (databases kept, kept_test)
-cp .env.example .env                  # fill SESSION_SECRET, MERGEPAY_PASSCODE, MERGEPAY_MCP_TOKEN
-npm run db:migrate && npm run db:seed
-npm run build && npm start            # http://localhost:3000/demo
-npm test                              # 20 tests: pricing, scope validator, full flow, attacks
-PASSCODE=… node scripts/e2e-demo.mjs   # drives the whole demo in Chromium, writes docs/screenshots
-```
-
-With no PayPal or GitHub credentials everything runs against the built-in simulators, labelled on every page.
-
-For the real **PayPal sandbox**:
-1. Set `PAYPAL_CLIENT_ID` and `PAYPAL_CLIENT_SECRET` from a sandbox app.
-2. Set `DEMO_CLIENT_EMAIL` to a sandbox personal account.
-3. Deploy to a public HTTPS URL, then run `npm run paypal:webhook:register` and set `PAYPAL_WEBHOOK_ID`.
-
-For **real GitHub**: set `MERGEPAY_GITHUB_TOKEN` (a fine-grained token for one repo with Contents, Issues and Pull requests set to read & write) and `DEMO_REPO`. The demo's "new pull request" button then creates real issues and a real PR there.
+| A poisoned message tells an agent to pay a new address | `PAYEE_NOT_ALLOWED` |
+| A sub-agent signs itself a bigger envelope | `WIDENED_LIMIT` (and friends): the chain fails verification |
+| An orchestrator hands out more than it holds | `OVER_ANCESTOR_LIMIT`: a spend debits every envelope above it |
+| Twenty agents race for the same budget | Reserved under a lock before PayPal is called; exactly the budget is spent |
+| A copied envelope without the agent's key | `NOT_THE_HOLDER` |
+| The same signed request sent twice | Executed once; the second returns the first result |
+| Everything else goes wrong | PayPal refuses to capture beyond the authorization |
 
 ## What has actually run
 
 | Part | Status |
 |---|---|
-| Full loop against the simulators | **Ran.** `npm test` (20 tests): draft → consent → send → pay → webhook → GET → merge; moved head blocks the merge; double billing refused; duplicate webhooks ignored; missed webhook recovered; serverless persistence; MCP tools. `scripts/e2e-demo.mjs` drives the same loop in a real browser. |
-| PayPal sandbox | Code paths written against PayPal's Invoicing v2 spec; **not yet run against the sandbox** (needs sandbox credentials). |
-| Live GitHub | Client and demo-PR generator written; **not yet run against a real repo** (needs a token). |
-| Claude | Structured-output call written; **not yet run with a key**. The rules path is what the tests exercise. |
+| Real PayPal sandbox, API-only | **Ran.** [`docs/evidence/sandbox-run.json`](docs/evidence/sandbox-run.json): hold placed, two partial captures and payouts, three denials, receipt reconciled against PayPal, hold voided. Reproduce with `scripts/sandbox-run.ts`. |
+| Real PayPal sandbox, in a browser | **Ran.** `scripts/e2e.mjs` drives the console in Chromium: seal with a browser-held key, agents pay, three attacks denied, revoke, receipt verified, close. Screenshots in `docs/screenshots/`. |
+| Real AI agents | **Ran.** Four Claude agents (an orchestrator, two specialists, one red-team) used the CLI against the sandbox-backed gateway. Transcript summary: [`docs/evidence/agent-run.md`](docs/evidence/agent-run.md). |
+| Automated tests | **18 pass** on the built-in PayPal simulator (`npm test`): narrowing rules, forged chains, ancestor budgets, replay, a 20-way race, revocation scope, close → void, audit chain. |
+| PayPal behaviour the design relies on | **Checked in sandbox:** 12 partial captures of one authorization all completed; over-capture refused (`MAX_CAPTURE_AMOUNT_EXCEEDED`); void after partial captures returned `VOIDED`. |
+| Payout delivery | Payouts are accepted by PayPal; payees in the recorded runs are placeholder addresses without sandbox accounts, so PayPal reports them `UNCLAIMED`. Set `ENVELOPE_PAYEE_1/2` to sandbox account emails to see `SUCCESS`. |
+| Hosted deployment | Not deployed. Run it locally (below). |
 
-## Limitations
+## Run it
 
-- Demo authentication: one passcode for the dashboard, and one MCP token per freelancer, set by the operator. There's no sign-up flow.
-- One contract per repository per freelancer. Pricing is fixed per issue or hourly. There's no tax or discount handling.
-- Merge-on-payment needs the token to have write access to the client's repository. In real use the client grants that, for example as a collaborator or through a GitHub App.
+```bash
+npm install
+bash scripts/local-postgres.sh          # Postgres on :5433 (or set DATABASE_URL to any Postgres)
+cp .env.example .env                    # add PAYPAL_CLIENT_ID / PAYPAL_CLIENT_SECRET from a sandbox app
+npm run db:migrate
+npm run build && npm start              # http://localhost:3000
+npm test                                # 18 tests on the simulator
+npx tsx scripts/sandbox-run.ts          # the whole flow on the real sandbox, writes evidence
+```
+
+Without PayPal credentials the app runs on a built-in simulator and says so on every page.
+
+### Bring your own agent
+
+Agents keep their own keys. Any agent that can run a command can use the CLI:
+
+```bash
+npx tsx scripts/agent.ts keygen ops-agent                      # prints a public key: paste it into the console's "My own agent"
+npx tsx scripts/agent.ts split --as ops-agent --to helper --limit 20 --payees translator@example.com --purposes translation
+npx tsx scripts/agent.ts pay   --as helper --amount 12 --payee translator@example.com --purpose translation --note "why"
+npx tsx scripts/agent.ts show  --as helper
+```
+
+Or call the gateway directly: `POST /api/gateway/spend` with `{ signed, note }` (see the spec).
+
+## How AI is used
+
+Envelope is infrastructure *for* AI agents: they are its users. In the recorded run, Claude agents decided how to delegate (the orchestrator chose least-privilege limits equal to each quote), decided what to pay, handled a prompt-injection attempt, and red-teamed the gateway. The system is designed so that none of those decisions needs to be trusted: the gateway reads signatures and numbers only.
+
+The console's built-in demo agents are scripted (no model) so the demo is reproducible; they are labelled as such.
+
+AI tools used to build the project: Claude Code (Anthropic) wrote the code, tests and documents under the author's direction, and ran the research.
+
+## Honest limits
+
+- **Not escrow.** A PayPal authorization is a hold on the payer's funding source, valid up to 29 days. Envelope never calls it escrow.
+- **Sandbox funding.** The hold is placed on PayPal's documented sandbox test card so no browser step is needed. In production the owner would approve the hold in PayPal's checkout or use a vaulted wallet; that path is not built.
+- **Custodial gateway.** Captured funds pass through the gateway's PayPal account before the payout. A production version needs PayPal's platform products and the compliance that comes with moving other people's money.
+- **Demo-grade key storage.** The owner's key is in `localStorage`; demo agents' keys are in the database.
+- **It bounds damage; it doesn't judge payments.** A payment inside the envelope's limits is allowed even if it was a bad idea.
+- **Prior art.** Attenuating capability chains are not new (macaroons, Biscuit, UCAN, L402, ERC-7710, 2026 IETF drafts). What is new here is the combination on PayPal: budgets debited at every ancestor, a hold the network enforces, and receipts tied to PayPal transaction ids. See the spec.
 
 ## Licence
 

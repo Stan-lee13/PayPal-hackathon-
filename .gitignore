@@ -9,3 +9,4 @@ next-env.d.ts
 .pgdata
 coverage
 .DS_Store
+.envelope/
