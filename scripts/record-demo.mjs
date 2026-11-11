@@ -199,13 +199,21 @@ await scene("check", async () => {
   await scrollTo('[data-testid="standing"]');
 });
 
-// 6. Receipt
+// 6. The proof graph: any dollar traced back to the person, signatures checked in this browser
 await page.goto(rootUrl);
 await holdCard();
 await scene("receipt", async () => {
-  await page.getByRole("link", { name: "Receipt & authority chain →" }).last().click();
-  await page.getByText("All checks pass").waitFor(T);
-  await page.getByText("Signatures valid").waitFor(T);
+  await page.getByTestId("proof-link").click();
+  await page.getByTestId("proof-summary").getByText("Signatures checked in your browser").waitFor(T);
+  await page.waitForFunction(() => !document.querySelector('[data-testid="proof-summary"]')?.textContent?.includes("…"), null, T);
+  await wait(3000);
+  await page.getByTestId("node-capture").first().click();
+  await page.getByTestId("proof-trail").getByText(/Person/).waitFor(T);
+  await scrollTo('[data-testid="proof-graph"]', "start");
+  await wait(3400);
+  await page.getByRole("button", { name: "Ask PayPal now" }).click();
+  await page.getByTestId("paypal-answer").getByText(/PayPal capture exists for exactly this amount/).waitFor(T);
+  await scrollTo('[data-testid="proof-inspector"]', "center");
 });
 
 // 6a. Over the owner's threshold: the agent can only ask, and the owner signs in this browser
@@ -249,7 +257,7 @@ await scene("close", async () => {
 });
 
 // 8. Numbers, then the close
-await card("<span class=\"figure\" style=\"font-size:120px\">163<span style=\"color:#8A8271\">/163</span></span>", ["attacks refused in the test suite. None moved money.", "Try all of it in your browser: nothing to install, nothing to configure."]);
+await card("<span class=\"figure\" style=\"font-size:120px\">171<span style=\"color:#8A8271\">/171</span></span>", ["attacks refused in the test suite. None moved money.", "Try all of it in your browser: nothing to install, nothing to configure."]);
 await scene("numbers");
 await card("Seal is an authorization.<br>Spend is a capture and a payout.<br><em>Close is a void.</em>", ["Envelope · accounts, cards and a treasury for AI agents, on PayPal's rails", "open source · github.com/Stan-lee13/PayPal-hackathon-"]);
 await scene("end");
