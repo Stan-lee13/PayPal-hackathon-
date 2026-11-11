@@ -74,7 +74,7 @@ export const handlers: Record<string, Handler> = {
     }
     const p = await G.agentProfile(key);
     if (!p) return { status: 404, body: { error: "No agent with that key has been seen by this gateway." } };
-    return { body: { ...p, mode: paypalMode(), demo: await isDemoAgent(key), bankDemo: await isBankDemoAgent(key) } };
+    return { body: { ...p, mode: paypalMode(), demo: await isDemoAgent(key), bankDemo: await isBankDemoAgent(key), cards: await B.cardsOf(key) } };
   },
 
   /** An agent's record, signed by the gateway so the agent can show it to anyone. */
@@ -119,6 +119,36 @@ export const handlers: Record<string, Handler> = {
     const { signed } = z.object({ signed: z.object({ request: z.any(), sig: z.string(), by: z.string() }) }).parse(body);
     const a = await B.freeze(signed as never);
     return { body: { account: a.account, agent: a.agent, label: a.label, frozen: Boolean(a.frozenAt), balanceMinor: a.balanceMinor } };
+  },
+  /** An agent issues a card on its balance: one merchant, a cap per charge, a number of charges, a spacing, an expiry. */
+  "POST /api/cards": async ({ body }) => {
+    const { signed } = z.object({ signed: z.object({ body: z.any(), sig: z.string() }) }).parse(body);
+    const c = await B.issueCard(signed as never);
+    return { body: await B.cardById(c.id) };
+  },
+  /** The merchant a card is locked to charges it. Signed by the merchant's key. */
+  "POST /api/cards/charge": async ({ body }) => {
+    const { signed } = z.object({ signed: z.object({ request: z.any(), sig: z.string() }) }).parse(body);
+    const r = await B.charge(signed as never);
+    return {
+      status: r.status === "DENIED" ? 403 : r.status === "FAILED" ? 502 : 200,
+      body: {
+        status: r.status, duplicate: r.duplicate, chargeId: r.transfer?.id ?? null, reasons: withMeaning(r.reasons),
+        card: r.card ? { id: r.card.id, state: B.cardState(r.card), charges: r.card.charges, maxCharges: r.card.maxCharges } : null,
+        paypal: r.transfer?.payoutBatchId ? { payoutBatchId: r.transfer.payoutBatchId, payoutStatus: r.transfer.payoutStatus } : null, receipt: r.receipt,
+      },
+    };
+  },
+  /** The card's holder, or the owner of its account, cancels it. */
+  "POST /api/cards/cancel": async ({ body }) => {
+    const { signed } = z.object({ signed: z.object({ request: z.any(), sig: z.string(), by: z.string() }) }).parse(body);
+    const c = await B.cancelCard(signed as never);
+    return { body: await B.cardById(c.id) };
+  },
+  /** A card's signed terms, what has been used, and every attempt to charge it. Nothing in it is secret. */
+  "GET /api/cards/:id": async ({ params }) => {
+    const c = await B.cardById(params.id!);
+    return c ? { body: c } : { status: 404, body: { error: "No such card." } };
   },
   /** The books: every balance, and whether they add up. */
   "GET /api/bank": async () => ({ body: await B.position() }),

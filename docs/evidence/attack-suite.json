@@ -1,9 +1,9 @@
 {
-  "ranAt": "2026-11-11T14:34:09.517Z",
+  "ranAt": "2026-11-11T15:33:18.260Z",
   "paypal": "built-in simulator",
   "summary": {
-    "attacks": 138,
-    "refused": 138,
+    "attacks": 163,
+    "refused": 163,
     "movedMoney": 0
   },
   "byCategory": {
@@ -50,6 +50,11 @@
     "Balance": {
       "attacks": 27,
       "refused": 27,
+      "movedMoney": 0
+    },
+    "Card": {
+      "attacks": 25,
+      "refused": 25,
       "movedMoney": 0
     }
   },
@@ -1018,6 +1023,181 @@
       "attack": "a freeze signed by the owner, flipped to an unfreeze",
       "refused": true,
       "how": "refused: That isn't properly signed, or is too old.",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "someone who copied the card's details charges it",
+      "refused": true,
+      "how": "NOT_THE_MERCHANT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "another merchant charges a card locked to Lexica",
+      "refused": true,
+      "how": "NOT_THE_MERCHANT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "a charge that names the real merchant but is signed by someone else",
+      "refused": true,
+      "how": "NOT_THE_MERCHANT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "the agent charges its own card to slip money past its owner's rules",
+      "refused": true,
+      "how": "NOT_THE_MERCHANT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "the merchant charges more than the card allows",
+      "refused": true,
+      "how": "OVER_CARD_LIMIT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "the merchant raises the amount after signing the charge",
+      "refused": true,
+      "how": "NOT_THE_MERCHANT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "a negative charge",
+      "refused": true,
+      "how": "BAD_AMOUNT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "a charge signed ten minutes ago",
+      "refused": true,
+      "how": "STALE_REQUEST",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "a charge on a card that does not exist",
+      "refused": true,
+      "how": "UNKNOWN_CARD",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "a signature made for a transfer, reused as a charge",
+      "refused": true,
+      "how": "NOT_THE_MERCHANT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "a card signed by someone else on the agent's balance",
+      "refused": true,
+      "how": "refused: the card is not signed by the key whose balance it would charge",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "the merchant widens the card after the agent signed it",
+      "refused": true,
+      "how": "refused: the card is not signed by the key whose balance it would charge",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "the merchant re-points the card at itself after the agent signed it for another",
+      "refused": true,
+      "how": "refused: the card is not signed by the key whose balance it would charge",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "a card that never expires",
+      "refused": true,
+      "how": "refused: a card needs an expiry after its issue, at most two years on",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "the same signed charge presented twice",
+      "refused": true,
+      "how": "ignored: already charged once",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "the same charge with its signature re-spelled",
+      "refused": true,
+      "how": "NOT_THE_MERCHANT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "a second charge inside the same billing period",
+      "refused": true,
+      "how": "CHARGE_TOO_SOON",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "the merchant cancels the agent's card for it",
+      "refused": true,
+      "how": "refused: Only the card's holder or the owner of its account can cancel it.",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "a stranger cancels the agent's card",
+      "refused": true,
+      "how": "refused: Only the card's holder or the owner of its account can cancel it.",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "five charges at once on a card that allows two",
+      "refused": true,
+      "how": "2 charged, 3 refused CARD_USED_UP",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "a card that allows more per charge than the owner allows per payment",
+      "refused": true,
+      "how": "OVER_ACCOUNT_LIMIT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "card charges that would take the day over the owner's daily limit",
+      "refused": true,
+      "how": "OVER_DAILY_LIMIT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "charging a card while the owner has the account frozen",
+      "refused": true,
+      "how": "ACCOUNT_FROZEN",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "charging a card its owner cancelled",
+      "refused": true,
+      "how": "CARD_CANCELLED",
+      "moneyMoved": false
+    },
+    {
+      "category": "Card",
+      "attack": "presenting the signed card again to bring a cancelled card back",
+      "refused": true,
+      "how": "CARD_CANCELLED",
       "moneyMoved": false
     }
   ]

@@ -247,6 +247,55 @@ const TOOLS: Array<{ name: string; description: string; inputSchema: object; run
     },
   },
   {
+    name: "envelope_card_issue",
+    description: "Issue a card on THIS agent's own balance so that ONE merchant can charge it: for a subscription or a metered service. You set the most it may take per charge, how many charges it allows in total, the least time between charges (the billing period) and how long the card lives. When the charges are used up or the date passes, the card ends by itself: to subscribe for two months, allow two charges. Only the merchant's own key can charge it, so the card's details are not a secret. No one's bank card is involved. The merchant must have an account (acct:xxxx-xxxx-xxxx).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        merchant: { type: "string", description: "The merchant's account, acct:xxxx-xxxx-xxxx" },
+        label: { type: "string", description: "What it is for, e.g. the service's name" },
+        per_charge: { type: "number", description: "Most it may take per charge, in dollars" },
+        charges: { type: "number", description: "How many charges it allows in total, e.g. 2 for two months" },
+        every_days: { type: "number", description: "Least days between charges, e.g. 30. Default 30." },
+        valid_days: { type: "number", description: "Days until the card expires. Default: enough for all charges plus a week." },
+      },
+      required: ["merchant", "label", "per_charge", "charges"],
+      additionalProperties: false,
+    },
+    async run(a) {
+      const me = await key(AGENT, false);
+      const charges = typeof a.charges === "number" && Number.isInteger(a.charges) && a.charges >= 1 ? a.charges : 1;
+      const everyDays = typeof a.every_days === "number" && a.every_days >= 0 ? a.every_days : 30;
+      const validDays = typeof a.valid_days === "number" && a.valid_days > 0 ? a.valid_days : everyDays * charges + 7;
+      const signed = await E.signCard(me, { merchant: text(a.merchant, "merchant", 40), label: text(a.label, "label", 60), perCharge: cents(a.per_charge, "per_charge"), maxCharges: charges, every: Math.round(everyDays * 86400), life: Math.round(validDays * 86400) });
+      const r = await post("/api/cards", { signed });
+      if (r.status !== 200) throw new ToolError(`Refused: ${r.json.error ?? r.status}`);
+      return `Card ${r.json.number} (id ${r.json.id}) issued for ${r.json.merchant.label}: at most ${usd(r.json.perChargeMinor)} a charge, ${r.json.maxCharges} charge(s), one per ${everyDays} day(s), valid until ${r.json.notAfter}. Give the merchant the card id. It will end by itself; cancel it earlier with envelope_card_cancel.`;
+    },
+  },
+  {
+    name: "envelope_card_list",
+    description: "List the cards THIS agent has issued: which merchant each is locked to, its limits, how many charges have been used, and whether it is active, ended, cancelled or expired. Use it to decide whether a subscription should be cancelled before the next charge.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    async run() {
+      const me = await key(AGENT, false);
+      const r = await fetch(`${GATEWAY}/api/agents/${me.publicKey}`).then(async (x) => ({ status: x.status, json: (await x.json().catch(() => ({}))) as Record<string, any> })); // eslint-disable-line @typescript-eslint/no-explicit-any
+      const list = (r.json.cards ?? []) as Array<{ id: string; number: string; state: string; label: string; merchant: { label: string }; perChargeMinor: number; charges: number; maxCharges: number; chargedMinor: number; nextChargeFrom: string | null; notAfter: string }>;
+      if (!list.length) return `${AGENT} has issued no cards.`;
+      return list.map((c) => `${c.id} · ${c.number} · ${c.state} · ${c.label} → ${c.merchant.label}: ${usd(c.perChargeMinor)} a charge, ${c.charges} of ${c.maxCharges} used (${usd(c.chargedMinor)})${c.nextChargeFrom ? `, next charge allowed from ${c.nextChargeFrom}` : ""}, valid until ${c.notAfter}`).join("\n");
+    },
+  },
+  {
+    name: "envelope_card_cancel",
+    description: "Cancel a card THIS agent issued, for example to end a subscription before the next charge. The merchant can never charge it again. It cannot be undone; issue a new card to resubscribe.",
+    inputSchema: { type: "object", properties: { card: { type: "string", description: "The card id (card_…)" } }, required: ["card"], additionalProperties: false },
+    async run(a) {
+      const r = await post("/api/cards/cancel", { signed: await E.signCardCancel(await key(AGENT, false), text(a.card, "card", 60)) });
+      if (r.status !== 200) throw new ToolError(`Refused: ${r.json.error ?? r.status}`);
+      return `Card ${r.json.number} is cancelled. ${r.json.merchant.label} cannot charge it again. It was charged ${r.json.charges} time(s), ${usd(r.json.chargedMinor)} in all.`;
+    },
+  },
+  {
     name: "envelope_introduce",
     description: "Introduce this agent to a payee before any work is done. Returns a token the payee (or its agent) can check to learn who stands behind this agent and whether a payment of this size to them would go through. Moves no money and cannot be reused as a payment.",
     inputSchema: {

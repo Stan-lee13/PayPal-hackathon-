@@ -12,10 +12,20 @@ type SpendT = { id: string; rootId: string; leafLabel: string; amountMinor: numb
 type Profile = {
   key: string; account: string; label: string; firstSeenAt: string; mode: string; demo: boolean; bankDemo: boolean; accounts: Account[];
   receives: { payee: string; owner: { label: string; key: string }; settlesTo: string; openedAt: string; holds: boolean } | null;
-  balance: { minor: number; frozen: boolean; perPaymentMinor: number | null; ledger: Array<{ id: number; kind: string; ref: string; deltaMinor: number; balanceAfterMinor: number; counterparty: string | null; memo: string; at: string }> } | null;
+  cards: CardT[];
+  balance: { minor: number; frozen: boolean; perPaymentMinor: number | null; perDayMinor: number | null; ledger: Array<{ id: number; kind: string; ref: string; deltaMinor: number; balanceAfterMinor: number; counterparty: string | null; memo: string; at: string }> } | null;
   record: { payments: number; paidMinor: number; refused: number; refusedCodes: string[]; revoked: number; availableMinor: number; promisesKept: number; promisesLapsed: number; received: number; receivedMinor: number; setAsideForItMinor: number };
   statement: SpendT[]; incoming: SpendT[];
 };
+type CardT = {
+  id: string; number: string; label: string; state: "ACTIVE" | "USED_UP" | "CANCELLED" | "EXPIRED";
+  merchant: { key: string; label: string; account: string | null };
+  perChargeMinor: number; maxCharges: number; everySeconds: number; notAfter: string; charges: number; chargedMinor: number;
+  nextChargeFrom: string | null; cancelledBy: string | null;
+  attempts: Array<{ id: string; at: string; amountMinor: number; status: string; reasons: string[]; memo: string; payoutBatchId: string | null; payoutStatus: string | null }>;
+};
+const CARD_STATE: Record<CardT["state"], { text: string; tone: "green" | "red" | "grey" | "amber" }> = { ACTIVE: { text: "Active", tone: "green" }, USED_UP: { text: "Ended itself", tone: "grey" }, CANCELLED: { text: "Cancelled", tone: "red" }, EXPIRED: { text: "Expired", tone: "amber" } };
+const period = (s: number) => (s === 0 ? "none" : s % 86400 === 0 ? `${s / 86400} day${s === 86400 ? "" : "s"}` : s < 120 ? `${s} s` : `${Math.round(s / 60)} min`);
 type Standing = { v: string; agent: string; agentLabel: string; account: string; sponsors: Sponsor[]; root: string; ask: { amount: number; currency: string; payee: string; purpose: string }; good: boolean; reasons: Array<{ code: string; detail: string }>; availableMinor: number; paypal: { mode: string; authorizationId: string | null; status: string | null; unusedMinor: number | null }; issuedAt: string; validUntil: string; gateway: string; sig: string };
 
 const STATE: Record<Account["state"], { text: string; tone: "green" | "red" | "grey" | "amber" }> = { LIVE: { text: "Live", tone: "green" }, REVOKED: { text: "Revoked", tone: "red" }, CLOSED: { text: "Closed", tone: "grey" }, EXPIRED: { text: "Expired", tone: "amber" } };
@@ -57,12 +67,12 @@ export function AgentView({ agentKey }: { agentKey: string }) {
   }, [load]);
 
   const [moving, setMoving] = useState<string | null>(null);
-  const [moved, setMoved] = useState<{ narration: string; status: string; reasons: Array<{ code: string; meaning?: string; detail: string }> } | null>(null);
+  const [moved, setMoved] = useState<{ action?: string; narration: string; status: string; reasons: Array<{ code: string; meaning?: string; detail: string }> } | null>(null);
   async function bank(action: string) {
     setMoving(action); setMoved(null);
     try {
       const r = await api("/api/demo/bank", { body: { action } });
-      setMoved(r.ok ? r.json : { narration: r.json.error ?? "That did not work.", status: "FAILED", reasons: [] });
+      setMoved(r.ok ? r.json : { action, narration: r.json.error ?? "That did not work.", status: "FAILED", reasons: [] });
       await load();
     } finally { setMoving(null); }
   }
@@ -89,6 +99,7 @@ export function AgentView({ agentKey }: { agentKey: string }) {
     finally { setBusy(false); }
   }
 
+  const movedCard = Boolean(moved?.action?.startsWith("card-"));
   if (missing) return <p className="sheet p-6 text-sm">{missing} <Link className="link" href="/console">Back to the console</Link>.</p>;
   if (!p) return <p className="label py-10">Pulling the agent's file…</p>;
   const live = p.accounts.filter((a) => a.state === "LIVE");
@@ -140,6 +151,7 @@ export function AgentView({ agentKey }: { agentKey: string }) {
               <li className="leader"><span className="text-ink-2">Answers for it</span><i /><span className="mono text-[.78rem]">{p.receives.owner.label} · {fingerprint(p.receives.owner.key)}</span></li>
               <li className="leader"><span className="text-ink-2">{p.receives.holds ? "Withdraws to PayPal" : "Settles to PayPal"}</span><i /><span className="mono text-[.78rem]">{p.receives.settlesTo}</span></li>
               {p.balance && <li className="leader"><span className="text-ink-2">Most it may pay at once</span><i /><span className="mono text-[.78rem]">{p.balance.perPaymentMinor === null ? "no cap set" : `${usd(p.balance.perPaymentMinor)}, set by ${p.receives.owner.label}`}</span></li>}
+              {p.balance && p.balance.perDayMinor !== null && <li className="leader"><span className="text-ink-2">Most it may spend in a day</span><i /><span className="mono text-[.78rem]">{usd(p.balance.perDayMinor)}, set by {p.receives.owner.label}</span></li>}
               <li className="leader"><span className="text-ink-2">Opened</span><i /><span className="mono text-[.78rem]">{day(p.receives.openedAt)}, signed by the agent and its owner</span></li>
             </ul>
           </section>
@@ -163,7 +175,7 @@ export function AgentView({ agentKey }: { agentKey: string }) {
                 <button type="button" className="btn btn-sm" disabled={Boolean(moving)} onClick={() => bank(p.balance!.frozen ? "unfreeze" : "freeze")}>{p.balance.frozen ? "Owner lifts the freeze" : "Owner freezes it"}</button>
               </div>
             )}
-            {moved && (
+            {moved && !movedCard && (
               <p className="mt-3 text-sm" role="status" data-testid="bank-result">
                 <b className={moved.status === "DENIED" || moved.status === "FAILED" ? "text-red" : "text-green"}>{moved.status === "DENIED" ? "Refused." : moved.status === "BOOKED" ? "Moved." : moved.status === "FROZEN" ? "Frozen." : moved.status === "OPEN" ? "Open again." : moved.status === "FAILED" ? "Failed." : moved.status === "PAID" ? "Paid by PayPal." : "Sent to PayPal."}</b> {moved.narration}
                 {moved.reasons.length > 0 && <span className="mono mt-1 block text-[.72rem] text-red">{moved.reasons.map((r) => `${r.code} · ${r.detail}`).join("  ")}</span>}
@@ -180,6 +192,64 @@ export function AgentView({ agentKey }: { agentKey: string }) {
                 ))}
               </ul>
             )}
+          </section>
+        )}
+
+        {p.balance && (p.bankDemo || p.cards.length > 0) && (
+          <section data-testid="cards">
+            <h2 className="label">Its card</h2>
+            <p className="mt-1.5 max-w-prose text-sm text-ink-2">A Xenoncard is not a number to keep secret. It is this agent&rsquo;s signed permission for <b>one merchant</b> to charge its balance: so much a charge, so many charges, no more often than a billing period, and then it ends by itself. Only that merchant&rsquo;s key can charge it, so the card&rsquo;s details are worth nothing to anyone else. Nobody&rsquo;s bank card is handed to anyone.</p>
+            {p.cards[0] && (() => {
+              const c = p.cards[0]!;
+              return (
+                <div className="mt-4 grid items-center gap-x-6 gap-y-4 sm:grid-cols-[minmax(0,300px)_minmax(0,1fr)]">
+                  <div className={`xcard ${c.state === "ACTIVE" ? "" : "xcard-dead"}`} data-testid="xenoncard">
+                    <Sigil k={p.key} size={210} className="pointer-events-none absolute -right-12 -top-10 opacity-[.13]" />
+                    <div className="relative flex items-start justify-between"><p className="micro !text-[#C9C2B2]">Xenoncard · for agents</p><span className={`micro rounded-[3px] border px-1.5 py-[3px] ${c.state === "ACTIVE" ? "border-[#8FD3A8] !text-[#8FD3A8]" : "border-[#E5A49A] !text-[#E5A49A]"}`}>{CARD_STATE[c.state].text}</span></div>
+                    <p className="mono relative mt-7 text-[1.12rem] tracking-[.14em]">{c.number}</p>
+                    <div className="relative mt-5 flex items-end justify-between gap-3">
+                      <div className="min-w-0"><p className="micro !text-[#C9C2B2]">Locked to</p><p className="title truncate text-[1.15rem] leading-tight">{c.merchant.label}</p></div>
+                      <div className="text-right"><p className="micro !text-[#C9C2B2]">Held by</p><p className="mono text-[.74rem]">{p.label}</p></div>
+                    </div>
+                  </div>
+                  <ul className="space-y-1.5 text-[.86rem]">
+                    <li className="leader"><span className="text-ink-2">Per charge</span><i /><span className="mono text-[.78rem]">{usd(c.perChargeMinor)}</span></li>
+                    <li className="leader"><span className="text-ink-2">Used</span><i /><span className="mono text-[.78rem]" data-testid="card-used">{c.charges} of {c.maxCharges} charges</span></li>
+                    <li className="leader"><span className="text-ink-2">Period</span><i /><span className="mono text-[.78rem]">{period(c.everySeconds)}{p.bankDemo ? " (demo)" : ""}</span></li>
+                    <li className="leader"><span className="text-ink-2">Until</span><i /><span className="mono text-[.78rem]">{stamp(c.notAfter)}</span></li>
+                    <li className="leader"><span className="text-ink-2">Merchant key</span><i /><span className="mono text-[.78rem]">{fingerprint(c.merchant.key)}</span></li>
+                    {c.nextChargeFrom && <li className="leader"><span className="text-ink-2">Next from</span><i /><span className="mono text-[.78rem]">{new Date(c.nextChargeFrom).toISOString().slice(11, 19)}</span></li>}
+                  </ul>
+                </div>
+              );
+            })()}
+            {p.bankDemo && (
+              <div className="mt-4 flex flex-wrap gap-2" data-testid="card-actions">
+                <button type="button" className="btn btn-sm btn-ink" disabled={Boolean(moving)} onClick={() => bank("card-subscribe")}>{moving === "card-subscribe" ? "Signing…" : "Subscribe to Lexica Pro with its card"}</button>
+                <button type="button" className="btn btn-sm" disabled={Boolean(moving) || !p.cards[0]} onClick={() => bank("card-charge")}>{moving === "card-charge" ? "Charging…" : "Merchant charges the next period"}</button>
+                <button type="button" className="btn btn-sm" disabled={Boolean(moving) || !p.cards[0]} onClick={() => bank("card-overcharge")}>Merchant overcharges $19</button>
+                <button type="button" className="btn btn-sm" disabled={Boolean(moving) || !p.cards[0]} onClick={() => bank("card-thief")}>A thief uses the card details</button>
+                <button type="button" className="btn btn-sm" disabled={Boolean(moving) || !p.cards[0] || p.cards[0].state !== "ACTIVE"} onClick={() => bank("card-cancel")}>Agent cancels the card</button>
+              </div>
+            )}
+            {movedCard && (
+              <p className="mt-3 text-sm" role="status" data-testid="card-result">
+                <b className={moved!.status === "DENIED" || moved!.status === "FAILED" || moved!.status === "CANCELLED" ? "text-red" : "text-green"}>{moved!.status === "DENIED" ? "Declined." : moved!.status === "CANCELLED" ? "Cancelled." : moved!.status === "FAILED" ? "Failed." : moved!.status === "PAID" ? "Charged; PayPal paid the merchant." : moved!.status === "BOOKED" ? "Charged." : "Charged; sent to PayPal."}</b> {moved!.narration}
+                {moved!.reasons.length > 0 && <span className="mono mt-1 block text-[.72rem] text-red">{moved!.reasons.map((r) => `${r.code} · ${r.detail}`).join("  ")}</span>}
+              </p>
+            )}
+            {p.cards[0] && p.cards[0].attempts.length > 0 && (
+              <ul className="ledger mt-4 border-t-[1.5px] border-ink" data-testid="card-attempts">
+                {p.cards[0].attempts.map((a) => (
+                  <li key={a.id} className="flex items-baseline justify-between gap-3 py-2">
+                    <p className="min-w-0 text-[.86rem]"><span className="mono mr-2 text-[.7rem] text-ink-3">{stamp(a.at)}</span>{a.status === "DENIED" ? "Declined" : a.status === "FAILED" ? "Failed" : "Charged"}{a.memo && <span className="text-xs text-ink-2"> · {a.memo}</span>}{a.reasons.length > 0 && <span className="mono ml-2 text-[.68rem] text-red">{a.reasons.join(" · ")}</span>}{a.payoutBatchId && <span className="mono ml-2 text-[.68rem] text-ink-3">payout {a.payoutBatchId}{a.payoutStatus ? ` (${a.payoutStatus})` : ""}</span>}</p>
+                    <span className={`figure shrink-0 text-[1.02rem] ${a.status === "DENIED" || a.status === "FAILED" ? "text-ink-3 line-through decoration-red decoration-2" : ""}`}>{usd(a.amountMinor)}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {p.cards.length > 1 && <p className="mt-2 text-xs text-ink-3">Earlier cards: {p.cards.slice(1).map((c) => `${c.label} (${CARD_STATE[c.state].text.toLowerCase()}, ${c.charges} of ${c.maxCharges})`).join(" · ")}</p>}
+            <p className="mt-3 text-xs text-ink-3">A Xenoncard works where the merchant has an account on this gateway. It is not a Visa, Mastercard or Verve card and cannot be typed into a checkout that expects one.</p>
           </section>
         )}
 

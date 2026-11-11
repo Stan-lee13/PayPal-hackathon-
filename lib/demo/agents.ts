@@ -46,9 +46,14 @@ export async function ensureCounterparty() {
   const [pf, cy] = [await globalKey("proofreader-agent"), await globalKey("cy")];
   if (!(await db.query.accounts.findFirst({ where: eq(accounts.agent, pf.key.publicKey) })))
     await G.openAccount(await E.signAccount(pf.key, cy.key, { label: "proofreader-agent", ownerName: "Cy", settleTo: "proofreader@example.com", mode: "hold" }));
+  // A merchant that sells a subscription and accepts Xenoncard: its income is paid straight out by PayPal.
+  const [lx, lo] = [await globalKey("lexica-pro"), await globalKey("lexica-ltd")];
+  if (!(await db.query.accounts.findFirst({ where: eq(accounts.agent, lx.key.publicKey) })))
+    await G.openAccount(await E.signAccount(lx.key, lo.key, { label: "Lexica Pro", ownerName: "Lexica Ltd", settleTo: (process.env.ENVELOPE_PAYEE_3 || "billing-lexica@example.com").toLowerCase() }));
   return {
     key: agent.key.publicKey, label: "translator-agent", owner: "Bea", account: E.accountNumber(agent.key.publicKey), payee: E.accountPayee(agent.key.publicKey),
     proofreader: { key: pf.key.publicKey, label: "proofreader-agent", owner: "Cy", payee: E.accountPayee(pf.key.publicKey) },
+    merchant: { key: lx.key.publicKey, label: "Lexica Pro", owner: "Lexica Ltd", payee: E.accountPayee(lx.key.publicKey) },
   };
 }
 
@@ -56,7 +61,9 @@ export async function ensureCounterparty() {
  * DEMO: translator-agent uses its balance. Each step is signed with the demo key and handed to the
  * same bank code any agent would reach through POST /api/bank/transfer.
  */
-export const BANK_ACTIONS = ["pay-proofreader", "withdraw", "drain", "freeze", "unfreeze"] as const;
+/** DEMO: a "month" on the demo subscription, so two billing periods fit in a visit. */
+export const DEMO_PERIOD_SECONDS = 30;
+export const BANK_ACTIONS = ["pay-proofreader", "withdraw", "drain", "freeze", "unfreeze", "card-subscribe", "card-charge", "card-overcharge", "card-thief", "card-cancel"] as const;
 export type BankAction = (typeof BANK_ACTIONS)[number];
 export async function bankAct(action: BankAction) {
   const cp = await ensureCounterparty();
@@ -65,6 +72,7 @@ export async function bankAct(action: BankAction) {
     const a = await B.freeze(await E.signFreeze(bea.key, tr.key.publicKey, action === "freeze"));
     return { action, narration: action === "freeze" ? "Bea signed a freeze. Nothing can leave translator-agent's balance until she lifts it." : "Bea lifted the freeze.", status: a.frozenAt ? "FROZEN" : "OPEN", reasons: [] as E.Violation[], balanceMinor: a.balanceMinor, transferId: null as string | null };
   }
+  if (action.startsWith("card-")) return cardAct(action, tr.key, cp);
   const acct = (await getDb().query.accounts.findFirst({ where: eq(accounts.agent, tr.key.publicKey) }))!;
   const signed =
     action === "pay-proofreader" ? await E.signTransfer(tr.key, { amount: 1200, payee: cp.proofreader.payee, purpose: "proofreading", memo: "Proofread the Spanish strings" })
@@ -76,6 +84,36 @@ export async function bankAct(action: BankAction) {
     : action === "withdraw" ? "translator-agent signed a $20.00 withdrawal to its owner's PayPal address."
     : "A compromised translator-agent tried to send its whole balance to a stranger.";
   return { action, narration, status: r.status as string, reasons: r.reasons, balanceMinor: r.balanceMinor, transferId: r.transfer?.id ?? null };
+}
+/**
+ * DEMO: translator-agent subscribes to a tool with a card of its own. The card is signed with the
+ * demo agent's key and charged with the demo merchant's key, through the same code as
+ * POST /api/cards and POST /api/cards/charge.
+ */
+async function cardAct(action: BankAction, agent: E.KeyPair, cp: Awaited<ReturnType<typeof ensureCounterparty>>) {
+  const out = (narration: string, status: string, reasons: E.Violation[] = [], balanceMinor: number | null = null, transferId: string | null = null) => ({ action, narration, status, reasons, balanceMinor, transferId });
+  const [lexica, thief] = [await globalKey("lexica-pro"), await globalKey("proofreader-agent")];
+  if (action === "card-subscribe") {
+    const card = await B.issueCard(await E.signCard(agent, { merchant: cp.merchant.payee, label: "Lexica Pro", perCharge: 900, maxCharges: 2, every: DEMO_PERIOD_SECONDS, life: 3600 }));
+    const r = await B.charge(await E.signCharge(lexica.key, { card: card.id, amount: 900, memo: "Period 1" }));
+    return out(`translator-agent signed a card locked to Lexica Pro: $9.00 a charge, two charges, then it ends. Lexica charged the first period.`, r.status, r.reasons, r.balanceMinor, r.transfer?.id ?? null);
+  }
+  const card = (await B.cardsOf(agent.publicKey))[0];
+  if (!card) throw new UserFacingError("Issue a card first: press “Subscribe with its card”.", 409);
+  if (action === "card-cancel") {
+    await B.cancelCard(await E.signCardCancel(agent, card.id));
+    return out("translator-agent cancelled its card. Lexica Pro cannot charge it again.", "CANCELLED");
+  }
+  const signed =
+    action === "card-charge" ? await E.signCharge(lexica.key, { card: card.id, amount: 900, memo: `Period ${card.charges + 1}` })
+    : action === "card-overcharge" ? await E.signCharge(lexica.key, { card: card.id, amount: 1900, memo: "Upgrade to Team plan" })
+    : await E.signCharge(thief.key, { card: card.id, amount: 900, memo: "Period 1" });
+  const r = await B.charge(signed);
+  const narration =
+    action === "card-charge" ? "Lexica Pro charged the card for the next period."
+    : action === "card-overcharge" ? "Lexica Pro tried to charge $19.00 on a card that allows $9.00."
+    : "Someone who copied the card's details tried to charge it. They do not have Lexica Pro's key.";
+  return out(narration, r.status, r.reasons, r.balanceMinor, r.transfer?.id ?? null);
 }
 /** DEMO: is this the built-in agent whose balance the demo can move? */
 export async function isBankDemoAgent(agentKey: string): Promise<boolean> {

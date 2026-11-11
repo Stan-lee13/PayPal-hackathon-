@@ -340,5 +340,71 @@ export async function runCorpus(deps: { G: G; B: Bank; sim: Sim; reset: () => Pr
     await guarded("a freeze signed by the owner, flipped to an unfreeze", async () => { const f = await E.signFreeze(bea!, tr!.publicKey, true); return B.freeze({ ...f, request: { ...f.request, frozen: false } }); });
   }
 
+  // ---- 10. Cards ---------------------------------------------------------------------------------------
+  // translator-agent (owner Bea, $30 a payment, $60 a day) holds $90 and issues a card locked to Lexica.
+  {
+    await deps.reset();
+    const [ada, ops, bea, tr, lo, lx, go, gl, rogue] = await Promise.all([1, 2, 3, 4, 5, 6, 7, 8, 9].map(() => E.generateKeyPair()));
+    await G.openAccount(await E.signAccount(tr!, bea!, { label: "translator-agent", ownerName: "Bea", settleTo: "bea@example.com", mode: "hold", perPayment: 3000, perDay: 6000 }));
+    await G.openAccount(await E.signAccount(lx!, lo!, { label: "Lexica Pro", ownerName: "Lexica Ltd", settleTo: "billing@lexica.example", mode: "hold" }));
+    await G.openAccount(await E.signAccount(gl!, go!, { label: "Glossa", ownerName: "Glossa Inc", settleTo: "pay@glossa.example", mode: "hold" }));
+    const me = E.accountPayee(tr!.publicKey), lexica = E.accountPayee(lx!.publicKey);
+    const chain = await E.seal(ada!, { publicKey: ops!.publicKey, label: "ops-agent" }, { currency: "USD", limit: 20000, perPayment: 10000, payees: [me], purposes: ["translation"], notAfter: EXP(), splits: 0 });
+    await G.registerRoot({ chain, principalName: "Ada", title: "Launch budget" });
+    await G.spend(await E.signSpend(chain, ops!, { amount: 9000, payee: me, purpose: "translation" }));
+    const card = await B.issueCard(await E.signCard(tr!, { merchant: lexica, label: "Lexica Pro", perCharge: 900, maxCharges: 2, every: 3600, life: 7200 }));
+    const bal = () => deps.balanceOf(tr!.publicKey);
+    /** Refused AND the holder's balance is exactly where it was. */
+    const guarded = (name: string, fn: () => Promise<unknown>) => attack("Card", name, async () => {
+      const before = await bal();
+      let r: unknown;
+      try { r = await fn(); } catch (e) { r = `refused: ${e instanceof Error ? e.message.slice(0, 80) : "error"}`; }
+      return before === (await bal()) ? r : { status: `BALANCE CHANGED ${before} -> ${await bal()}` };
+    });
+    const chargeAs = async (k: E.KeyPair, amount: number, id = card.id, now?: Date) => B.charge(await E.signCharge(k, { card: id, amount }, now));
+
+    await guarded("someone who copied the card's details charges it", async () => chargeAs(rogue!, 900));
+    await guarded("another merchant charges a card locked to Lexica", async () => chargeAs(gl!, 900));
+    await guarded("a charge that names the real merchant but is signed by someone else", async () => { const c = await E.signCharge(rogue!, { card: card.id, amount: 900 }); c.request.merchant = lx!.publicKey; return B.charge(c); });
+    await guarded("the agent charges its own card to slip money past its owner's rules", async () => chargeAs(tr!, 900));
+    await guarded("the merchant charges more than the card allows", async () => chargeAs(lx!, 901));
+    await guarded("the merchant raises the amount after signing the charge", async () => { const c = await E.signCharge(lx!, { card: card.id, amount: 100 }); return B.charge({ ...c, request: { ...c.request, amount: 900 } }); });
+    await guarded("a negative charge", async () => chargeAs(lx!, -900));
+    await guarded("a charge signed ten minutes ago", async () => chargeAs(lx!, 900, card.id, new Date(Date.now() - 10 * 60_000)));
+    await guarded("a charge on a card that does not exist", async () => chargeAs(lx!, 900, "card_doesnotexist"));
+    await guarded("a signature made for a transfer, reused as a charge", async () => { const c = await E.signCharge(lx!, { card: card.id, amount: 900 }); return B.charge({ ...c, sig: await E.signDetached(lx!.privateKey, E.TRANSFER_VERSION, c.request) }); });
+    await guarded("a card signed by someone else on the agent's balance", async () => { const f = await E.signCard(rogue!, { merchant: lexica, label: "x", perCharge: 9000, maxCharges: 9, life: 3600 }); f.body.holder = tr!.publicKey; return B.issueCard(f); });
+    await guarded("the merchant widens the card after the agent signed it", async () => { const c = await E.signCard(tr!, { merchant: lexica, label: "Lexica Pro", perCharge: 900, maxCharges: 2, life: 3600 }); return B.issueCard({ ...c, body: { ...c.body, perCharge: 90000, maxCharges: 100 } }); });
+    await guarded("the merchant re-points the card at itself after the agent signed it for another", async () => { const c = await E.signCard(tr!, { merchant: lexica, label: "Lexica Pro", perCharge: 900, maxCharges: 2, life: 3600 }); return B.issueCard({ ...c, body: { ...c.body, merchant: E.accountPayee(gl!.publicKey) } }); });
+    await guarded("a card that never expires", async () => B.issueCard(await E.signCard(tr!, { merchant: lexica, label: "x", perCharge: 900, maxCharges: 2, life: 50 * 366 * 86400 })));
+    // one honest charge, then abuse of it
+    const first = await E.signCharge(lx!, { card: card.id, amount: 900, memo: "Period 1" });
+    await B.charge(first);
+    await guarded("the same signed charge presented twice", async () => { const r = await B.charge(first); return r.duplicate ? "ignored: already charged once" : r; });
+    await guarded("the same charge with its signature re-spelled", async () => B.charge({ ...first, sig: `${first.sig}==` }));
+    await guarded("a second charge inside the same billing period", async () => chargeAs(lx!, 900));
+    await guarded("the merchant cancels the agent's card for it", async () => B.cancelCard(await E.signCardCancel(lx!, card.id)));
+    await guarded("a stranger cancels the agent's card", async () => B.cancelCard(await E.signCardCancel(rogue!, card.id)));
+    // a card that allows two charges, charged five times at once
+    const burst = await B.issueCard(await E.signCard(tr!, { merchant: lexica, label: "Burst", perCharge: 500, maxCharges: 2, life: 3600 }));
+    await attack("Card", "five charges at once on a card that allows two", async () => {
+      const before = await bal();
+      const rs = await Promise.all((await Promise.all(Array.from({ length: 5 }, () => E.signCharge(lx!, { card: burst.id, amount: 500 })))).map((c) => B.charge(c)));
+      const ok = rs.filter((r) => r.status === "BOOKED").length;
+      return ok === 2 && before - (await bal()) === 1000 ? "2 charged, 3 refused CARD_USED_UP" : { status: `${ok} CHARGED` };
+    });
+    // the owner's rules outrank the card
+    const big = await B.issueCard(await E.signCard(tr!, { merchant: lexica, label: "Big", perCharge: 9000, maxCharges: 20, life: 3600 }));
+    await guarded("a card that allows more per charge than the owner allows per payment", async () => chargeAs(lx!, 3001, big.id));
+    await B.charge(await E.signCharge(lx!, { card: big.id, amount: 3000 }));
+    await guarded("card charges that would take the day over the owner's daily limit", async () => chargeAs(lx!, 2000, big.id));
+    await B.freeze(await E.signFreeze(bea!, tr!.publicKey, true));
+    await guarded("charging a card while the owner has the account frozen", async () => chargeAs(lx!, 100, big.id));
+    await B.freeze(await E.signFreeze(bea!, tr!.publicKey, false, new Date(Date.now() + 1000)));
+    await B.cancelCard(await E.signCardCancel(bea!, big.id));
+    await guarded("charging a card its owner cancelled", async () => chargeAs(lx!, 100, big.id));
+    await guarded("presenting the signed card again to bring a cancelled card back", async () => { await B.issueCard(big.signed); return chargeAs(lx!, 100, big.id); });
+  }
+
   return rows;
 }

@@ -191,3 +191,8 @@ select.field { appearance: none; background-image: linear-gradient(45deg, transp
   .btn:active:not(:disabled) { transform: none; }
   .meter > i { transition: none; }
 }
+
+/* Xenoncard: the agent's card. Dark stock, the holder's sigil as a watermark. */
+.xcard { position: relative; overflow: hidden; aspect-ratio: 1.586; border-radius: 14px; padding: 18px 20px; color: #FCFAF4;
+  background: linear-gradient(135deg, #1B2B6B 0%, #17140F 62%); box-shadow: 0 1px 0 rgb(255 255 255 / .12) inset, 0 14px 28px -14px rgb(23 20 15 / .55); }
+.xcard-dead { filter: grayscale(.85); opacity: .72; }

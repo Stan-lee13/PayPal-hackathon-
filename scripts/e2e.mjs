@@ -8,7 +8,8 @@
  * Covers: seal with a key held in the browser, agents split, money set aside and released when a
  * named agent signs for the delivered work, a direct payment, a payment over the owner's threshold
  * that waits for the owner's signature, the earning agent's passport and balance (transfer to another
- * agent, a refused drain, an owner freeze, a withdrawal), the books, a receipt checked against PayPal and in
+ * agent, a refused drain, an owner freeze, a withdrawal), its card (a subscription charged by the
+ * merchant, three declined charges, cancellation), the books, a receipt checked against PayPal and in
  * the browser, proof of funds, three attacks denied, close, and a second tab seeing the same data.
  */
 import { createRequire } from "node:module";
@@ -78,6 +79,25 @@ try {
   await bal.getByTestId("ledger").getByText("Withdrawn to its owner at").first().waitFor(T);
   if (OUT) await page.screenshot({ path: `${OUT}/local-3b-balance.png`, fullPage: true }).catch(() => {});
   console.log("balance: agent-to-agent transfer booked, drain refused, freeze held, withdrawal sent");
+  // its card: a subscription it pays itself, that only the merchant can charge, within what the card allows
+  const cards = page.getByTestId("cards");
+  const cardSaid = page.getByTestId("card-result");
+  await cards.getByRole("button", { name: "Subscribe to Lexica Pro with its card" }).click();
+  await cardSaid.getByText(/^Charged/).waitFor(T);
+  await page.getByTestId("xenoncard").getByText("Lexica Pro").waitFor(T);
+  await page.getByTestId("card-used").getByText("1 of 2 charges").waitFor(T);
+  await cards.getByRole("button", { name: "Merchant charges the next period" }).click();
+  await cardSaid.getByText(/CHARGE_TOO_SOON/).waitFor(T);
+  await cards.getByRole("button", { name: "Merchant overcharges $19" }).click();
+  await cardSaid.getByText(/OVER_CARD_LIMIT/).waitFor(T);
+  await cards.getByRole("button", { name: "A thief uses the card details" }).click();
+  await cardSaid.getByText(/NOT_THE_MERCHANT/).waitFor(T);
+  if (OUT) await page.screenshot({ path: `${OUT}/local-3d-card.png`, fullPage: true }).catch(() => {});
+  await cards.getByRole("button", { name: "Agent cancels the card" }).click();
+  await cardSaid.getByText("Cancelled.").waitFor(T);
+  await cards.getByRole("button", { name: "Merchant charges the next period" }).click();
+  await cardSaid.getByText(/CARD_CANCELLED/).waitFor(T);
+  console.log("card: subscribed and charged once; too soon, overcharge and a thief declined; cancelled by the agent");
   await page.goto(`${BASE}/bank`);
   await page.getByTestId("bank-checks").getByText("Books balance").waitFor(T);
   await page.getByTestId("bank-accounts").getByText("proofreader-agent").waitFor(T);

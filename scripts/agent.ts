@@ -23,6 +23,12 @@
  *   npx tsx scripts/agent.ts freeze   --as <owner> --agent <agent>                  (and: unfreeze)
  *   npx tsx scripts/agent.ts books
  *
+ * A card (the agent lets ONE merchant charge its balance, within limits, and it ends by itself):
+ *   npx tsx scripts/agent.ts card        --as <agent> --merchant acct:xxxx-xxxx-xxxx --label "Lexica Pro" --per-charge 9 --charges 2 --every-days 30 --valid-days 70
+ *   npx tsx scripts/agent.ts cards       --as <agent>
+ *   npx tsx scripts/agent.ts cancel-card --as <agent or its owner> <card id>
+ *   npx tsx scripts/agent.ts charge      --as <merchant> --card <card id> --amount 9 --memo "November"   (run by the merchant)
+ *
  * GATEWAY=http://localhost:3000 by default.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -147,6 +153,47 @@ switch (cmd) {
     const r = await post("/api/bank/freeze", { signed: await E.signFreeze(owner, agent.publicKey, cmd === "freeze") });
     if (r.status !== 200) { console.error(`Refused: ${r.json.error}`); process.exit(1); }
     console.log(`${r.json.label}'s account is ${r.json.frozen ? "frozen: nothing can leave its balance" : "open again"}. Balance ${usd(r.json.balanceMinor)}.`);
+    break;
+  }
+  case "card": {
+    // Issue a card on this agent's balance. Nothing secret is created: only the merchant's key can charge it.
+    const me = await key(need("as"));
+    const every = args["every-seconds"] ? Number(args["every-seconds"]) : Math.round(Number(args["every-days"] ?? "30") * 86400);
+    const signed = await E.signCard(me, { merchant: need("merchant"), label: args.label ?? "Card", perCharge: cents(need("per-charge")), maxCharges: Number(args.charges ?? "1"), every, life: Math.round(Number(args["valid-days"] ?? "35") * 86400) });
+    const r = await post("/api/cards", { signed });
+    if (r.status !== 200) { console.error(`Refused: ${r.json.error}`); process.exit(1); }
+    console.log(`Card ${r.json.number} (${r.json.id}) for ${r.json.merchant.label}: at most ${usd(r.json.perChargeMinor)} a charge, ${r.json.maxCharges} charge(s), one per ${every} s, until ${r.json.notAfter}.`);
+    console.log(`  Give the merchant the card id. Only ${r.json.merchant.label}'s key can charge it. ${GATEWAY}/api/cards/${r.json.id}`);
+    break;
+  }
+  case "cards": {
+    const me = await key(need("as"));
+    const r = await fetch(`${GATEWAY}/api/agents/${me.publicKey}`).then(async (x) => ({ status: x.status, json: (await x.json()) as Record<string, any> })); // eslint-disable-line @typescript-eslint/no-explicit-any
+    if (r.status !== 200) { console.error(r.json.error ?? r.status); process.exit(1); }
+    if (!r.json.cards?.length) console.log(`${args.as} has issued no cards.`);
+    for (const c of r.json.cards ?? []) console.log(`${c.number}  ${c.state.padEnd(9)} ${c.label} → ${c.merchant.label}: ${usd(c.perChargeMinor)} a charge, ${c.charges} of ${c.maxCharges} used, ${usd(c.chargedMinor)} charged  (${c.id})`);
+    break;
+  }
+  case "cancel-card": {
+    const who = await key(need("as"));
+    const r = await post("/api/cards/cancel", { signed: await E.signCardCancel(who, positional[0] ?? need("card")) });
+    if (r.status !== 200) { console.error(`Refused: ${r.json.error}`); process.exit(1); }
+    console.log(`Card ${r.json.number} is cancelled. ${r.json.merchant.label} cannot charge it again. It was charged ${r.json.charges} time(s), ${usd(r.json.chargedMinor)} in all.`);
+    break;
+  }
+  case "charge": {
+    // Run by the merchant the card is locked to.
+    const merchant = await key(need("as"));
+    const signed = await E.signCharge(merchant, { card: need("card"), amount: cents(need("amount")), memo: args.memo });
+    const r = await post("/api/cards/charge", { signed });
+    if (r.json.status === "DENIED") {
+      console.log("DECLINED. Nothing moved.");
+      for (const x of r.json.reasons ?? []) console.log(`  ${x.code}: ${x.meaning} (${x.detail})`);
+      process.exit(3);
+    }
+    if (!r.json.status) { console.error(`Gateway error: ${r.json.error ?? r.status}`); process.exit(1); }
+    console.log(`${r.json.status}: charged ${usd(signed.request.amount)}${r.json.duplicate ? " (already done; not charged twice)" : ""}. Charge ${r.json.card.charges} of ${r.json.card.maxCharges}.`);
+    if (r.json.paypal) console.log(`  PayPal payout ${r.json.paypal.payoutBatchId} (${r.json.paypal.payoutStatus ?? "pending"})`);
     break;
   }
   case "balance": {
@@ -296,5 +343,5 @@ switch (cmd) {
     break;
   }
   default:
-    console.log("Commands: keygen, seal, split, pay, promise, keep, release, accept, verify-promise, reference, open-account, balance, transfer, withdraw, freeze, unfreeze, books, show, revoke, close, hello, check, whois. See the header of scripts/agent.ts.");
+    console.log("Commands: keygen, seal, split, pay, promise, keep, release, accept, verify-promise, reference, open-account, balance, transfer, withdraw, freeze, unfreeze, books, card, cards, cancel-card, charge, show, revoke, close, hello, check, whois. See the header of scripts/agent.ts.");
 }
