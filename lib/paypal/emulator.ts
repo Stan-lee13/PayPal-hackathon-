@@ -13,7 +13,7 @@ type Money = { currency_code: string; value: string };
 type SimAuth = { id: string; order_id: string; status: "CREATED" | "PARTIALLY_CAPTURED" | "CAPTURED" | "VOIDED"; amount: Money; custom_id: string; expiration_time: string; create_time: string; captured: number };
 type SimCapture = { id: string; authorization_id: string; status: "COMPLETED" | "PENDING" | "DECLINED" | "REFUNDED"; amount: Money; invoice_id?: string; custom_id: string };
 type SimPayout = { batch_id: string; sender_batch_id: string; item_id: string; transaction_id: string; item_status: "SUCCESS" | "UNCLAIMED"; receiver: string; amount: { currency: string; value: string } };
-type Sim = { auths: Record<string, SimAuth>; captures: Record<string, SimCapture>; payouts: Record<string, SimPayout>; idem: Record<string, { status: number; body: unknown }>; calls: string[]; failNext: string | null; nextCapture?: "PENDING" | null; refuseRefunds?: boolean };
+type Sim = { auths: Record<string, SimAuth>; captures: Record<string, SimCapture>; payouts: Record<string, SimPayout>; idem: Record<string, { status: number; body: unknown }>; calls: string[]; failNext: string | null; failLeft?: number; nextCapture?: "PENDING" | null; refuseRefunds?: boolean };
 
 function state(): Sim {
   return simState<Sim>("paypal", () => ({ auths: {}, captures: {}, payouts: {}, idem: {}, calls: [], failNext: null }));
@@ -25,7 +25,7 @@ const reply = (status: number, body: unknown) => { last = { status, body }; retu
 const err = (status: number, name: string, issue: string, description: string) => reply(status, { name, message: description, debug_id: "sim", details: [{ issue, description }] });
 
 /** Tests: make the next call whose path contains `fragment` fail with a 500. */
-export async function simFailNext(fragment: string | null) { await withSimState(() => { state().failNext = fragment; }); }
+export async function simFailNext(fragment: string | null, times = 1) { await withSimState(() => { state().failNext = fragment; state().failLeft = times; }); }
 /** Tests: the next capture comes back PENDING (PayPal is still reviewing it) and stays so until simSetCapture. */
 export async function simNextCapturePending() { await withSimState(() => { state().nextCapture = "PENDING"; }); }
 export async function simSetCapture(id: string, status: "COMPLETED" | "DECLINED") { await withSimState(() => { const c = state().captures[id]; if (c) c.status = status; }); }
@@ -50,7 +50,7 @@ function route(input: string, init: RequestInit): Response {
     try { body = JSON.parse(init.body); } catch { return err(400, "MALFORMED_REQUEST_JSON", "MALFORMED_REQUEST_JSON", "The request JSON is not well formed."); }
   }
   if (p === "/v1/oauth2/token" && method === "POST") return reply(200, { access_token: "SIMULATED-TOKEN", token_type: "Bearer", expires_in: 32400 });
-  if (s.failNext && p.includes(s.failNext) && method !== "GET") { s.failNext = null; return err(500, "INTERNAL_SERVER_ERROR", "INTERNAL_SERVICE_ERROR", "Simulated PayPal outage."); }
+  if (s.failNext && p.includes(s.failNext) && method !== "GET") { s.failLeft = (s.failLeft ?? 1) - 1; if (s.failLeft <= 0) s.failNext = null; return err(500, "INTERNAL_SERVER_ERROR", "INTERNAL_SERVICE_ERROR", "Simulated PayPal outage."); }
 
   const rid = headers.get("PayPal-Request-Id");
   const key = `${method} ${p} ${rid}`;

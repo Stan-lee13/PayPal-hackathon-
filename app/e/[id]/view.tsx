@@ -3,7 +3,7 @@
 import { api, gatewayInBrowser } from "@/lib/client/api";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { accountNumber, fingerprint, signAccept, signRevoke, type Caps, type KeyPair } from "@/lib/envelope/core";
+import { accountNumber, fingerprint, signAccept, signRead, signRevoke, type Caps, type KeyPair } from "@/lib/envelope/core";
 import { principalKey } from "@/lib/principal-key";
 import { Mission } from "./mission";
 import { Figure, Flap, Meter, Postmark, Sigil, SpendStamp, Stamp, usd } from "@/components/stationery";
@@ -57,7 +57,8 @@ export function EnvelopeView({ id }: { id: string }) {
     setBusy(label); setErr(null);
     try {
       for (const action of actions) {
-        const r = await api("/api/demo/act", { body: { rootId: id, action } });
+        if (!me) { setErr("The built-in agents act only for the owner. Open this envelope in the browser that sealed it."); break; }
+        const r = await api("/api/demo/act", { body: { rootId: id, action, owner: await signRead(me, "demo", id) } });
         const j = r.json;
         if (!r.ok) { setErr(j.error ?? "That step failed."); break; }
         say(j.narration);

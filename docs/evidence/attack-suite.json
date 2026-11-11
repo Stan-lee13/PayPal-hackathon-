@@ -1,5 +1,5 @@
 {
-  "ranAt": "2026-11-11T18:25:58.339Z",
+  "ranAt": "2026-11-11T18:34:40.407Z",
   "paypal": "built-in simulator",
   "summary": {
     "attacks": 171,
@@ -243,7 +243,7 @@
       "category": "Tampered chain",
       "attack": "second block reusing a known id with different limits (fork)",
       "refused": true,
-      "how": "FORKED_BLOCK",
+      "how": "NOT_THE_HOLDER",
       "moneyMoved": false
     },
     {

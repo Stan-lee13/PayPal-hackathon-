@@ -127,7 +127,7 @@ d("agent balances (simulated PayPal)", async () => {
     const out = await B.transfer(await E.signTransfer(w.tr, { amount: 1500, payee: "glossary-vendor@example.com", purpose: "glossary" }));
     expect(out.status).toBe("PAID");
     expect(out.transfer).toMatchObject({ payoutTo: "glossary-vendor@example.com" });
-    expect(out.receipt!.to).toMatchObject({ kind: "paypal", address: "glossary-vendor@example.com" });
+    expect(out.receipt!.to).toMatchObject({ kind: "paypal", address: "g•••@example.com" });
     // an account that settles (does not hold) is paid out to the address its owner signed for
     const settle = await B.transfer(await E.signTransfer(w.tr, { amount: 500, payee: w.archive, purpose: "storage" }));
     expect(settle.transfer).toMatchObject({ status: "PAID", payoutTo: "dee@example.com", toAgent: w.ar.publicKey });

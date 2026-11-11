@@ -71,7 +71,7 @@ export type Receipt = {
   chain: Array<{ id: string; hash: string; holder: string; holderLabel: string }>;
   principal: string;
   /** `payoutBatchId` is null when the money was credited to an agent's balance: there was no payout. */
-  paypal: { mode: string; authorizationId: string; captureId: string; payoutBatchId: string | null; payoutItemId: string | null };
+  paypal: { mode: string; authorizationId: string; captureId: string; payoutBatchId: string | null; payoutItemId: string | null; /** PayPal's word on the payout at the moment of signing. A receipt records that money was captured and a payout was asked for; whether it was delivered is PayPal's to say, live. */ payoutStatus?: string | null };
   issuedAt: string;
   gateway: string;
   sig: string;

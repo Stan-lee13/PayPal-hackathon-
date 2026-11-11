@@ -29,9 +29,13 @@ import { gatewayKey, lockAccount } from "./service";
 type Tx = Parameters<Parameters<ReturnType<typeof getDb>["transaction"]>[0]>[0];
 /** What left an account in the last 24 hours through payments and card charges (withdrawals to the owner don't count; refused payouts are netted off). */
 async function spentToday(tx: Tx, agent: string): Promise<number> {
-  const [row] = await tx.select({ n: sql<number>`coalesce(sum(${ledger.deltaMinor}), 0)::int` }).from(ledger)
+  const rows = await tx.select({ kind: ledger.kind, ref: ledger.ref, delta: ledger.deltaMinor }).from(ledger)
     .where(and(eq(ledger.agent, agent), inArray(ledger.kind, ["transfer_out", "payout", "reversal"]), gt(ledger.createdAt, new Date(Date.now() - 86_400_000))));
-  return Math.max(0, -(row?.n ?? 0));
+  // A reversal gives back only the payment it reverses. A refused withdrawal (which never counted) must not make room for more spending.
+  const out = new Map<string, number>();
+  for (const r of rows) if (r.kind !== "reversal") out.set(r.ref, (out.get(r.ref) ?? 0) - r.delta);
+  for (const r of rows) if (r.kind === "reversal" && out.has(r.ref)) out.set(r.ref, Math.max(0, out.get(r.ref)! - r.delta));
+  return [...out.values()].reduce((n, x) => n + x, 0);
 }
 /** The checks every movement out of a balance shares: the owner's freeze, cap per payment, cap per day, and the balance itself. */
 async function ownerRules(tx: Tx, live: Account, amount: number, capped: boolean): Promise<E.Violation[]> {
@@ -67,6 +71,8 @@ export async function transfer(signed: E.SignedTransfer): Promise<TransferResult
   if (!r || typeof r.from !== "string") return denied(stateless);
   const from = await db.query.accounts.findFirst({ where: eq(accounts.agent, r.from) });
   if (!from) return denied([...stateless, { code: "NO_BALANCE_ACCOUNT", at: null, detail: "that key has not opened an account here" }]);
+  // Only the account's own key can leave a trace on it, even a refusal.
+  if (stateless.some((v) => v.code === "NOT_THE_HOLDER" || v.code === "MALFORMED")) return denied(stateless);
 
   // Where is it going?
   let to: Account | null = null, payoutTo: string | null = null;
@@ -140,6 +146,10 @@ async function send(from: Account, t: Transfer): Promise<Transfer> {
     return u ?? (await db.query.transfers.findFirst({ where: eq(transfers.id, t.id) }))!;
   } catch (e) {
     if (!(e instanceof PayPalApiError) || e.retryable) return t; // in doubt: stays SENDING; presenting the same request again resumes here
+    // Another arrival of the same request may already have sent it; then PayPal is refusing a duplicate, not the payment.
+    const again = (await db.query.transfers.findFirst({ where: eq(transfers.id, t.id) }))!;
+    if (again.payoutBatchId || again.status !== "SENDING") return again;
+    if (e.issue === "DUPLICATE_REQUEST_ID" || /duplicate/i.test(e.message)) return again;
     // PayPal refused: put the money back, exactly once.
     return reverse(t, { code: "PAYPAL_PAYOUT_FAILED", at: null, detail: `PayPal refused the payout: ${e.issue ?? e.paypalName}; the amount is back in the balance` }, null);
   }
@@ -156,7 +166,7 @@ async function reverse(t: Transfer, reason: E.Violation, payoutStatus: string | 
     const [row] = await tx.insert(ledger).values({ agent: live.agent, kind: "reversal", ref: t.id, deltaMinor: t.amountMinor, balanceAfterMinor: live.balanceMinor + t.amountMinor, counterparty: t.payoutTo, memo: "the payout did not go through" }).onConflictDoNothing().returning();
     if (row) await tx.update(accounts).set({ balanceMinor: live.balanceMinor + t.amountMinor }).where(eq(accounts.agent, live.agent));
     // A card charge that did not go through does not count against the card.
-    if (row && t.cardId) await tx.update(cards).set({ charges: sql`greatest(${cards.charges} - 1, 0)`, chargedMinor: sql`greatest(${cards.chargedMinor} - ${t.amountMinor}, 0)`, lastChargeAt: null }).where(eq(cards.id, t.cardId));
+    if (row && t.cardId) await tx.update(cards).set({ charges: sql`greatest(${cards.charges} - 1, 0)`, chargedMinor: sql`greatest(${cards.chargedMinor} - ${t.amountMinor}, 0)` }).where(eq(cards.id, t.cardId));
     return u;
   });
 }
@@ -183,7 +193,7 @@ async function receipt(from: Account, to: Account | null, t: Transfer): Promise<
     v: TRANSFER_RECEIPT_VERSION, transfer: t.id, request: t.signed.request, requestSig: t.signed.sig,
     ...(await cardOnReceipt(t)),
     from: { account: from.account, agent: from.agent, agentLabel: from.label },
-    to: t.toAgent && to && !t.payoutTo ? { kind: "account", account: to.account, agent: to.agent, agentLabel: to.label } : { kind: "paypal", address: t.payoutTo!, payoutBatchId: t.payoutBatchId!, mode: paypalMode() },
+    to: t.toAgent && to && !t.payoutTo ? { kind: "account", account: to.account, agent: to.agent, agentLabel: to.label } : { kind: "paypal", address: t.payoutTo!.replace(/^(.)[^@]*(@.*)$/, "$1•••$2"), payoutBatchId: t.payoutBatchId!, mode: paypalMode() },
     balanceAfterMinor: entry?.balanceAfterMinor ?? 0,
     issuedAt: new Date().toISOString(), gateway: gw.publicKey,
   };
@@ -248,7 +258,9 @@ export async function charge(signed: E.SignedCharge): Promise<TransferResult & {
   const [from, to] = await Promise.all([db.query.accounts.findFirst({ where: eq(accounts.agent, card.holder) }), db.query.accounts.findFirst({ where: eq(accounts.agent, card.merchantAgent) })]);
   if (!from || !to) return denied([...stateless, { code: "NO_BALANCE_ACCOUNT", at: null, detail: "the card's holder or merchant no longer has an account" }], card);
   const reasons: E.Violation[] = [...stateless];
-  if (stateless.length === 0 && r.merchant !== card.merchantAgent) reasons.push({ code: "NOT_THE_MERCHANT", at: null, detail: `this card is locked to ${to.label}; only that merchant's key can charge it` });
+  // Only the card's own merchant can leave a trace on it, even a refusal.
+  if (stateless.some((v) => v.code === "NOT_THE_MERCHANT" || v.code === "MALFORMED")) return denied(stateless, card);
+  if (r.merchant !== card.merchantAgent) return denied([...stateless, { code: "NOT_THE_MERCHANT", at: null, detail: `this card is locked to ${to.label}; only that merchant's key can charge it` }], card);
   const book = to.mode === "hold";
   const authentic = !stateless.some((v) => v.code === "NOT_THE_MERCHANT" || v.code === "MALFORMED");
   const requestHash = await E.sha256(E.canonical(authentic ? { request: r } : { request: r, sig: signed.sig }));

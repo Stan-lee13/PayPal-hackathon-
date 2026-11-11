@@ -4,6 +4,8 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Flap, Meter, Sigil, Stamp, usd } from "@/components/stationery";
 import { api } from "@/lib/client/api";
+import { signRead } from "@/lib/envelope/core";
+import { principalKey } from "@/lib/principal-key";
 
 type RootT = { id: string; title: string; principalName: string; createdAt: string; status: string; capturedMinor: number; limitMinor: number; releasedMinor: number | null };
 type AgentT = { key: string; label: string; account: string; receives: boolean; envelopes: number };
@@ -16,17 +18,19 @@ export function OnFile() {
   const [agents, setAgents] = useState<AgentT[]>([]);
   useEffect(() => {
     void (async () => {
-      const [r, a] = await Promise.all([api("/api/envelopes"), api("/api/agents")]);
-      setRoots(r.ok ? (r.json.roots as RootT[]).slice(0, 5) : []);
+      // Your envelopes are listed for you alone: the request is signed with the key in this browser.
+      const me = await principalKey(false);
+      const [r, a] = await Promise.all([me ? api("/api/envelopes/mine", { body: { signed: await signRead(me, "treasury", me.publicKey) } }) : Promise.resolve(null), api("/api/agents")]);
+      setRoots(r?.ok ? (r.json.roots as RootT[]).slice(0, 5) : []);
       if (a.ok) setAgents((a.json.agents as AgentT[]).slice(0, 8));
     })();
   }, []);
   return (
     <aside className="space-y-10 lg:pt-10">
       <section>
-        <h2 className="label">Envelopes on file</h2>
+        <h2 className="label">Your envelopes</h2>
         {roots === null ? <p className="mt-3 border-t-[1.5px] border-ink pt-4 text-sm text-ink-3">Looking…</p>
-          : roots.length === 0 ? <p className="mt-3 border-t-[1.5px] border-ink pt-4 text-sm text-ink-2">None yet. Seal the first one.</p> : (
+          : roots.length === 0 ? <p className="mt-3 border-t-[1.5px] border-ink pt-4 text-sm text-ink-2">None sealed with this browser\u2019s key yet.</p> : (
             <ul className="mt-4 space-y-4">
               {roots.map((r) => (
                 <li key={r.id}>

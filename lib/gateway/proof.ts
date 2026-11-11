@@ -60,7 +60,7 @@ export async function proof(rootId: string, onlySpend?: string) {
   if (!root) return null;
   const [bs, allSpends, gw] = await Promise.all([
     db.select().from(blocks).where(eq(blocks.rootId, rootId)).orderBy(asc(blocks.depth), asc(blocks.firstSeenAt)),
-    db.select().from(spends).where(eq(spends.rootId, rootId)).orderBy(asc(spends.createdAt)).limit(400),
+    db.select().from(spends).where(eq(spends.rootId, rootId)).orderBy(desc(spends.createdAt)).limit(400).then((r) => r.reverse()),
     gatewayKey(),
   ]);
   const focus = onlySpend ? allSpends.find((s) => s.id === onlySpend) : undefined;
@@ -282,7 +282,8 @@ export async function proof(rootId: string, onlySpend?: string) {
         ["Most it may pay at once", acct.perPaymentMinor === null ? "no cap" : usd(acct.perPaymentMinor)], ["Most it may spend in a day", acct.perDayMinor === null ? "no cap" : usd(acct.perDayMinor)],
         ["Note", "money in a balance is fungible: what this agent paid next is shown, not which dollars it used"],
       ],
-      checks: [{ kind: "account", label: "Opened with two signatures: the agent's own key and its owner's", signed: acct.signed }],
+      // The signed opening names the owner's PayPal address, so it is not published here; the agent's own page shows what it signed for.
+      checks: [{ kind: "record", label: "Opened with two signatures, the agent's own key and its owner's; the gateway checked both when it was opened" }],
       href: `/a/${agent}`,
     });
     edges.push({ from, to: aid, label: "into its balance" });
