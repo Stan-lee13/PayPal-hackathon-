@@ -70,7 +70,7 @@ Agents outside the app use the same gateway through a command line and an MCP se
 - **PayPal** (sandbox): Orders v2 with `intent: AUTHORIZE` for the hold, partial captures with `final_capture: false`, Payouts for the payee, void on close, refund if a payout cannot be delivered, and GET lookups for proof of funds and for reconciling receipts.
 - **One codebase, two places to run.** Every endpoint is a plain function (`lib/api/handlers.ts`). On a server it runs against Postgres. When the site has no database, the same functions run in the visitor's browser against Postgres compiled to WebAssembly (PGlite) and a PayPal simulator, so a deployment with no configuration is a working demo.
 - **App**: Next.js 15, React 19, TypeScript, Tailwind v4, Drizzle. The interface is drawn as bank stationery: kraft envelopes, rubber stamps, till receipts, passports.
-- **Tests**: 40 automated tests on the simulator, including a corpus of 132 attacks in nine categories. All 132 are refused and none causes a capture or a payout.
+- **Tests**: 44 automated tests on the simulator, including a corpus of 138 attacks in nine categories. All 138 are refused and none causes a capture or a payout.
 
 ### Challenges we ran into
 
@@ -88,7 +88,7 @@ Agents outside the app use the same gateway through a command line and an MCP se
 - An owner's books matched against PayPal's records, payment by payment.
 - A payment over the owner's threshold that an agent could not make, paid when the owner signed in their browser, on the real sandbox.
 - An agent that kept what it earned, paid another agent out of its balance with no PayPal call, was frozen by its owner, and withdrew through a real PayPal payout, on the real sandbox. The books balanced at the end.
-- 132 of 132 attacks refused, with no money moved.
+- 138 of 138 attacks refused, with no money moved.
 - The whole thing can be tried in a browser with nothing to install or configure.
 
 ### What we learned
@@ -166,7 +166,7 @@ A special award (Best Use of Agentic Commerce, Most Creative, Best Use of PayPal
 
 | Criterion | Strengths | Weaknesses a judge may raise |
 |---|---|---|
-| Technological implementation | Real sandbox: authorize, partial capture, payout, void, refund path, reconciliation. Ed25519 chains verified in three places. 40 tests and a 132-attack corpus. Gateway runs on a server or in a browser from the same code. | Custodial gateway; test-card funding; no hold reauthorization; no webhooks; fewer tests than the largest entries. |
+| Technological implementation | Real sandbox: authorize, partial capture, payout, void, refund path, reconciliation. Ed25519 chains verified in three places. 44 tests and a 138-attack corpus. Gateway runs on a server or in a browser from the same code. | Custodial gateway; test-card funding; no hold reauthorization; no webhooks; fewer tests than the largest entries. |
 | Design | A distinctive stationery system applied to every page; passports and receipts that carry real data. | Dense pages; phone layout only spot-checked. |
 | Potential impact | Addresses multi-agent delegation, payee trust and agent-to-agent payment with rails that exist today. | Needs PayPal platform products and compliance work before real money. |
 | Innovation | The combination listed above was not found in 36 rival codebases or in the prior art we read. | Each ingredient has prior art; the entry says so. |

@@ -262,6 +262,16 @@ export async function runCorpus(deps: { G: G; B: Bank; sim: Sim; reset: () => Pr
   await attack("Forged evidence", "proof of funds asked by an impostor without the agent's key", async () => G.standing(await E.signHello(w.artChain, w.rogue, { amount: 1000, payee: "designer@example.com", purpose: "design" })));
   await attack("Forged evidence", "proof of funds for a payee the agent can't pay", async () => G.standing(await E.signHello(w.artChain, w.art, { amount: 1000, payee: "attacker@evil.example", purpose: "design" })));
 
+  // A signed request presented again with its signature written another way (same bytes, different text).
+  {
+    const sp = await E.signSpend(w.artChain, w.art, { amount: 1000, payee: "designer@example.com", purpose: "design" });
+    await G.spend(sp);
+    const last = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const i = last.indexOf(sp.sig[sp.sig.length - 1]!);
+    const spellings: Array<[string, string]> = [["base64 padding added", `${sp.sig}==`], ["a space in front", ` ${sp.sig}`], ["the other base64 alphabet", sp.sig.replace(/-/g, "+").replace(/_/g, "/") === sp.sig ? `${sp.sig}=` : sp.sig.replace(/-/g, "+").replace(/_/g, "/")], ["spare bits flipped in the last character", sp.sig.slice(0, -1) + last[i ^ 1]]];
+    for (const [how, sig] of spellings) await attack("Bad request", `replay a paid request with its signature re-spelled: ${how}`, async () => { const r = await G.spend({ ...sp, sig }); return r.duplicate ? "ignored: the same request, already paid once" : r; });
+  }
+
   // ---- 9. Balances -------------------------------------------------------------------------------------
   // Bea's translator-agent keeps its income (her cap: $30 a payment); Cy's proofreader-agent does too.
   {
@@ -320,6 +330,13 @@ export async function runCorpus(deps: { G: G; B: Bank; sim: Sim; reset: () => Pr
     await guarded("pay out of a frozen account", async () => send({ amount: 100, payee: other }));
     await guarded("withdraw from a frozen account", async () => send({ kind: "withdraw", amount: 100 }));
     await guarded("the agent lifts its owner's freeze itself", async () => B.freeze(await E.signFreeze(tr!, tr!.publicKey, false)));
+    await guarded("replay a completed transfer with its signature re-spelled", async () => { const r = await B.transfer({ ...real, sig: `${real.sig}==` }); return r.duplicate ? "ignored: already booked once" : r; });
+    await guarded("present the owner's earlier unfreeze again to lift a newer freeze", async () => {
+      const t = Date.now();
+      const old = await E.signFreeze(bea!, tr!.publicKey, false, new Date(t - 2000));
+      await B.freeze(old); await B.freeze(await E.signFreeze(bea!, tr!.publicKey, true, new Date(t - 1000)));
+      return B.freeze(old);
+    });
     await guarded("a freeze signed by the owner, flipped to an unfreeze", async () => { const f = await E.signFreeze(bea!, tr!.publicKey, true); return B.freeze({ ...f, request: { ...f.request, frozen: false } }); });
   }
 

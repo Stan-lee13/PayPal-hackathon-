@@ -21,6 +21,8 @@ Flat "spending limits" don't compose: an orchestrator with a $500 limit that cal
 
 All structures are JSON. Signatures are Ed25519 over `domain + "\n" + canonical(body)`, where `canonical` is JSON with keys sorted at every level. Hashes are SHA-256 of the canonical JSON. Keys are raw 32-byte public keys, base64url.
 
+Encodings are strict. Keys and signatures are base64url with no padding, and a verifier must reject any other spelling of the same bytes: padding, `+` or `/`, whitespace, or non-zero spare bits in the last character. A lenient decoder would let one signed request be presented as several. A request is identified for replay purposes by the hash of its signed content (which carries a nonce), not by the text of its signature.
+
 ### Block
 
 ```
@@ -270,7 +272,7 @@ If all hold, the balance is debited and a ledger row written. When the payee is 
 
 A withdrawal is not subject to `perPayment`: it can only go to the owner.
 
-Freeze. Only the key in the account's `owner` field can freeze or unfreeze. A frozen account refuses every transfer; income still arrives.
+Freeze. Only the key in the account's `owner` field can freeze or unfreeze. A frozen account refuses every transfer; income still arrives. A freeze or unfreeze is applied only if its `at` is later than the last one applied, so an old one cannot be presented again to undo a newer one.
 
 Owner. A later account opening can change the label, settlement address, mode and cap, and needs both signatures again. It is refused if it names a different owner key, so an agent cannot give itself a new owner to escape a cap or a freeze.
 

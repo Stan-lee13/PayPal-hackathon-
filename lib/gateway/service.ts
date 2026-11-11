@@ -194,7 +194,11 @@ async function admit(kind: "spend" | "promise", signed: E.SignedSpend | E.Signed
     return { status: "DENIED", spend: null, duplicate: false, receipt: null, reasons: stateless.violations.length ? stateless.violations : [{ code: "UNKNOWN_ROOT", at: rootId, detail: "this root envelope was never sealed with the gateway" }] };
   }
   const r = signed.request;
-  const requestHash = await E.sha256(E.canonical({ request: r, sig: signed.sig }));
+  // What makes a request "the same request" is its signed content (it carries a nonce), never how the
+  // signature happens to be written. Requests whose signature does not verify are keyed with it, so
+  // junk can't occupy a real request's place.
+  const authentic = typeof leaf.holder === "string" && typeof r.v === "string" && typeof signed.sig === "string" && (await E.verifyDetached(leaf.holder, r.v, r, signed.sig));
+  const requestHash = await E.sha256(E.canonical(authentic ? { request: r } : { request: r, sig: signed.sig }));
   const base = {
     rootId: root.id, leafId: String(leaf.id), leafLabel: String(leaf.holderLabel ?? "").slice(0, 80), chainIds: stateless.chain.ids, requestHash, signed,
     amountMinor: Number.isSafeInteger(r.amount) ? r.amount : 0, currency: String(r.currency ?? ""), payee: String(r.payee ?? "").slice(0, 127), purpose: String(r.purpose ?? "").slice(0, 60), memo: String(r.memo ?? "").slice(0, 200),

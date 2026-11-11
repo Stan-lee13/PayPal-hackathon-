@@ -61,7 +61,9 @@ export async function transfer(signed: E.SignedTransfer): Promise<TransferResult
     } else payoutTo = r.payee;
   }
   const book = Boolean(to && to.mode === "hold");
-  const requestHash = await E.sha256(E.canonical({ request: r, sig: signed.sig }));
+  // The same request is the same request however its signature is written (see service.ts).
+  const authentic = !stateless.some((v) => v.code === "NOT_THE_HOLDER" || v.code === "MALFORMED");
+  const requestHash = await E.sha256(E.canonical(authentic ? { request: r } : { request: r, sig: signed.sig }));
   const base = { fromAgent: from.agent, kind: r.kind, payee: String(r.payee).slice(0, 127), toAgent: to?.agent ?? null, payoutTo: book ? null : payoutTo, amountMinor: Number.isSafeInteger(r.amount) ? r.amount : 0, currency: String(r.currency), purpose: String(r.purpose).slice(0, 60), memo: String(r.memo).slice(0, 200), requestHash, signed };
 
   const out = await db.transaction(async (tx): Promise<{ row: Transfer; fresh: boolean; balance: number }> => {
@@ -172,7 +174,15 @@ export async function freeze(signed: E.SignedFreeze): Promise<Account> {
   const acct = await db.query.accounts.findFirst({ where: eq(accounts.agent, signed.request.agent) });
   if (!acct) throw new UserFacingError("No such account.", 404);
   if (signed.by !== acct.owner) throw new UserFacingError("Only the owner who answers for an account can freeze it.", 403);
-  const [u] = await db.update(accounts).set({ frozenAt: signed.request.frozen ? acct.frozenAt ?? new Date() : null }).where(eq(accounts.agent, acct.agent)).returning();
+  const at = new Date(signed.request.at);
+  const u = await db.transaction(async (tx) => {
+    await lockAccount(tx, acct.agent);
+    const live = (await tx.query.accounts.findFirst({ where: eq(accounts.agent, acct.agent) }))!;
+    // An older freeze or unfreeze can't be presented again to undo a newer one.
+    if (live.freezeSignedAt && live.freezeSignedAt.getTime() >= at.getTime()) throw new UserFacingError("A newer freeze or unfreeze has already been applied to this account.", 409);
+    const [row] = await tx.update(accounts).set({ frozenAt: signed.request.frozen ? live.frozenAt ?? new Date() : null, freezeSignedAt: at }).where(eq(accounts.agent, acct.agent)).returning();
+    return row;
+  });
   await audit(db, { scopeId: acct.owner, subjectId: `acct:${acct.account}`, actor: "principal", action: signed.request.frozen ? "account.frozen" : "account.unfrozen", ref: acct.account, outcome: "OK", detail: { agent: acct.label } });
   return u!;
 }

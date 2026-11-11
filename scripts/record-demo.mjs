@@ -153,8 +153,20 @@ await scene("result", async () => { await top(); });
 await scene("earner", async () => {
   await page.getByTestId("statement").getByRole("link", { name: /translator-agent/ }).first().click();
   await page.getByTestId("receives").waitFor(T);
-  await wait(1500);
-  await scrollTo('[data-testid="receives"]');
+  const bal = page.getByTestId("balance");
+  const said = page.getByTestId("bank-result");
+  await bal.getByTestId("ledger").getByText("Paid in from").first().waitFor(T);
+  await scrollTo('[data-testid="balance"]', "start");
+  await wait(2600);
+  await bal.getByRole("button", { name: "Pay proofreader-agent $12" }).click();
+  await said.getByText("Moved.").waitFor(T);
+  await wait(2400);
+  await bal.getByRole("button", { name: /drain to a stranger/ }).click();
+  await said.getByText("Refused.").waitFor(T);
+  await wait(2800);
+  await bal.getByRole("button", { name: "Withdraw $20 to its owner" }).click();
+  await said.getByText(/Paid by PayPal\.|Sent to PayPal\./).waitFor(T);
+  await bal.getByTestId("ledger").getByText("Withdrawn to its owner at").first().waitFor(T);
 });
 
 // 5. Is it good for the money?
@@ -223,9 +235,9 @@ await scene("close", async () => {
 });
 
 // 8. Numbers, then the close
-await card("<span class=\"figure\" style=\"font-size:120px\">107<span style=\"color:#8A8271\">/107</span></span>", ["attacks refused in the test suite. None moved money.", "The try-it copy runs the whole gateway in your browser: nothing to install, nothing to configure."]);
+await card("<span class=\"figure\" style=\"font-size:120px\">138<span style=\"color:#8A8271\">/138</span></span>", ["attacks refused in the test suite. None moved money.", "Try all of it in your browser: nothing to install, nothing to configure."]);
 await scene("numbers");
-await card("Seal is an authorization.<br>Spend is a capture and a payout.<br><em>Close is a void.</em>", ["Envelope · a treasury, accounts and a payment protocol for AI agents", "open source · github.com/Stan-lee13/PayPal-hackathon-"]);
+await card("Seal is an authorization.<br>Spend is a capture and a payout.<br><em>Close is a void.</em>", ["Envelope · accounts, a treasury and a payment protocol for AI agents, on PayPal's rails", "open source · github.com/Stan-lee13/PayPal-hackathon-"]);
 await scene("end");
 
 await ctx.close();

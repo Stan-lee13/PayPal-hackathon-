@@ -92,11 +92,13 @@ Protocol: [`docs/SPEC.md`](docs/SPEC.md). Core (pure, isomorphic): [`lib/envelop
 | Twenty agents race for the same budget | Reserved under a lock before PayPal is called; exactly the budget is spent |
 | A copied envelope without the agent's key | `NOT_THE_HOLDER` |
 | The same signed request sent twice | Executed once; the second returns the first result |
+| The same request sent again with its signature written differently (padding, other alphabet, a space) | Refused: a signature has one accepted spelling, and a request is identified by its signed content, not by the text of its signature |
+| An agent tries to drain its balance, or lift its owner's freeze | `OVER_ACCOUNT_LIMIT`, `ACCOUNT_FROZEN`; only the owner's key can freeze or unfreeze |
 | Someone points an agent's account number at their own PayPal address | Refused: the opening must be signed by the agent's own key |
 | An introduction or a promise is replayed as a payment | `NOT_THE_HOLDER`: each kind of message has its own signature domain |
 | Everything else goes wrong | PayPal refuses to capture beyond the authorization |
 
-The **attack corpus** ([`tests/attack-corpus.ts`](tests/attack-corpus.ts)) runs 132 such attacks in nine categories against the gateway on the simulator. All 132 are refused and none causes a capture or a payout. Result: [`docs/evidence/attack-suite.json`](docs/evidence/attack-suite.json); reproduce with `npx tsx scripts/attack-suite.ts`.
+The **attack corpus** ([`tests/attack-corpus.ts`](tests/attack-corpus.ts)) runs 138 such attacks in nine categories against the gateway on the simulator. All 138 are refused and none causes a capture or a payout. Result: [`docs/evidence/attack-suite.json`](docs/evidence/attack-suite.json); reproduce with `npx tsx scripts/attack-suite.ts`.
 
 ## How AI is used
 
@@ -120,7 +122,7 @@ AI tools used to build the project: Claude Code (Anthropic) wrote the code, test
 | In-browser gateway (no database) | **Ran** in Chromium: seal, agents set aside and pay, an agent's income on its passport, its balance (a transfer to another agent, a refused drain, an owner freeze, a withdrawal), the books, receipt verified, proof of funds, three attacks denied, close, a second tab sharing the same data, reload. Vercel builds and serves this mode from this repository with no environment variables. |
 | A real model playing the agents | **Ran** on the real sandbox in that recording, with Claude Haiku through `scripts/claude-bridge.mjs`: [`docs/evidence/model-run.md`](docs/evidence/model-run.md). Its red-team stage varied between runs (attempts refused by the gateway in two, declined by the model in three), so the video uses the scripted attacker for that part. The hosted copy has no model connected unless you add a key. |
 | MCP server and command line for agents | **Ran.** `scripts/mcp.ts` over stdio against the sandbox-backed gateway (split, pay, refused widenings). The promise and account commands were added after that run and are covered by the tests, not by a separate sandbox run through the CLI. The balance commands (`open-account --hold`, `balance`, `transfer`, `withdraw`, `freeze`, `books`) were run from the command line against the simulator. |
-| Automated tests | **40 pass** on the simulator (`npm test`): narrowing rules, forged chains, ancestor budgets, replay, 20-way races, revocation scope, close → void, audit chain, statements of standing, accounts, promises, acceptance-released payment, owner approval, balances (held income, transfers, a 10-way race for one balance, crossing transfers, interrupted and refused payouts, cap, freeze), and the 132-attack corpus. |
+| Automated tests | **44 pass** on the simulator (`npm test`): narrowing rules, forged chains, ancestor budgets, replay, 20-way races, revocation scope, close → void, audit chain, statements of standing, accounts, promises, acceptance-released payment, owner approval, balances (held income, transfers, a 10-way race for one balance, crossing transfers, interrupted and refused payouts, cap, freeze), a signed request replayed with its signature re-spelled, and the 138-attack corpus. |
 | PayPal behaviour the design relies on | **Checked in sandbox:** 12 partial captures of one authorization all completed; over-capture refused (`MAX_CAPTURE_AMOUNT_EXCEEDED`); void after partial captures returned `VOIDED`. |
 | Payout delivery | Payouts are accepted by PayPal. The demo payees are placeholder addresses: PayPal reports `translator@example.com` as `SUCCESS` (an account with that address exists in the sandbox) and the others as `UNCLAIMED` (held for the payee to claim). Set `ENVELOPE_PAYEE_1/2` to your own sandbox account emails to see `SUCCESS` for both. |
 | Demo video | [`docs/demo/envelope-demo.mp4`](docs/demo/envelope-demo.mp4), recorded by `scripts/record-demo.mjs` driving the app. The narration is a synthetic voice. |
@@ -133,9 +135,9 @@ bash scripts/local-postgres.sh          # Postgres on :5433 (or set DATABASE_URL
 cp .env.example .env                    # add PAYPAL_CLIENT_ID / PAYPAL_CLIENT_SECRET from a sandbox app
 npm run db:migrate
 npm run build && npm start              # http://localhost:3000
-npm test                                # 40 tests on the simulator, including the attack corpus
+npm test                                # 44 tests on the simulator, including the attack corpus
 npx tsx scripts/sandbox-run.ts          # the whole flow on the real sandbox, writes evidence
-npx tsx scripts/attack-suite.ts         # 132 attacks, writes evidence
+npx tsx scripts/attack-suite.ts         # 138 attacks, writes evidence
 ```
 
 Without PayPal credentials the app runs on a built-in simulator and says so on every page. Without `DATABASE_URL` it runs the gateway in the browser (above).
@@ -214,6 +216,7 @@ Or call the gateway directly: `POST /api/gateway/spend` with `{ signed, note }` 
 - **Demo-grade key storage.** The owner's key is in `localStorage`; demo agents' keys are in the database.
 - **Account numbers are short.** They are the first 60 bits of the key. The gateway never lets two keys share a number, but a payer should confirm the agent's name and owner on its passport, not only the number.
 - **It bounds damage; it doesn't judge payments.** A payment inside the envelope's limits is allowed even if it was a bad idea.
+- **A replay bug was found and fixed during review.** Until the last day, a paid request presented again with its signature re-encoded (for example with base64 padding added) was treated as a new request and paid a second time, within the envelope's limits and the five-minute window. The decoder is now strict and the replay check no longer depends on how a signature is written; `tests/replay-encoding.test.ts` covers it. The sandbox evidence and the video were recorded after the fix. There has been no external security review.
 - **Prior art and rivals.** Attenuating capability chains are not new (macaroons, Biscuit, UCAN, L402, ERC-7710, AP2, 2026 IETF drafts), and agent identity is a crowded field. We read the code of 36 other entries to this hackathon: several ship signed delegation chains, agent passports, signed receipts or hold-and-capture budgets, and some are more complete products than this one. What we did not find in any of them is one PayPal hold behind a whole tree of agents, budgets debited at every ancestor, or proof of funds tied to the live hold. See [`docs/DISCOVERY.md`](docs/DISCOVERY.md). Where this could go after the hackathon is in [`docs/VISION.md`](docs/VISION.md), kept separate from what exists.
 
 ## Licence

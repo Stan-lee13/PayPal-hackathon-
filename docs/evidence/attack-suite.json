@@ -1,9 +1,9 @@
 {
-  "ranAt": "2026-11-11T14:21:36.700Z",
+  "ranAt": "2026-11-11T14:34:09.517Z",
   "paypal": "built-in simulator",
   "summary": {
-    "attacks": 132,
-    "refused": 132,
+    "attacks": 138,
+    "refused": 138,
     "movedMoney": 0
   },
   "byCategory": {
@@ -18,8 +18,8 @@
       "movedMoney": 0
     },
     "Bad request": {
-      "attacks": 22,
-      "refused": 22,
+      "attacks": 26,
+      "refused": 26,
       "movedMoney": 0
     },
     "Budget": {
@@ -48,8 +48,8 @@
       "movedMoney": 0
     },
     "Balance": {
-      "attacks": 25,
-      "refused": 25,
+      "attacks": 27,
+      "refused": 27,
       "movedMoney": 0
     }
   },
@@ -804,6 +804,34 @@
       "moneyMoved": false
     },
     {
+      "category": "Bad request",
+      "attack": "replay a paid request with its signature re-spelled: base64 padding added",
+      "refused": true,
+      "how": "NOT_THE_HOLDER",
+      "moneyMoved": false
+    },
+    {
+      "category": "Bad request",
+      "attack": "replay a paid request with its signature re-spelled: a space in front",
+      "refused": true,
+      "how": "NOT_THE_HOLDER",
+      "moneyMoved": false
+    },
+    {
+      "category": "Bad request",
+      "attack": "replay a paid request with its signature re-spelled: the other base64 alphabet",
+      "refused": true,
+      "how": "NOT_THE_HOLDER",
+      "moneyMoved": false
+    },
+    {
+      "category": "Bad request",
+      "attack": "replay a paid request with its signature re-spelled: spare bits flipped in the last character",
+      "refused": true,
+      "how": "NOT_THE_HOLDER",
+      "moneyMoved": false
+    },
+    {
       "category": "Balance",
       "attack": "move another agent's balance by writing its key in the request",
       "refused": true,
@@ -969,6 +997,20 @@
       "attack": "the agent lifts its owner's freeze itself",
       "refused": true,
       "how": "refused: Only the owner who answers for an account can freeze it.",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "replay a completed transfer with its signature re-spelled",
+      "refused": true,
+      "how": "NOT_THE_HOLDER",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "present the owner's earlier unfreeze again to lift a newer freeze",
+      "refused": true,
+      "how": "refused: A newer freeze or unfreeze has already been applied to this account.",
       "moneyMoved": false
     },
     {

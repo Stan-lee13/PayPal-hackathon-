@@ -147,6 +147,8 @@ export const accounts = pgTable("accounts", {
   /** Owner's cap on a single payment out of the balance; null = none. */
   perPaymentMinor: integer("per_payment_minor"),
   frozenAt: ts("frozen_at"),
+  /** The signing time of the last freeze or unfreeze applied; an older one is refused. */
+  freezeSignedAt: ts("freeze_signed_at"),
 });
 
 /** Every change to a balance, one row each. `(agent, kind, ref)` is unique so a credit or debit can never be applied twice. */

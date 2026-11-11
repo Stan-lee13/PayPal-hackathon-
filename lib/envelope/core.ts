@@ -163,10 +163,17 @@ export function b64u(bytes: Uint8Array): string {
   for (const b of bytes) s += String.fromCharCode(b);
   return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
+/**
+ * Strict: a value has exactly one accepted spelling. Padding, "+" and "/", whitespace and stray
+ * bits in the last character all decode to the same bytes in a lenient decoder, which would let a
+ * signed request be presented again as if it were new. Anything but the canonical form throws.
+ */
 export function unb64u(s: string): Uint8Array<ArrayBuffer> {
+  if (typeof s !== "string" || !/^[A-Za-z0-9_-]*$/.test(s)) throw new Error("not base64url");
   const bin = atob(s.replace(/-/g, "+").replace(/_/g, "/"));
   const out = new Uint8Array(new ArrayBuffer(bin.length));
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  if (b64u(out) !== s) throw new Error("not canonical base64url");
   return out;
 }
 const hex = (buf: ArrayBuffer) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");

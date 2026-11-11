@@ -29,6 +29,13 @@
       "when": 1794406001029,
       "tag": "0003_calm_earthquake",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1794407587776,
+      "tag": "0004_short_blizzard",
+      "breakpoints": true
     }
   ]
 }
