@@ -226,7 +226,7 @@ export function EnvelopeView({ id }: { id: string }) {
                   {s.delivery && <p className="mono mt-2 text-[.7rem] leading-snug text-green">released by {s.delivery.by === root.principal ? "the owner" : blocks.find((b) => b.holder === s.delivery!.by)?.holderLabel ?? fingerprint(s.delivery.by)}&rsquo;s signature{s.delivery.work ? ` · work ${s.delivery.work.slice(0, 12)}…` : ""}</p>}
                   {s.agentNote && <p className="mt-2 font-serif text-[.9rem] italic leading-snug text-ink-2">Agent: “{s.agentNote}”</p>}
                   {s.reasons.length > 0 && <ul className="mono mt-2 space-y-0.5 text-[.72rem] leading-snug text-red">{s.reasons.map((r, i) => <li key={i}><b>{r.code}</b> · {r.detail}</li>)}</ul>}
-                  {s.captureId && <p className="mono mt-2 text-[.68rem] text-ink-2">capture {s.captureId} · payout {s.payoutBatchId}{s.payoutStatus ? ` (${s.payoutStatus})` : ""}</p>}
+                  {s.captureId && <p className="mono mt-2 text-[.68rem] text-ink-2">capture {s.captureId} · {s.payoutStatus === "HELD_IN_ACCOUNT" ? "credited to the agent\u2019s balance, no payout" : <>payout {s.payoutBatchId}{s.payoutStatus ? ` (${s.payoutStatus})` : ""}</>}</p>}
                   {s.hasReceipt && <Link className="link mt-1.5 inline-block text-[.8rem]" href={`/r/${s.id}`}>Receipt & authority chain →</Link>}
                 </li>
               ))}

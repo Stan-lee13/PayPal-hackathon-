@@ -11,10 +11,11 @@ import * as E from "../lib/envelope/core";
 export type AttackRow = { category: string; attack: string; refused: boolean; how: string; moneyMoved: boolean };
 
 type G = typeof import("../lib/gateway/service");
+type Bank = typeof import("../lib/gateway/bank");
 type Sim = typeof import("../lib/paypal/emulator");
 
-export async function runCorpus(deps: { G: G; sim: Sim; reset: () => Promise<void>; db: { expirePromise(id: string): Promise<void> } }): Promise<AttackRow[]> {
-  const { G, sim } = deps;
+export async function runCorpus(deps: { G: G; B: Bank; sim: Sim; reset: () => Promise<void>; balanceOf(agent: string): Promise<number>; db: { expirePromise(id: string): Promise<void> } }): Promise<AttackRow[]> {
+  const { G, B, sim } = deps;
   const rows: AttackRow[] = [];
   const EXP = () => new Date(Date.now() + 3600_000).toISOString();
   const moved = async () => (await sim.simCalls()).filter((c) => c.includes("/capture") || c.includes("/payouts")).length;
@@ -260,6 +261,67 @@ export async function runCorpus(deps: { G: G; sim: Sim; reset: () => Promise<voi
   await attack("Forged evidence", "statement of standing used after it expired", async () => G.verifyStanding(st, new Date(Date.now() + 6 * 60_000)));
   await attack("Forged evidence", "proof of funds asked by an impostor without the agent's key", async () => G.standing(await E.signHello(w.artChain, w.rogue, { amount: 1000, payee: "designer@example.com", purpose: "design" })));
   await attack("Forged evidence", "proof of funds for a payee the agent can't pay", async () => G.standing(await E.signHello(w.artChain, w.art, { amount: 1000, payee: "attacker@evil.example", purpose: "design" })));
+
+  // ---- 9. Balances -------------------------------------------------------------------------------------
+  // Bea's translator-agent keeps its income (her cap: $30 a payment); Cy's proofreader-agent does too.
+  {
+    await deps.reset();
+    const [ada, ops, bea, tr, cy, pf, rogue] = await Promise.all([1, 2, 3, 4, 5, 6, 7].map(() => E.generateKeyPair()));
+    await G.openAccount(await E.signAccount(tr!, bea!, { label: "translator-agent", ownerName: "Bea", settleTo: "bea@example.com", mode: "hold", perPayment: 3000 }));
+    await G.openAccount(await E.signAccount(pf!, cy!, { label: "proofreader-agent", ownerName: "Cy", settleTo: "cy@example.com", mode: "hold" }));
+    const [me, other] = [E.accountPayee(tr!.publicKey), E.accountPayee(pf!.publicKey)];
+    const chain = await E.seal(ada!, { publicKey: ops!.publicKey, label: "ops-agent" }, { currency: "USD", limit: 20000, perPayment: 10000, payees: [me], purposes: ["translation"], notAfter: EXP(), splits: 0 });
+    await G.registerRoot({ chain, principalName: "Ada", title: "Launch budget" });
+    const income = await E.signSpend(chain, ops!, { amount: 5000, payee: me, purpose: "translation" });
+    const paidIn = await G.spend(income);
+    const bal = () => deps.balanceOf(tr!.publicKey);
+    const send = async (p: Parameters<typeof E.signTransfer>[1], by = tr!, now?: Date) => B.transfer(await E.signTransfer(by, p, now));
+    /** The attack must be refused AND leave both balances exactly where they were. */
+    const guarded = (name: string, fn: () => Promise<unknown>) => attack("Balance", name, async () => {
+      const before = [await bal(), await deps.balanceOf(pf!.publicKey)];
+      let r: unknown;
+      try { r = await fn(); } catch (e) { r = `refused: ${e instanceof Error ? e.message.slice(0, 80) : "error"}`; }
+      const after = [await bal(), await deps.balanceOf(pf!.publicKey)];
+      return before[0] === after[0] && before[1] === after[1] ? r : { status: `BALANCE CHANGED ${before} -> ${after}` };
+    });
+
+    await guarded("move another agent's balance by writing its key in the request", async () => { const t = await E.signTransfer(rogue!, { amount: 1000, payee: "mallory@evil.example" }); t.request.from = tr!.publicKey; return B.transfer(t); });
+    await guarded("raise the amount after the agent signed", async () => { const t = await E.signTransfer(tr!, { amount: 100, payee: other }); return B.transfer({ ...t, request: { ...t.request, amount: 5000 } }); });
+    await guarded("redirect a signed transfer to another payee", async () => { const t = await E.signTransfer(tr!, { amount: 100, payee: other }); return B.transfer({ ...t, request: { ...t.request, payee: "mallory@evil.example" } }); });
+    await guarded("turn a signed payment into a withdrawal", async () => { const t = await E.signTransfer(tr!, { amount: 100, payee: other }); return B.transfer({ ...t, request: { ...t.request, kind: "withdraw" } }); });
+    await guarded("a signature made for another kind of message, reused as a transfer", async () => { const t = await E.signTransfer(tr!, { amount: 100, payee: other }); return B.transfer({ ...t, sig: await E.signDetached(tr!.privateKey, E.ACCEPT_VERSION, t.request) }); });
+    await guarded("the owner moves the agent's money without the agent's key", async () => { const t = await E.signTransfer(bea!, { amount: 1000, payee: "bea@example.com" }); t.request.from = tr!.publicKey; return B.transfer(t); });
+    await guarded("spend one cent more than the balance", async () => send({ kind: "withdraw", amount: 5001 }));
+    await guarded("pay more at once than the owner allows", async () => send({ amount: 3001, payee: other }));
+    await guarded("a negative amount, to pull money in", async () => send({ amount: -1000, payee: other }));
+    await guarded("a fraction of a cent", async () => send({ amount: 10.5, payee: other }));
+    await guarded("pay itself to inflate its record", async () => send({ amount: 100, payee: me }));
+    await guarded("a transfer signed ten minutes ago", async () => send({ amount: 100, payee: other }, tr!, new Date(Date.now() - 10 * 60_000)));
+    await guarded("a transfer from a key that has no account", async () => send({ amount: 100, payee: other }, rogue!));
+    await guarded("pay an account number nobody opened", async () => send({ amount: 100, payee: E.accountPayee(rogue!.publicKey) }));
+    await guarded("credit the same income twice by presenting the payment again", async () => { const again = await G.spend(income); await G.settle(paidIn.spend!.id); return again.duplicate ? "ignored: the ledger takes one entry per payment" : { status: "CREDITED TWICE" }; });
+    await guarded("the agent swaps in an owner key of its own to drop the cap", async () => G.openAccount(await E.signAccount(tr!, rogue!, { label: "translator-agent", ownerName: "Bea", settleTo: "mine@evil.example", mode: "hold" }, new Date(Date.now() + 1000))));
+    await guarded("a stranger freezes someone's account", async () => B.freeze(await E.signFreeze(rogue!, tr!.publicKey, true)));
+    // one real transfer, then replays of it
+    const real = await E.signTransfer(tr!, { amount: 1000, payee: other, purpose: "proofreading" });
+    const done = await B.transfer(real);
+    await guarded("replay a completed transfer to move the money again", async () => { const again = await B.transfer(real); return again.duplicate && again.status === "BOOKED" ? "ignored: already booked once" : { status: "MOVED TWICE" }; });
+    await attack("Balance", "transfer receipt with the amount edited", async () => B.verifyTransferReceipt({ ...done.receipt!, request: { ...done.receipt!.request, amount: 1 } }));
+    await attack("Balance", "transfer receipt naming a different recipient", async () => B.verifyTransferReceipt({ ...done.receipt!, to: { kind: "paypal", address: "mallory@evil.example", payoutBatchId: "X", mode: "sandbox" } }));
+    // eight transfers race for a balance that covers four
+    await attack("Balance", "eight transfers at once for a balance that covers four", async () => {
+      const rs = await Promise.all((await Promise.all(Array.from({ length: 8 }, () => E.signTransfer(tr!, { amount: 1000, payee: other })))).map((t) => B.transfer(t)));
+      const ok = rs.filter((r) => r.status === "BOOKED").length;
+      return ok === 4 && (await bal()) === 0 && (await B.position()).checks.every((c) => c.ok) ? "4 booked, 4 refused INSUFFICIENT_BALANCE; the books balance" : { status: `${ok} BOOKED` };
+    });
+    // the owner freezes; then nothing leaves, and the agent cannot lift it
+    await G.spend(await E.signSpend(chain, ops!, { amount: 2000, payee: me, purpose: "translation" }));
+    await B.freeze(await E.signFreeze(bea!, tr!.publicKey, true));
+    await guarded("pay out of a frozen account", async () => send({ amount: 100, payee: other }));
+    await guarded("withdraw from a frozen account", async () => send({ kind: "withdraw", amount: 100 }));
+    await guarded("the agent lifts its owner's freeze itself", async () => B.freeze(await E.signFreeze(tr!, tr!.publicKey, false)));
+    await guarded("a freeze signed by the owner, flipped to an unfreeze", async () => { const f = await E.signFreeze(bea!, tr!.publicKey, true); return B.freeze({ ...f, request: { ...f.request, frozen: false } }); });
+  }
 
   return rows;
 }

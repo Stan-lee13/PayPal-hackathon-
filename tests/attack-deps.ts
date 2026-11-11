@@ -4,10 +4,12 @@ export async function corpusDeps() {
   const schema = await import("../lib/db/schema");
   const { eq, sql } = await import("drizzle-orm");
   const G = await import("../lib/gateway/service");
+  const B = await import("../lib/gateway/bank");
   const sim = await import("../lib/paypal/emulator");
   const { resetSimMemory } = await import("../lib/sim/store");
   return {
-    G, sim,
+    G, B, sim,
+    balanceOf: async (agent: string) => (await getDb().query.accounts.findFirst({ where: eq(schema.accounts.agent, agent) }))?.balanceMinor ?? -1,
     reset: async () => {
       resetSimMemory();
       G.forgetGatewayKey();

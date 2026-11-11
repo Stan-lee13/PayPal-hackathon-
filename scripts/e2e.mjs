@@ -7,7 +7,8 @@
  *
  * Covers: seal with a key held in the browser, agents split, money set aside and released when a
  * named agent signs for the delivered work, a direct payment, a payment over the owner's threshold
- * that waits for the owner's signature, the earning agent's passport, a receipt checked against PayPal and in
+ * that waits for the owner's signature, the earning agent's passport and balance (transfer to another
+ * agent, a refused drain, an owner freeze, a withdrawal), the books, a receipt checked against PayPal and in
  * the browser, proof of funds, three attacks denied, close, and a second tab seeing the same data.
  */
 import { createRequire } from "node:module";
@@ -50,12 +51,39 @@ try {
   await page.getByText("held for this payee until").waitFor({ state: "detached", timeout: 20000 }).catch(() => {});
   if (OUT) await page.screenshot({ path: `${OUT}/local-2-envelope.png`, fullPage: true }).catch(() => {});
   // the agent that got paid
+  const envelopeUrl = page.url();
   await page.getByTestId("statement").getByRole("link", { name: /translator-agent/ }).first().click();
   await page.getByTestId("receives").waitFor(T);
   await page.getByTestId("incoming").getByText("from localization-agent").first().waitFor(T);
   if (OUT) await page.screenshot({ path: `${OUT}/local-3-earner.png`, fullPage: true }).catch(() => {});
   console.log("translator-agent passport shows income");
-  await page.goBack();
+  // its balance: the income stayed in its account; it pays another agent, is stopped from draining, is frozen by its owner, withdraws
+  const bal = page.getByTestId("balance");
+  const said = page.getByTestId("bank-result");
+  await bal.getByTestId("ledger").getByText("Paid in from").first().waitFor(T);
+  await bal.getByRole("button", { name: "Pay proofreader-agent $12" }).click();
+  await said.getByText("Moved.").waitFor(T);
+  await bal.getByTestId("ledger").getByText("Paid to").first().waitFor(T);
+  await bal.getByRole("button", { name: /drain to a stranger/ }).click();
+  await said.getByText("Refused.").waitFor(T);
+  await said.getByText(/OVER_ACCOUNT_LIMIT/).waitFor(T);
+  await bal.getByRole("button", { name: "Owner freezes it" }).click();
+  await said.getByText("Frozen.").waitFor(T);
+  await bal.getByRole("button", { name: "Pay proofreader-agent $12" }).click();
+  await said.getByText(/ACCOUNT_FROZEN/).waitFor(T);
+  await bal.getByRole("button", { name: "Owner lifts the freeze" }).click();
+  await said.getByText("Open again.").waitFor(T);
+  await bal.getByRole("button", { name: "Withdraw $20 to its owner" }).click();
+  await said.getByText(/Paid by PayPal\.|Sent to PayPal\./).waitFor(T);
+  await bal.getByTestId("ledger").getByText("Withdrawn to its owner at").first().waitFor(T);
+  if (OUT) await page.screenshot({ path: `${OUT}/local-3b-balance.png`, fullPage: true }).catch(() => {});
+  console.log("balance: agent-to-agent transfer booked, drain refused, freeze held, withdrawal sent");
+  await page.goto(`${BASE}/bank`);
+  await page.getByTestId("bank-checks").getByText("Books balance").waitFor(T);
+  await page.getByTestId("bank-accounts").getByText("proofreader-agent").waitFor(T);
+  if (OUT) await page.screenshot({ path: `${OUT}/local-3c-bank.png`, fullPage: true }).catch(() => {});
+  console.log("the books balance");
+  await page.goto(envelopeUrl);
   await page.getByText("PayPal hold backing this envelope").waitFor(T);
   // receipt of the promise that was paid
   await page.getByRole("link", { name: "Receipt & authority chain →" }).last().click();

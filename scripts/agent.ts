@@ -15,6 +15,14 @@
  *   npx tsx scripts/agent.ts check  <token>      (run by the payee: is this agent good for the money? signed by the gateway)
  *   npx tsx scripts/agent.ts whois  <agent name or public key>
  *
+ * An account that keeps a balance:
+ *   npx tsx scripts/agent.ts open-account --as <agent> --owner <owner> --settle-to owner@x --hold --per-payment 30
+ *   npx tsx scripts/agent.ts balance  --as <agent>
+ *   npx tsx scripts/agent.ts transfer --as <agent> --payee acct:xxxx-xxxx-xxxx --amount 12 --purpose proofreading   (or a PayPal address)
+ *   npx tsx scripts/agent.ts withdraw --as <agent> --amount 20                      (to the owner's PayPal address)
+ *   npx tsx scripts/agent.ts freeze   --as <owner> --agent <agent>                  (and: unfreeze)
+ *   npx tsx scripts/agent.ts books
+ *
  * GATEWAY=http://localhost:3000 by default.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -25,7 +33,7 @@ const DIR = process.env.ENVELOPE_DIR ?? ".envelope";
 const [cmd, ...rest] = process.argv.slice(2);
 const args: Record<string, string> = {};
 const positional: string[] = [];
-for (let i = 0; i < rest.length; i++) { const a = rest[i]!; if (a.startsWith("--")) args[a.slice(2)] = rest[++i] ?? ""; else positional.push(a); }
+for (let i = 0; i < rest.length; i++) { const a = rest[i]!; if (!a.startsWith("--")) { positional.push(a); continue; } const next = rest[i + 1]; if (next === undefined || next.startsWith("--")) args[a.slice(2)] = ""; else { args[a.slice(2)] = next; i++; } }
 const need = (k: string) => { if (!args[k]) { console.error(`Missing --${k}`); process.exit(2); } return args[k]!; };
 const cents = (s: string) => { if (!/^\d+(\.\d{1,2})?$/.test(s)) { console.error(`Not an amount: ${s}`); process.exit(2); } return Math.round(Number(s) * 100); };
 const list = (s: string | undefined) => (s === undefined ? undefined : s.split(",").map((x) => x.trim()).filter(Boolean));
@@ -98,7 +106,7 @@ switch (cmd) {
     }
     if (!r.json.status) { console.error(`Gateway error: ${r.json.error ?? r.status}`); process.exit(1); }
     console.log(`${r.json.status}: ${usd(signed.request.amount)} to ${signed.request.payee}${r.json.duplicate ? " (already done; not paid twice)" : ""}`);
-    if (r.json.paypal) console.log(`  PayPal capture ${r.json.paypal.captureId}, payout ${r.json.paypal.payoutBatchId} (${r.json.paypal.payoutStatus ?? "pending"})`);
+    if (r.json.paypal) console.log(`  PayPal capture ${r.json.paypal.captureId}, ${r.json.paypal.payoutStatus === "HELD_IN_ACCOUNT" ? "credited to the payee agent's balance (no payout)" : `payout ${r.json.paypal.payoutBatchId} (${r.json.paypal.payoutStatus ?? "pending"})`}`);
     console.log(`  Receipt: ${GATEWAY}/r/${r.json.spendId}`);
     break;
   }
@@ -106,10 +114,55 @@ switch (cmd) {
     // An account that can RECEIVE: signed by the agent's own key and by the owner who answers for it.
     const me = await key(need("as"));
     const owner = await key(need("owner"), true);
-    const signed = await E.signAccount(me, owner, { label: args.as!, ownerName: args["owner-name"] ?? args.owner!, settleTo: need("settle-to") });
+    const hold = "hold" in args;
+    const signed = await E.signAccount(me, owner, { label: args.as!, ownerName: args["owner-name"] ?? args.owner!, settleTo: need("settle-to"), ...(hold ? { mode: "hold" as const } : {}), ...(args["per-payment"] ? { perPayment: cents(args["per-payment"]) } : {}) });
     const r = await post("/api/accounts", { signed });
     if (r.status !== 200) { console.error(`Refused: ${r.json.error}`); process.exit(1); }
-    console.log(`${args.as} can now be paid as ${r.json.payee} (account ${r.json.account}). Income settles to ${r.json.settlesTo}.`);
+    console.log(`${args.as} can now be paid as ${r.json.payee} (account ${r.json.account}). ${r.json.holds ? `Income stays in its balance${r.json.perPaymentMinor ? `; it may pay at most ${usd(r.json.perPaymentMinor)} at once` : ""}. Withdrawals go to ${r.json.settlesTo}.` : `Income settles to ${r.json.settlesTo}.`}`);
+    break;
+  }
+  case "transfer":
+  case "withdraw": {
+    // Money out of the agent's own balance: to another account, to a PayPal address, or home to its owner.
+    const me = await key(need("as"));
+    const signed = await E.signTransfer(me, cmd === "withdraw" ? { kind: "withdraw", amount: cents(need("amount")), memo: args.memo } : { amount: cents(need("amount")), payee: need("payee"), purpose: args.purpose, memo: args.memo });
+    const r = await post("/api/bank/transfer", { signed });
+    if (r.json.status === "DENIED") {
+      console.log("DENIED. Nothing moved.");
+      for (const x of r.json.reasons ?? []) console.log(`  ${x.code}: ${x.meaning} (${x.detail})`);
+      process.exit(3);
+    }
+    if (!r.json.status) { console.error(`Gateway error: ${r.json.error ?? r.status}`); process.exit(1); }
+    console.log(`${r.json.status}: ${usd(signed.request.amount)} ${cmd === "withdraw" ? "to the owner" : `to ${signed.request.payee}`}${r.json.duplicate ? " (already done; not moved twice)" : ""}. Balance now ${usd(r.json.balanceMinor)}.`);
+    if (r.json.paypal) console.log(`  PayPal payout ${r.json.paypal.payoutBatchId} (${r.json.paypal.payoutStatus ?? "pending"})`);
+    else if (r.json.status === "BOOKED") console.log("  Moved between accounts on the ledger; no PayPal call was needed.");
+    for (const x of r.json.reasons ?? []) console.log(`  ${x.code}: ${x.detail}`);
+    console.log(`  Transfer ${r.json.transferId}: ${GATEWAY}/api/bank/transfers/${r.json.transferId}`);
+    break;
+  }
+  case "freeze":
+  case "unfreeze": {
+    const owner = await key(need("as"));
+    const agent = await key(need("agent"));
+    const r = await post("/api/bank/freeze", { signed: await E.signFreeze(owner, agent.publicKey, cmd === "freeze") });
+    if (r.status !== 200) { console.error(`Refused: ${r.json.error}`); process.exit(1); }
+    console.log(`${r.json.label}'s account is ${r.json.frozen ? "frozen: nothing can leave its balance" : "open again"}. Balance ${usd(r.json.balanceMinor)}.`);
+    break;
+  }
+  case "balance": {
+    const me = await key(need("as"));
+    const r = await fetch(`${GATEWAY}/api/agents/${me.publicKey}`).then(async (x) => ({ status: x.status, json: (await x.json()) as Record<string, any> })); // eslint-disable-line @typescript-eslint/no-explicit-any
+    if (r.status !== 200 || !r.json.balance) { console.error(r.json.error ?? `${args.as} has no account that keeps a balance.`); process.exit(1); }
+    const b = r.json.balance;
+    console.log(`${args.as}: ${usd(b.minor)}${b.frozen ? " · FROZEN by its owner" : ""}${b.perPaymentMinor ? ` · may pay at most ${usd(b.perPaymentMinor)} at once` : ""}`);
+    for (const l of b.ledger) console.log(`  ${l.at.slice(0, 19)}Z  ${(l.deltaMinor < 0 ? "-" : "+") + usd(Math.abs(l.deltaMinor))}`.padEnd(36) + `${l.kind} ${l.counterparty ?? ""}  → ${usd(l.balanceAfterMinor)}`);
+    break;
+  }
+  case "books": {
+    const r = (await fetch(`${GATEWAY}/api/bank`).then((x) => x.json())) as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+    console.log(`${usd(r.totals.capturedInMinor)} paid in − ${usd(r.totals.paidOutMinor)} paid out = ${usd(r.totals.balancesMinor)} held for ${r.totals.holding} account(s); ${r.totals.bookTransfers} transfer(s) between accounts.`);
+    for (const c of r.checks) console.log(`  ${c.ok ? "ok  " : "FAIL"} ${c.name}`);
+    for (const a of r.accounts) console.log(`  ${a.label.padEnd(24)} ${usd(a.balanceMinor).padStart(10)}  ${a.mode}${a.frozen ? " · frozen" : ""}  (${a.owner})`);
     break;
   }
   case "promise": {
@@ -142,7 +195,7 @@ switch (cmd) {
       process.exit(3);
     }
     console.log(`${r.json.status}: the promise was paid${r.json.duplicate ? " (already done; not paid twice)" : ""}`);
-    if (r.json.paypal) console.log(`  PayPal capture ${r.json.paypal.captureId}, payout ${r.json.paypal.payoutBatchId} (${r.json.paypal.payoutStatus ?? "pending"})`);
+    if (r.json.paypal) console.log(`  PayPal capture ${r.json.paypal.captureId}, ${r.json.paypal.payoutStatus === "HELD_IN_ACCOUNT" ? "credited to the payee agent's balance (no payout)" : `payout ${r.json.paypal.payoutBatchId} (${r.json.paypal.payoutStatus ?? "pending"})`}`);
     console.log(`  Receipt: ${GATEWAY}/r/${r.json.spendId}`);
     break;
   }
@@ -154,7 +207,7 @@ switch (cmd) {
     if (!r.json.status) { console.error(`Gateway: ${r.json.error ?? r.status}`); process.exit(1); }
     if (["LAPSED", "DENIED", "FAILED"].includes(r.json.status)) { console.log(`${r.json.status}. Nothing was paid.`); for (const x of r.json.reasons ?? []) console.log(`  ${x.code}: ${x.meaning} (${x.detail})`); process.exit(3); }
     console.log(`${r.json.status}: your acceptance released the money${r.json.duplicate ? " (already done; not paid twice)" : ""}${work ? `. Work fingerprint ${work.slice(0, 16)}… is on the receipt` : ""}`);
-    if (r.json.paypal) console.log(`  PayPal capture ${r.json.paypal.captureId}, payout ${r.json.paypal.payoutBatchId} (${r.json.paypal.payoutStatus ?? "pending"})`);
+    if (r.json.paypal) console.log(`  PayPal capture ${r.json.paypal.captureId}, ${r.json.paypal.payoutStatus === "HELD_IN_ACCOUNT" ? "credited to the payee agent's balance (no payout)" : `payout ${r.json.paypal.payoutBatchId} (${r.json.paypal.payoutStatus ?? "pending"})`}`);
     console.log(`  Receipt: ${GATEWAY}/r/${r.json.spendId}`);
     break;
   }
@@ -243,5 +296,5 @@ switch (cmd) {
     break;
   }
   default:
-    console.log("Commands: keygen, seal, split, pay, promise, keep, release, accept, verify-promise, reference, open-account, show, revoke, close, hello, check, whois. See the header of scripts/agent.ts.");
+    console.log("Commands: keygen, seal, split, pay, promise, keep, release, accept, verify-promise, reference, open-account, balance, transfer, withdraw, freeze, unfreeze, books, show, revoke, close, hello, check, whois. See the header of scripts/agent.ts.");
 }

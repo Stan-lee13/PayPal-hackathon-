@@ -126,7 +126,7 @@ const TOOLS: Array<{ name: string; description: string; inputSchema: object; run
       if (r.json.status === "DENIED") return ["DENIED. Nothing was paid.", ...(r.json.reasons ?? []).map((x: { code: string; meaning: string; detail: string }) => `  ${x.code}: ${x.meaning} (${x.detail})`)].join("\n");
       if (!r.json.status) throw new ToolError(`Gateway error: ${r.json.error ?? r.status}`);
       const lines = [`${r.json.status}: ${usd(signed.request.amount)} to ${signed.request.payee}${r.json.duplicate ? " (already done; not paid twice)" : ""}`];
-      if (r.json.paypal) lines.push(`PayPal capture ${r.json.paypal.captureId}, payout ${r.json.paypal.payoutBatchId} (${r.json.paypal.payoutStatus ?? "pending"})`);
+      if (r.json.paypal) lines.push(`PayPal capture ${r.json.paypal.captureId}, ${r.json.paypal.payoutStatus === "HELD_IN_ACCOUNT" ? "credited to the payee agent's balance (no payout)" : `payout ${r.json.paypal.payoutBatchId} (${r.json.paypal.payoutStatus ?? "pending"})`}`);
       lines.push(`Receipt: ${GATEWAY}/r/${r.json.spendId}`);
       return lines.join("\n");
     },
@@ -179,7 +179,7 @@ const TOOLS: Array<{ name: string; description: string; inputSchema: object; run
       if (action === "release") return r.json.status === "LAPSED" ? "Released. The money is back in the envelope." : `Not released: the promise is ${r.json.status}.`;
       if (["LAPSED", "DENIED", "FAILED"].includes(r.json.status)) return [`${r.json.status}. Nothing was paid.`, ...(r.json.reasons ?? []).map((x: { code: string; meaning: string; detail: string }) => `  ${x.code}: ${x.meaning} (${x.detail})`)].join("\n");
       const lines = [`${r.json.status}: the promise was paid${r.json.duplicate ? " (already done; not paid twice)" : ""}`];
-      if (r.json.paypal) lines.push(`PayPal capture ${r.json.paypal.captureId}, payout ${r.json.paypal.payoutBatchId} (${r.json.paypal.payoutStatus ?? "pending"})`);
+      if (r.json.paypal) lines.push(`PayPal capture ${r.json.paypal.captureId}, ${r.json.paypal.payoutStatus === "HELD_IN_ACCOUNT" ? "credited to the payee agent's balance (no payout)" : `payout ${r.json.paypal.payoutBatchId} (${r.json.paypal.payoutStatus ?? "pending"})`}`);
       lines.push(`Receipt: ${GATEWAY}/r/${r.json.spendId}`);
       return lines.join("\n");
     },
@@ -203,9 +203,47 @@ const TOOLS: Array<{ name: string; description: string; inputSchema: object; run
       if (!r.json.status) throw new ToolError(`Gateway: ${r.json.error ?? r.status}`);
       if (["LAPSED", "DENIED", "FAILED"].includes(r.json.status)) return [`${r.json.status}. Nothing was paid.`, ...(r.json.reasons ?? []).map((x: { code: string; meaning: string; detail: string }) => `  ${x.code}: ${x.meaning} (${x.detail})`)].join("\n");
       const lines = [`${r.json.status}: your acceptance released the money${r.json.duplicate ? " (already done; not paid twice)" : ""}`];
-      if (r.json.paypal) lines.push(`PayPal capture ${r.json.paypal.captureId}, payout ${r.json.paypal.payoutBatchId} (${r.json.paypal.payoutStatus ?? "pending"})`);
+      if (r.json.paypal) lines.push(`PayPal capture ${r.json.paypal.captureId}, ${r.json.paypal.payoutStatus === "HELD_IN_ACCOUNT" ? "credited to the payee agent's balance (no payout)" : `payout ${r.json.paypal.payoutBatchId} (${r.json.paypal.payoutStatus ?? "pending"})`}`);
       lines.push(`Receipt: ${GATEWAY}/r/${r.json.spendId}`);
       return lines.join("\n");
+    },
+  },
+  {
+    name: "envelope_balance",
+    description: "Show the balance of THIS agent's own account (money it has earned and kept), whether its owner has frozen it, the most it may pay at once, and its recent ledger. Call this before sending money from the balance.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    async run() {
+      const me = await key(AGENT, false);
+      const r = await fetch(`${GATEWAY}/api/agents/${me.publicKey}`).then(async (x) => ({ status: x.status, json: (await x.json().catch(() => ({}))) as Record<string, any> })); // eslint-disable-line @typescript-eslint/no-explicit-any
+      if (r.status !== 200 || !r.json.balance) return `${AGENT} has no account that keeps a balance. Its owner opens one with: agent.ts open-account --hold.`;
+      const b = r.json.balance;
+      return [`Balance ${usd(b.minor)}${b.frozen ? " (FROZEN by the owner: nothing can leave)" : ""}${b.perPaymentMinor ? `; at most ${usd(b.perPaymentMinor)} per payment` : ""}. You are paid as ${r.json.receives.payee}.`, ...b.ledger.slice(0, 12).map((l: { deltaMinor: number; kind: string; counterparty: string | null; balanceAfterMinor: number }) => `${l.deltaMinor < 0 ? "-" : "+"}${usd(Math.abs(l.deltaMinor))} ${l.kind} ${l.counterparty ?? ""} → ${usd(l.balanceAfterMinor)}`)].join("\n");
+    },
+  },
+  {
+    name: "envelope_transfer",
+    description: "Send money out of THIS agent's own balance. To another agent's account (payee \"acct:xxxx-xxxx-xxxx\") it moves at once on the ledger. To a PayPal address it leaves as a PayPal payout. With withdraw: true it goes to the owner's PayPal address and no payee is needed. The gateway refuses it if the balance is too low, the account is frozen, or the amount is over what the owner allows at once. You cannot spend more than the balance.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        amount: { type: "number", description: "Dollars, e.g. 12 or 12.50" },
+        payee: { type: "string", description: "acct:xxxx-xxxx-xxxx or a PayPal email address. Leave out when withdraw is true." },
+        withdraw: { type: "boolean", description: "Send it home to the owner instead of paying someone" },
+        purpose: { type: "string", description: "One or two words, e.g. proofreading" },
+        memo: { type: "string", description: "What this is for" },
+      },
+      required: ["amount"],
+      additionalProperties: false,
+    },
+    async run(a) {
+      const me = await key(AGENT, false);
+      const amount = cents(a.amount, "amount");
+      const memo = typeof a.memo === "string" ? a.memo.slice(0, 200) : undefined;
+      const signed = a.withdraw === true ? await E.signTransfer(me, { kind: "withdraw", amount, memo }) : await E.signTransfer(me, { amount, payee: text(a.payee, "payee", 127), purpose: typeof a.purpose === "string" ? a.purpose.slice(0, 60) : undefined, memo });
+      const r = await post("/api/bank/transfer", { signed });
+      if (r.json.status === "DENIED") return `DENIED. Nothing moved. ${(r.json.reasons ?? []).map((x: { code: string; meaning: string; detail: string }) => `${x.code}: ${x.meaning} (${x.detail})`).join("; ")}`;
+      if (!r.json.status) throw new ToolError(`Gateway error: ${r.json.error ?? r.status}`);
+      return `${r.json.status}: ${usd(amount)} ${a.withdraw === true ? "to the owner" : `to ${signed.request.payee}`}${r.json.duplicate ? " (already done; not moved twice)" : ""}. Balance now ${usd(r.json.balanceMinor)}.${r.json.paypal ? ` PayPal payout ${r.json.paypal.payoutBatchId} (${r.json.paypal.payoutStatus ?? "pending"}).` : r.json.status === "BOOKED" ? " Moved on the ledger; no PayPal call." : ""} Transfer ${r.json.transferId}.`;
     },
   },
   {

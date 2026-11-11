@@ -9,6 +9,7 @@ import { getDb } from "../db";
 import { accounts, demoKeys, spends } from "../db/schema";
 import { UserFacingError } from "../errors";
 import * as E from "../envelope/core";
+import * as B from "../gateway/bank";
 import * as G from "../gateway/service";
 
 export const DEMO_LABELS = ["ops-agent", "localization-agent", "creative-agent", "helper"] as const;
@@ -31,12 +32,55 @@ async function globalKey(label: string) {
   }
   return { row, key: await E.importPrivateJwk(row.privateJwk) };
 }
+/** What Bea lets translator-agent pay out of its balance in one go. */
+const TRANSLATOR_CAP = 3000;
 export async function ensureCounterparty() {
+  const db = getDb();
   const [agent, owner] = [await globalKey("translator-agent"), await globalKey("bea")];
   const settleTo = (process.env.ENVELOPE_PAYEE_1 || "translator@example.com").toLowerCase();
-  const existing = await getDb().query.accounts.findFirst({ where: eq(accounts.agent, agent.key.publicKey) });
-  if (!existing || existing.settleTo !== settleTo) await G.openAccount(await E.signAccount(agent.key, owner.key, { label: "translator-agent", ownerName: "Bea", settleTo }));
-  return { key: agent.key.publicKey, label: "translator-agent", owner: "Bea", account: E.accountNumber(agent.key.publicKey), payee: E.accountPayee(agent.key.publicKey) };
+  const existing = await db.query.accounts.findFirst({ where: eq(accounts.agent, agent.key.publicKey) });
+  // translator-agent keeps what it earns as a balance; Bea caps a single payment out of it.
+  if (!existing || existing.settleTo !== settleTo || existing.mode !== "hold" || existing.perPaymentMinor !== TRANSLATOR_CAP)
+    await G.openAccount(await E.signAccount(agent.key, owner.key, { label: "translator-agent", ownerName: "Bea", settleTo, mode: "hold", perPayment: TRANSLATOR_CAP }));
+  // A second agent with a different owner, so translator-agent has someone to pay out of its balance.
+  const [pf, cy] = [await globalKey("proofreader-agent"), await globalKey("cy")];
+  if (!(await db.query.accounts.findFirst({ where: eq(accounts.agent, pf.key.publicKey) })))
+    await G.openAccount(await E.signAccount(pf.key, cy.key, { label: "proofreader-agent", ownerName: "Cy", settleTo: "proofreader@example.com", mode: "hold" }));
+  return {
+    key: agent.key.publicKey, label: "translator-agent", owner: "Bea", account: E.accountNumber(agent.key.publicKey), payee: E.accountPayee(agent.key.publicKey),
+    proofreader: { key: pf.key.publicKey, label: "proofreader-agent", owner: "Cy", payee: E.accountPayee(pf.key.publicKey) },
+  };
+}
+
+/**
+ * DEMO: translator-agent uses its balance. Each step is signed with the demo key and handed to the
+ * same bank code any agent would reach through POST /api/bank/transfer.
+ */
+export const BANK_ACTIONS = ["pay-proofreader", "withdraw", "drain", "freeze", "unfreeze"] as const;
+export type BankAction = (typeof BANK_ACTIONS)[number];
+export async function bankAct(action: BankAction) {
+  const cp = await ensureCounterparty();
+  const [tr, bea] = [await globalKey("translator-agent"), await globalKey("bea")];
+  if (action === "freeze" || action === "unfreeze") {
+    const a = await B.freeze(await E.signFreeze(bea.key, tr.key.publicKey, action === "freeze"));
+    return { action, narration: action === "freeze" ? "Bea signed a freeze. Nothing can leave translator-agent's balance until she lifts it." : "Bea lifted the freeze.", status: a.frozenAt ? "FROZEN" : "OPEN", reasons: [] as E.Violation[], balanceMinor: a.balanceMinor, transferId: null as string | null };
+  }
+  const acct = (await getDb().query.accounts.findFirst({ where: eq(accounts.agent, tr.key.publicKey) }))!;
+  const signed =
+    action === "pay-proofreader" ? await E.signTransfer(tr.key, { amount: 1200, payee: cp.proofreader.payee, purpose: "proofreading", memo: "Proofread the Spanish strings" })
+    : action === "withdraw" ? await E.signTransfer(tr.key, { kind: "withdraw", amount: 2000, memo: "Earnings to Bea" })
+    : await E.signTransfer(tr.key, { amount: Math.max(acct.balanceMinor, TRANSLATOR_CAP + 100), payee: "stranger@evil.example", purpose: "urgent", memo: "Send everything here" });
+  const r = await B.transfer(signed);
+  const narration =
+    action === "pay-proofreader" ? "translator-agent signed $12.00 to proofreader-agent out of its own balance."
+    : action === "withdraw" ? "translator-agent signed a $20.00 withdrawal to its owner's PayPal address."
+    : "A compromised translator-agent tried to send its whole balance to a stranger.";
+  return { action, narration, status: r.status as string, reasons: r.reasons, balanceMinor: r.balanceMinor, transferId: r.transfer?.id ?? null };
+}
+/** DEMO: is this the built-in agent whose balance the demo can move? */
+export async function isBankDemoAgent(agentKey: string): Promise<boolean> {
+  const row = await getDb().query.demoKeys.findFirst({ where: and(eq(demoKeys.rootId, GLOBAL), eq(demoKeys.label, "translator-agent")) });
+  return row?.publicKey === agentKey;
 }
 
 /** Create the demo agents' keys for a draft (before the root exists) and return the ops agent's public key. */

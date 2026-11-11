@@ -1,9 +1,9 @@
 {
-  "ranAt": "2026-11-11T13:54:32.853Z",
+  "ranAt": "2026-11-11T14:21:36.700Z",
   "paypal": "built-in simulator",
   "summary": {
-    "attacks": 107,
-    "refused": 107,
+    "attacks": 132,
+    "refused": 132,
     "movedMoney": 0
   },
   "byCategory": {
@@ -45,6 +45,11 @@
     "Forged evidence": {
       "attacks": 7,
       "refused": 7,
+      "movedMoney": 0
+    },
+    "Balance": {
+      "attacks": 25,
+      "refused": 25,
       "movedMoney": 0
     }
   },
@@ -796,6 +801,181 @@
       "attack": "proof of funds for a payee the agent can't pay",
       "refused": true,
       "how": "PAYEE_NOT_ALLOWED",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "move another agent's balance by writing its key in the request",
+      "refused": true,
+      "how": "NOT_THE_HOLDER",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "raise the amount after the agent signed",
+      "refused": true,
+      "how": "NOT_THE_HOLDER",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "redirect a signed transfer to another payee",
+      "refused": true,
+      "how": "NOT_THE_HOLDER",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "turn a signed payment into a withdrawal",
+      "refused": true,
+      "how": "NOT_THE_HOLDER",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "a signature made for another kind of message, reused as a transfer",
+      "refused": true,
+      "how": "NOT_THE_HOLDER",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "the owner moves the agent's money without the agent's key",
+      "refused": true,
+      "how": "NOT_THE_HOLDER",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "spend one cent more than the balance",
+      "refused": true,
+      "how": "INSUFFICIENT_BALANCE",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "pay more at once than the owner allows",
+      "refused": true,
+      "how": "OVER_ACCOUNT_LIMIT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "a negative amount, to pull money in",
+      "refused": true,
+      "how": "BAD_AMOUNT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "a fraction of a cent",
+      "refused": true,
+      "how": "BAD_AMOUNT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "pay itself to inflate its record",
+      "refused": true,
+      "how": "MALFORMED",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "a transfer signed ten minutes ago",
+      "refused": true,
+      "how": "STALE_REQUEST",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "a transfer from a key that has no account",
+      "refused": true,
+      "how": "NO_BALANCE_ACCOUNT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "pay an account number nobody opened",
+      "refused": true,
+      "how": "PAYEE_ACCOUNT_UNKNOWN",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "credit the same income twice by presenting the payment again",
+      "refused": true,
+      "how": "ignored: the ledger takes one entry per payment",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "the agent swaps in an owner key of its own to drop the cap",
+      "refused": true,
+      "how": "refused: This account already has an owner. Only that owner can co-sign a change to it.",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "a stranger freezes someone's account",
+      "refused": true,
+      "how": "refused: Only the owner who answers for an account can freeze it.",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "replay a completed transfer to move the money again",
+      "refused": true,
+      "how": "ignored: already booked once",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "transfer receipt with the amount edited",
+      "refused": true,
+      "how": "verification failed",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "transfer receipt naming a different recipient",
+      "refused": true,
+      "how": "verification failed",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "eight transfers at once for a balance that covers four",
+      "refused": true,
+      "how": "4 booked, 4 refused INSUFFICIENT_BALANCE; the books balance",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "pay out of a frozen account",
+      "refused": true,
+      "how": "ACCOUNT_FROZEN",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "withdraw from a frozen account",
+      "refused": true,
+      "how": "ACCOUNT_FROZEN",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "the agent lifts its owner's freeze itself",
+      "refused": true,
+      "how": "refused: Only the owner who answers for an account can freeze it.",
+      "moneyMoved": false
+    },
+    {
+      "category": "Balance",
+      "attack": "a freeze signed by the owner, flipped to an unfreeze",
+      "refused": true,
+      "how": "refused: That isn't properly signed, or is too old.",
       "moneyMoved": false
     }
   ]

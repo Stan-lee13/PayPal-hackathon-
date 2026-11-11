@@ -7,7 +7,7 @@ import { asc, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "../db";
 import { auditLog, roots } from "../db/schema";
-import { act, attachDemoAgents, createDemoAgents, DEMO_ACTIONS, demoHello, ensureCounterparty, hasDemoAgents, isDemoAgent, runTool, TOOL_AGENTS } from "../demo/agents";
+import { act, attachDemoAgents, BANK_ACTIONS, bankAct, createDemoAgents, DEMO_ACTIONS, demoHello, ensureCounterparty, hasDemoAgents, isBankDemoAgent, isDemoAgent, runTool, TOOL_AGENTS } from "../demo/agents";
 import * as E from "../envelope/core";
 import * as B from "../gateway/bank";
 import * as G from "../gateway/service";
@@ -74,7 +74,7 @@ export const handlers: Record<string, Handler> = {
     }
     const p = await G.agentProfile(key);
     if (!p) return { status: 404, body: { error: "No agent with that key has been seen by this gateway." } };
-    return { body: { ...p, mode: paypalMode(), demo: await isDemoAgent(key) } };
+    return { body: { ...p, mode: paypalMode(), demo: await isDemoAgent(key), bankDemo: await isBankDemoAgent(key) } };
   },
 
   /** An agent's record, signed by the gateway so the agent can show it to anyone. */
@@ -192,6 +192,13 @@ export const handlers: Record<string, Handler> = {
     const b = z.object({ rootId: z.string().max(60), action: z.enum(DEMO_ACTIONS) }).parse(body);
     const r = await act(b.rootId, b.action);
     return { body: { action: r.action, narration: r.narration, status: r.result?.status ?? null, reasons: withMeaning(r.result?.reasons ?? []) } };
+  },
+
+  /** DEMO: the built-in earning agent uses its balance, or its owner freezes it. Same bank code as POST /api/bank/transfer. */
+  "POST /api/demo/bank": async ({ body }) => {
+    const b = z.object({ action: z.enum(BANK_ACTIONS) }).parse(body);
+    const r = await bankAct(b.action);
+    return { body: { ...r, reasons: withMeaning(r.reasons) } };
   },
 
   /** DEMO: carry out one tool call a language model made while playing a built-in agent. The gateway decides. */

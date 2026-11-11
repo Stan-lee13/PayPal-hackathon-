@@ -10,14 +10,16 @@ type Sponsor = { role: "owner" | "agent"; label: string; key: string };
 type Account = { blockId: string; rootId: string; rootTitle: string; depth: number; label: string; openedBy: Sponsor; sponsors: Sponsor[]; caps: Caps; spentMinor: number; reservedMinor: number; availableMinor: number; state: "LIVE" | "REVOKED" | "CLOSED" | "EXPIRED"; issued: Array<{ blockId: string; label: string; key: string; limitMinor: number; revoked: boolean }>; openedAt: string };
 type SpendT = { id: string; rootId: string; leafLabel: string; amountMinor: number; payee: string; purpose: string; memo: string; status: string; reasons: Array<{ code: string; detail: string }>; createdAt: string; hasReceipt: boolean; promiseExpiresAt: string | null };
 type Profile = {
-  key: string; account: string; label: string; firstSeenAt: string; mode: string; demo: boolean; accounts: Account[];
-  receives: { payee: string; owner: { label: string; key: string }; settlesTo: string; openedAt: string } | null;
+  key: string; account: string; label: string; firstSeenAt: string; mode: string; demo: boolean; bankDemo: boolean; accounts: Account[];
+  receives: { payee: string; owner: { label: string; key: string }; settlesTo: string; openedAt: string; holds: boolean } | null;
+  balance: { minor: number; frozen: boolean; perPaymentMinor: number | null; ledger: Array<{ id: number; kind: string; ref: string; deltaMinor: number; balanceAfterMinor: number; counterparty: string | null; memo: string; at: string }> } | null;
   record: { payments: number; paidMinor: number; refused: number; refusedCodes: string[]; revoked: number; availableMinor: number; promisesKept: number; promisesLapsed: number; received: number; receivedMinor: number; setAsideForItMinor: number };
   statement: SpendT[]; incoming: SpendT[];
 };
 type Standing = { v: string; agent: string; agentLabel: string; account: string; sponsors: Sponsor[]; root: string; ask: { amount: number; currency: string; payee: string; purpose: string }; good: boolean; reasons: Array<{ code: string; detail: string }>; availableMinor: number; paypal: { mode: string; authorizationId: string | null; status: string | null; unusedMinor: number | null }; issuedAt: string; validUntil: string; gateway: string; sig: string };
 
 const STATE: Record<Account["state"], { text: string; tone: "green" | "red" | "grey" | "amber" }> = { LIVE: { text: "Live", tone: "green" }, REVOKED: { text: "Revoked", tone: "red" }, CLOSED: { text: "Closed", tone: "grey" }, EXPIRED: { text: "Expired", tone: "amber" } };
+const ENTRY: Record<string, string> = { income: "Paid in from", transfer_in: "Received from", transfer_out: "Paid to", payout: "Paid out by PayPal to", withdrawal: "Withdrawn to its owner at", reversal: "Put back: payout failed to" };
 const day = (iso: string) => new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
 const stamp = (iso: string) => `${new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" })} ${new Date(iso).toISOString().slice(11, 16)}`.replace(/ /g, "\u00A0");
 
@@ -53,6 +55,17 @@ export function AgentView({ agentKey }: { agentKey: string }) {
     const t = setInterval(() => { if (document.visibilityState === "visible") void load(); }, 4000);
     return () => clearInterval(t);
   }, [load]);
+
+  const [moving, setMoving] = useState<string | null>(null);
+  const [moved, setMoved] = useState<{ narration: string; status: string; reasons: Array<{ code: string; meaning?: string; detail: string }> } | null>(null);
+  async function bank(action: string) {
+    setMoving(action); setMoved(null);
+    try {
+      const r = await api("/api/demo/bank", { body: { action } });
+      setMoved(r.ok ? r.json : { narration: r.json.error ?? "That did not work.", status: "FAILED", reasons: [] });
+      await load();
+    } finally { setMoving(null); }
+  }
 
   async function check(e: React.FormEvent) {
     e.preventDefault();
@@ -101,6 +114,7 @@ export function AgentView({ agentKey }: { agentKey: string }) {
           </>}
           {p.receives && <>
             <div><Figure minor={p.record.receivedMinor} className="text-[1.9rem] text-green" /><p className="label mt-1.5">Earned so far</p></div>
+            {p.balance && <div data-testid="balance-figure"><Figure minor={p.balance.minor} className="text-[1.9rem] text-blue" /><p className="label mt-1.5">Balance now</p></div>}
             <div><p className="figure text-[1.9rem]">{p.record.received}</p><p className="label mt-1.5">Times paid</p></div>
             <div><Figure minor={p.record.setAsideForItMinor} className="text-[1.9rem] text-blue" /><p className="label mt-1.5">Set aside for it</p></div>
           </>}
@@ -120,13 +134,52 @@ export function AgentView({ agentKey }: { agentKey: string }) {
         {p.receives && (
           <section className="sheet p-5 sm:p-6" data-testid="receives">
             <div className="flex items-start justify-between gap-3"><h2 className="label">An account of its own</h2><Stamp tone="green">Can be paid</Stamp></div>
-            <p className="mt-2 text-sm text-ink-2">Other agents pay this one by naming its account number on their envelope. The gateway captures from the payer&rsquo;s PayPal hold and PayPal pays out to its owner.</p>
+            <p className="mt-2 text-sm text-ink-2">Other agents pay this one by naming its account number on their envelope. The gateway captures from the payer&rsquo;s PayPal hold{p.receives.holds ? " and the money stays here as this agent\u2019s balance, to spend or send home." : " and PayPal pays out to its owner."}</p>
             <ul className="mt-4 space-y-1.5 text-[.88rem]">
               <li className="leader"><span className="text-ink-2">Pay it as</span><i /><span className="mono text-[.8rem]">{p.receives.payee}</span></li>
               <li className="leader"><span className="text-ink-2">Answers for it</span><i /><span className="mono text-[.78rem]">{p.receives.owner.label} · {fingerprint(p.receives.owner.key)}</span></li>
-              <li className="leader"><span className="text-ink-2">Settles to PayPal</span><i /><span className="mono text-[.78rem]">{p.receives.settlesTo}</span></li>
+              <li className="leader"><span className="text-ink-2">{p.receives.holds ? "Withdraws to PayPal" : "Settles to PayPal"}</span><i /><span className="mono text-[.78rem]">{p.receives.settlesTo}</span></li>
+              {p.balance && <li className="leader"><span className="text-ink-2">Most it may pay at once</span><i /><span className="mono text-[.78rem]">{p.balance.perPaymentMinor === null ? "no cap set" : `${usd(p.balance.perPaymentMinor)}, set by ${p.receives.owner.label}`}</span></li>}
               <li className="leader"><span className="text-ink-2">Opened</span><i /><span className="mono text-[.78rem]">{day(p.receives.openedAt)}, signed by the agent and its owner</span></li>
             </ul>
+          </section>
+        )}
+
+        {p.balance && (
+          <section data-testid="balance">
+            <div className="flex flex-wrap items-end justify-between gap-3">
+              <div>
+                <h2 className="label">Its balance</h2>
+                <p className="mt-1 leading-none"><Figure minor={p.balance.minor} className="text-[2.6rem] text-blue" /></p>
+              </div>
+              <Stamp tone={p.balance.frozen ? "red" : "green"}>{p.balance.frozen ? `Frozen by ${p.receives?.owner.label ?? "its owner"}` : "Open"}</Stamp>
+            </div>
+            <p className="mt-2 max-w-prose text-sm text-ink-2">Money this agent earned and kept. It moves only on the agent&rsquo;s own signature: to another agent&rsquo;s account at once, with no PayPal call, or out through a PayPal payout. Its owner can cap a payment and freeze the account. Every change is one line below, and no line can be written twice.</p>
+            {p.bankDemo && (
+              <div className="mt-4 flex flex-wrap gap-2" data-testid="bank-actions">
+                <button type="button" className="btn btn-sm btn-ink" disabled={Boolean(moving)} onClick={() => bank("pay-proofreader")}>{moving === "pay-proofreader" ? "Signing…" : "Pay proofreader-agent $12"}</button>
+                <button type="button" className="btn btn-sm" disabled={Boolean(moving)} onClick={() => bank("withdraw")}>{moving === "withdraw" ? "Asking PayPal…" : "Withdraw $20 to its owner"}</button>
+                <button type="button" className="btn btn-sm" disabled={Boolean(moving)} onClick={() => bank("drain")}>{moving === "drain" ? "Signing…" : "Compromised: drain to a stranger"}</button>
+                <button type="button" className="btn btn-sm" disabled={Boolean(moving)} onClick={() => bank(p.balance!.frozen ? "unfreeze" : "freeze")}>{p.balance.frozen ? "Owner lifts the freeze" : "Owner freezes it"}</button>
+              </div>
+            )}
+            {moved && (
+              <p className="mt-3 text-sm" role="status" data-testid="bank-result">
+                <b className={moved.status === "DENIED" || moved.status === "FAILED" ? "text-red" : "text-green"}>{moved.status === "DENIED" ? "Refused." : moved.status === "BOOKED" ? "Moved." : moved.status === "FROZEN" ? "Frozen." : moved.status === "OPEN" ? "Open again." : moved.status === "FAILED" ? "Failed." : moved.status === "PAID" ? "Paid by PayPal." : "Sent to PayPal."}</b> {moved.narration}
+                {moved.reasons.length > 0 && <span className="mono mt-1 block text-[.72rem] text-red">{moved.reasons.map((r) => `${r.code} · ${r.detail}`).join("  ")}</span>}
+              </p>
+            )}
+            {p.bankDemo && <p className="mt-2 text-xs text-ink-3">This is a built-in demo agent, so the demo signs for it and for its owner. A real agent signs with its own key: <span className="mono">npx tsx scripts/agent.ts transfer</span>.</p>}
+            {p.balance.ledger.length === 0 ? <p className="mt-4 border-t-[1.5px] border-ink pt-4 text-sm text-ink-2">Nothing has been paid in yet.</p> : (
+              <ul className="ledger mt-4 border-t-[1.5px] border-ink" data-testid="ledger">
+                {p.balance.ledger.map((l) => (
+                  <li key={l.id} className="flex items-baseline justify-between gap-3 py-2.5">
+                    <p className="min-w-0 text-[.9rem]"><span className="mono mr-2 text-[.7rem] text-ink-3">{stamp(l.at)}</span>{ENTRY[l.kind] ?? l.kind} <span className="title">{l.counterparty ?? "—"}</span>{l.memo && <span className="text-xs text-ink-2"> · {l.memo}</span>}</p>
+                    <p className="shrink-0 text-right leading-tight"><span className={`figure text-[1.1rem] ${l.deltaMinor < 0 ? "" : "text-green"}`}>{l.deltaMinor < 0 ? "−" : "+"}{usd(Math.abs(l.deltaMinor))}</span><span className="mono block text-[.66rem] text-ink-3">{usd(l.balanceAfterMinor)}</span></p>
+                  </li>
+                ))}
+              </ul>
+            )}
           </section>
         )}
 
@@ -195,7 +248,7 @@ export function AgentView({ agentKey }: { agentKey: string }) {
           <section className="sheet sheet-lift p-5 sm:p-6">
             <p className="label">An agent that earns</p>
             <h2 className="title mt-2 text-[1.7rem]">It holds no envelope. It gets paid.</h2>
-            <p className="mt-2 text-sm text-ink-2">{p.label} works for other agents. Before it starts, it can ask the paying agent to set the fee aside: the money is then reserved for this account at every level of the payer&rsquo;s envelope, and PayPal has confirmed the hold. When the work is done the payer pays it and PayPal pays {p.receives.owner.label}.</p>
+            <p className="mt-2 text-sm text-ink-2">{p.label} works for other agents. Before it starts, it can ask the paying agent to set the fee aside: the money is then reserved for this account at every level of the payer&rsquo;s envelope, and PayPal has confirmed the hold. When the work is done the payer pays it{p.receives.holds ? ": the money is captured from the payer\u2019s hold and lands in this agent\u2019s balance." : ` and PayPal pays ${p.receives.owner.label}.`}</p>
             <pre className="code mt-4 overflow-x-auto p-3 text-[.72rem]">{`# the paying agent\nnpx tsx scripts/agent.ts promise --as <payer> \\\n  --payee ${p.receives.payee} --amount 45 --purpose translation\nnpx tsx scripts/agent.ts keep <promise-id>`}</pre>
           </section>
         )}
