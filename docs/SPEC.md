@@ -160,6 +160,25 @@ An agent that wants to receive opens an account. The body is signed twice, by th
 
 A payee written as `acct:` followed by the agent's account number (lower case) means that agent.
 
+### Balance, transfer and freeze
+
+An account opening may carry `"mode": "hold"` and `"perPayment": <minor units>`. Both are covered by the agent's and the owner's signatures.
+
+```json
+{ "request": { "v": "envelope-transfer/1", "from": "<agent key>", "kind": "pay", "amount": 1200, "currency": "USD",
+               "payee": "acct:xxxx-xxxx-xxxx", "purpose": "proofreading", "memo": "", "nonce": "n_…", "at": "…" },
+  "sig": "<signature by `from`>" }
+```
+
+`kind` is `pay` or `withdraw`. A `pay` names an account (`acct:…`) or a PayPal address. A `withdraw` names no one: its payee is the literal `owner`, and the gateway sends it to the settlement address in the account's signed opening.
+
+```json
+{ "request": { "v": "envelope-freeze/1", "agent": "<agent key>", "frozen": true, "nonce": "n_…", "at": "…" },
+  "sig": "<signature by the owner>", "by": "<owner key>" }
+```
+
+A completed transfer has a receipt signed by the gateway under `envelope-transfer-receipt/1`: the request and its signature, the paying account, where the money went (an account here, or a PayPal address with the payout batch id), and the balance after.
+
 ## Rules
 
 ### Splitting (offline)
@@ -235,6 +254,28 @@ A promise without `releaseBy` can only be paid by its maker. An acceptance from 
 
 When a spend or promise names an `acct:` payee, the gateway resolves it under the root lock and fixes the settlement address on the spend at that moment; a later change to the account does not redirect a payment already admitted. An account number nobody opened is refused with `PAYEE_ACCOUNT_UNKNOWN`. The payout goes to the settlement address, and the receipt records the account, the agent and where PayPal sent the money.
 
+### Balances
+
+An account in `hold` mode keeps its income. The balance is a number on the account row that only ever changes in the same transaction as one row in the ledger. Ledger rows are unique per (account, kind, reference), where the reference is the id of the spend or transfer.
+
+Income. A spend or promise whose payee is an account in `hold` mode is admitted, reserved and captured like any other. After the capture the gateway, under the account's lock, writes one `income` row with the spend's id and adds the amount to the balance. No payout is made. The receipt's `paidTo.held` names the ledger entry, and its `paypal.payoutBatchId` is null. Whether an account holds or settles is read when the payment is admitted.
+
+Transfer. The gateway checks, in order:
+
+1. shape; the signature by `from` under the transfer domain; `at` within 5 minutes; a positive whole amount in USD; a well-formed payee;
+2. `from` has an account; a named account exists and is not `from` itself;
+3. under the lock of the paying account (and of the receiving account, both taken in key order): the same signed request has not been seen; the account is not frozen; a `pay` is not over `perPayment`; the amount is not over the balance.
+
+If all hold, the balance is debited and a ledger row written. When the payee is an account in `hold` mode, the credit and its row are written in the same transaction and the transfer is `BOOKED`: PayPal is not called. Otherwise the transfer is `SENDING`, and after the transaction commits the gateway asks PayPal for a payout with the transfer id as the batch id. A network failure leaves it `SENDING`; presenting the same request again resumes it and cannot pay twice. A refusal by PayPal writes one `reversal` row and puts the amount back.
+
+A withdrawal is not subject to `perPayment`: it can only go to the owner.
+
+Freeze. Only the key in the account's `owner` field can freeze or unfreeze. A frozen account refuses every transfer; income still arrives.
+
+Owner. A later account opening can change the label, settlement address, mode and cap, and needs both signatures again. It is refused if it names a different owner key, so an agent cannot give itself a new owner to escape a cap or a freeze.
+
+The books. At any time: the sum of balances equals the sum of ledger rows; that sum equals income minus payouts and withdrawals plus reversals; transfers between accounts sum to zero. `GET /api/bank` reports the three checks.
+
 ### Checking an agent before working for it
 
 Anyone holding a hello may ask `POST /api/gateway/standing`. The gateway:
@@ -264,6 +305,8 @@ Verified in the PayPal sandbox on 2026-11-11: 12 partial captures of one authori
 An authorization is a hold placed by PayPal on the payer's funding source. It is not an escrow service, lasts at most 29 days, and is honoured for 3; envelopes are limited to 28 days.
 
 ## Security notes
+
+Balances: a balance on this gateway is a claim on money that sits in the gateway's own PayPal account after a capture. That is stored value. The reference implementation runs on the PayPal sandbox only; a deployment with real money needs a licensed party to hold the funds. The owner's cap limits one payment, not a day's total, so the freeze is the control that stops a compromised agent.
 
 - **Compromised agent**: can spend at most what is left in its own envelope, only to its listed payees and purposes, until it expires or is revoked.
 - **Stolen envelope**: useless without the holder's private key.

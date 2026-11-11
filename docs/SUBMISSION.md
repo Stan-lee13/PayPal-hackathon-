@@ -16,11 +16,11 @@ Everything needed to fill in the Devpost form and check the entry before submitt
 
 ## Tagline
 
-Give your agent an envelope, not your wallet. Money PayPal is already holding, which an agent can split for the agents it hires but never enlarge, which any payee can check is really there, and which one agent can use to pay another. A treasury for the owner, accounts for the agents, and a protocol between them.
+Give your agent an envelope, not your wallet. Money PayPal is already holding, which an agent can split for the agents it hires but never enlarge, which any payee can check is really there, and which one agent can use to pay another. Agents get accounts that keep a balance and pay each other on their own signatures. A treasury for the owner, accounts for the agents, and a protocol between them, on PayPal's rails.
 
 ## Short description (elevator pitch)
 
-A person seals an envelope ("$200, these two payees, until tonight") and PayPal places a hold for it. Their agent can tear off smaller envelopes for the agents it hires. Nobody down the chain can spend more, pay anyone else or outlive it. A payee can ask whether an agent is good for the money and get a signed answer that includes PayPal's own confirmation of the hold, or have the fee set aside before it starts. Agents can have accounts that receive, so one agent can pay another. Every payment returns a receipt that names everyone who authorized it.
+A person seals an envelope ("$200, these two payees, until tonight") and PayPal places a hold for it. Their agent can tear off smaller envelopes for the agents it hires. Nobody down the chain can spend more, pay anyone else or outlive it. A payee can ask whether an agent is good for the money and get a signed answer that includes PayPal's own confirmation of the hold, or have the fee set aside before it starts. Agents can have accounts that receive and keep a balance, so one agent can pay another and then spend what it earned: at once to another agent, or out through a PayPal payout, under a cap and a freeze that only its owner controls. Every payment returns a receipt that names everyone who authorized it.
 
 ## Devpost description
 
@@ -40,6 +40,9 @@ Envelope gives an agent something that behaves like an account of its own, built
 - **Set aside.** An agent can earmark a fee for one payee before the work starts. The amount is reserved in every envelope up the chain, PayPal confirms the hold, and the payee gets a signed note. Nothing else can spend that money until it is paid or released.
 - **Spend.** An agent signs a payment request with its own key, or pays what it set aside. The gateway verifies the whole chain, checks the budget of every envelope above it, then makes a partial capture of the hold and a PayPal payout to the payee.
 - **Get paid.** An agent can open an account that receives, signed by its own key and its owner's. Other agents pay it by account number; PayPal pays out to its owner.
+- **Keep a balance.** An account can hold what the agent earns. PayPal still captures each payment from the payer's hold; the amount is credited to the agent's balance on a ledger, once.
+- **Transfer.** The agent signs a transfer out of its balance. To another agent's account it moves at once, with no PayPal call. To a PayPal address, or home to its owner, it leaves as a payout. The gateway refuses it when the balance is too low, over the owner's cap, or frozen.
+- **Freeze.** The owner of an agent's account can freeze it with a signature. The agent cannot lift it and cannot swap in another owner.
 - **Accept.** Money set aside can name an agent whose signed acceptance of the work releases it. The fingerprint of the delivered work goes on the receipt.
 - **Approve.** The owner can require their own signature above an amount. Over it an agent can only ask; the money waits in the owner's inbox until they sign or decline.
 - **Close or revoke.** Revoking one envelope kills everything split from it. Closing the root voids the rest of the hold.
@@ -47,7 +50,7 @@ Envelope gives an agent something that behaves like an account of its own, built
 Three layers sit on that one primitive:
 
 - **Treasury**, for the owner: everything their agents can touch in one place. What PayPal is holding now, what was spent, what is set aside, every agent with its budget and a revoke button, and the books reconciled against PayPal by capture and payout id.
-- **Accounts**, for each agent: a number and passport drawn from its key, a statement, an account that can be paid, and a record the gateway will sign as a reference the agent can carry anywhere.
+- **Accounts**, for each agent: a number and passport drawn from its key, a statement, an account that can be paid and can keep a balance, a ledger, and a record the gateway will sign as a reference the agent can carry anywhere.
 - **Protocol**, between agents: signed messages any party can verify (introduction, statement of standing, promise, acceptance, receipt).
 
 Each agent has an account number and a passport drawn from its key, with its record, statement and income. Each payment produces a signed receipt that ties the PayPal capture and payout ids to the request and to the chain of authority. The receipt page checks it against PayPal's GET endpoints and re-verifies the signatures in the browser.
@@ -67,7 +70,7 @@ Agents outside the app use the same gateway through a command line and an MCP se
 - **PayPal** (sandbox): Orders v2 with `intent: AUTHORIZE` for the hold, partial captures with `final_capture: false`, Payouts for the payee, void on close, refund if a payout cannot be delivered, and GET lookups for proof of funds and for reconciling receipts.
 - **One codebase, two places to run.** Every endpoint is a plain function (`lib/api/handlers.ts`). On a server it runs against Postgres. When the site has no database, the same functions run in the visitor's browser against Postgres compiled to WebAssembly (PGlite) and a PayPal simulator, so a deployment with no configuration is a working demo.
 - **App**: Next.js 15, React 19, TypeScript, Tailwind v4, Drizzle. The interface is drawn as bank stationery: kraft envelopes, rubber stamps, till receipts, passports.
-- **Tests**: 32 automated tests on the simulator, including a corpus of 107 attacks in eight categories. All 107 are refused and none causes a capture or a payout.
+- **Tests**: 40 automated tests on the simulator, including a corpus of 132 attacks in nine categories. All 132 are refused and none causes a capture or a payout.
 
 ### Challenges we ran into
 
@@ -84,7 +87,8 @@ Agents outside the app use the same gateway through a command line and an MCP se
 - Payment released by a named agent's signature for delivered work, on the real sandbox, with the work's fingerprint on the receipt.
 - An owner's books matched against PayPal's records, payment by payment.
 - A payment over the owner's threshold that an agent could not make, paid when the owner signed in their browser, on the real sandbox.
-- 107 of 107 attacks refused, with no money moved.
+- An agent that kept what it earned, paid another agent out of its balance with no PayPal call, was frozen by its owner, and withdrew through a real PayPal payout, on the real sandbox. The books balanced at the end.
+- 132 of 132 attacks refused, with no money moved.
 - The whole thing can be tried in a browser with nothing to install or configure.
 
 ### What we learned
@@ -97,6 +101,7 @@ Three old ideas fit together well for agents: capability chains that can only be
 - Reauthorizing a hold before it lapses, for envelopes that live longer than PayPal's honor period.
 - Paying payees through PayPal's platform products so captured money never rests with the gateway.
 - Delivery-versus-payment for promises, so a payee holds more than earmarked money.
+- Balances held by a licensed partner, with a daily limit, statements, and a way to dispute a payment. After that, the things a bank adds on top: credit against a record, cards, interest. None of those is built, and none should be without a licence behind it.
 
 ### Built with
 
@@ -113,14 +118,14 @@ Claude Code (Anthropic) wrote the code, tests and documents under the author's d
 1. **Seal an envelope** (top right) → "Seal & hold $200.00 on PayPal".
 2. On the envelope's page press **Run the launch**. The ops agent splits; the localization agent sets $45 aside for translator-agent, payable when ops-agent signs for the delivered work, which it then does; the creative agent pays the designer.
 3. Press **Compromise the creative agent**: a new payee, an overspend and a forged bigger envelope are all denied, with the reason shown.
-4. Click **translator-agent** in the statement: an agent that holds no envelope and gets paid. Click an agent in "Who holds what" and use **Ask the gateway** for proof of funds.
+4. Click **translator-agent** in the statement: an agent that holds no envelope and gets paid. The $45 is in its balance. Press **Pay proofreader-agent $12** (moves at once), **Compromised: drain to a stranger** (refused: over its owner's $30 cap), **Owner freezes it**, then **Withdraw $20 to its owner**. Open **Accounts** (top right) to see every balance and whether the books add up. Click an agent in "Who holds what" and use **Ask the gateway** for proof of funds.
 5. Open a **Receipt & authority chain**: checked against PayPal (simulated here) and re-verified in your browser.
 6. Press **Agent asks for a bigger payment**: it is over the $75 you asked to sign for, so it waits. **Sign & pay** or **Decline**.
 7. Open **Treasury** (top right): every agent under your signature with its budget, where the money went, and **Reconcile with PayPal**.
 8. On an agent's passport, **Get a signed reference**: its record, signed and checked in your browser.
 9. **Close envelope & release the hold.**
 
-**On the real PayPal sandbox** (about five minutes): clone the repository and follow "Run it" in the README with a sandbox app's credentials. `npx tsx scripts/sandbox-run.ts` runs the whole flow with no browser and prints PayPal's ids. `node scripts/e2e.mjs` drives the same flow in a browser.
+**On the real PayPal sandbox** (about five minutes): clone the repository and follow "Run it" in the README with a sandbox app's credentials. `npx tsx scripts/sandbox-run.ts` runs the whole flow with no browser, balances included, and prints PayPal's ids. `node scripts/e2e.mjs` drives the same flow in a browser.
 
 **With a real model**: see "Live agents" in the README. If you have Claude Code installed, `node scripts/claude-bridge.mjs` needs no API key.
 
@@ -161,7 +166,7 @@ A special award (Best Use of Agentic Commerce, Most Creative, Best Use of PayPal
 
 | Criterion | Strengths | Weaknesses a judge may raise |
 |---|---|---|
-| Technological implementation | Real sandbox: authorize, partial capture, payout, void, refund path, reconciliation. Ed25519 chains verified in three places. 32 tests and a 107-attack corpus. Gateway runs on a server or in a browser from the same code. | Custodial gateway; test-card funding; no hold reauthorization; no webhooks; fewer tests than the largest entries. |
+| Technological implementation | Real sandbox: authorize, partial capture, payout, void, refund path, reconciliation. Ed25519 chains verified in three places. 40 tests and a 132-attack corpus. Gateway runs on a server or in a browser from the same code. | Custodial gateway; test-card funding; no hold reauthorization; no webhooks; fewer tests than the largest entries. |
 | Design | A distinctive stationery system applied to every page; passports and receipts that carry real data. | Dense pages; phone layout only spot-checked. |
 | Potential impact | Addresses multi-agent delegation, payee trust and agent-to-agent payment with rails that exist today. | Needs PayPal platform products and compliance work before real money. |
 | Innovation | The combination listed above was not found in 36 rival codebases or in the prior art we read. | Each ingredient has prior art; the entry says so. |

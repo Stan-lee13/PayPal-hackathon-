@@ -70,9 +70,9 @@ What it could become, as the first product a business would pay for:
 
 ### Layer 4: Financial services through partners
 
-Nothing exists here, and nothing should be built here without licensed partners. The candidates:
+Only the first item has working mechanics, on the sandbox. None of it should carry real money without licensed partners. The candidates:
 
-- **Accounts that hold a balance.** Today an agent's account settles its income straight to its owner's PayPal. Holding a balance on an agent's behalf is deposit-taking or stored value and needs a regulated partner.
+- **Accounts that hold a balance.** The mechanics now exist and run on the PayPal sandbox: an account can keep its income on a ledger, pay another agent's account at once, pay out through PayPal, and be capped and frozen by its owner (`lib/gateway/bank.ts`). What does not exist is the right to do it with real money. Holding a balance on someone's behalf is deposit-taking or stored value and needs a regulated partner to hold the funds.
 - **Credit.** The record Envelope keeps (payments settled, promises kept, requests refused) is the kind of data a lender would want. Turning it into a credit decision is lending; scoring it at all raises fair-lending and consumer-reporting questions in several jurisdictions. A reference of facts is as far as the current product goes, on purpose.
 - **Guarantees and insurance** against an agent's failed obligations. This is an insurer's product.
 
@@ -106,7 +106,7 @@ Nothing here has been validated with a customer. The first step after the hackat
 - Key management, incident response, audit logging and an external penetration test.
 - Terms that say plainly what a promise, a statement of standing and a reference are, and are not.
 
-Envelope is not a bank, does not hold deposits, does not extend credit and is not an escrow service. It should not describe itself as any of those until a regulated partner makes one of them true.
+Envelope is not a licensed bank, holds no real deposits (the balances are sandbox money), does not extend credit and is not an escrow service. It should not describe itself as any of those until a regulated partner makes one of them true.
 
 ## A staged twelve months
 
