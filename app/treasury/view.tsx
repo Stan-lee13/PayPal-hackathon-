@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/client/api";
-import { fingerprint, signAccept, signRevoke, type KeyPair } from "@/lib/envelope/core";
+import { fingerprint, signAccept, signRead, signRevoke, type KeyPair } from "@/lib/envelope/core";
 import { principalKey } from "@/lib/principal-key";
 import { Figure, Meter, Sigil, SpendStamp, Stamp, usd } from "@/components/stationery";
 
@@ -32,7 +32,7 @@ export function TreasuryView() {
   const [err, setErr] = useState<string | null>(null);
 
   const load = useCallback(async (key: KeyPair) => {
-    const r = await api(`/api/treasury/${key.publicKey}`);
+    const r = await api(`/api/treasury/${key.publicKey}`, { method: "POST", body: { signed: await signRead(key, "treasury", key.publicKey) } });
     setD(r.ok ? r.json : null);
   }, []);
   useEffect(() => { void principalKey(false).then((k) => { setMe(k); if (k) void load(k); else setD(null); }); }, [load]);
@@ -64,7 +64,7 @@ export function TreasuryView() {
     if (!me) return;
     setBusy("books"); setErr(null);
     try {
-      const r = await api(`/api/treasury/${me.publicKey}/reconcile`, { method: "POST", body: {} });
+      const r = await api(`/api/treasury/${me.publicKey}/reconcile`, { method: "POST", body: { signed: await signRead(me, "treasury", me.publicKey) } });
       if (r.ok) setBooks(r.json); else setErr(r.json.error ?? "Couldn't reconcile.");
     } finally { setBusy(null); }
   }

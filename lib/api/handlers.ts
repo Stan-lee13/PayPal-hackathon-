@@ -27,6 +27,11 @@ const spendOut = (r: G.SpendResult) => ({
   paypal: r.spend ? { captureId: r.spend.captureId, payoutBatchId: r.spend.payoutBatchId, payoutItemId: r.spend.payoutItemId, payoutStatus: r.spend.payoutStatus } : null,
   receipt: r.receipt,
 });
+/** Knowing an owner's public key is not being the owner: reads of an owner's books need the owner's signature. */
+async function ownerAsks(body: unknown, principal: string): Promise<boolean> {
+  const p = z.object({ signed: z.object({ request: z.any(), sig: z.string(), by: z.string() }) }).safeParse(body);
+  return p.success && p.data.signed.by === principal && (await E.verifyReadSignature(p.data.signed as never, "treasury", principal));
+}
 const spendStatus = (s: string) => (s === "DENIED" ? 403 : s === "FAILED" ? 502 : s === "LAPSED" ? 409 : 200);
 
 export const handlers: Record<string, Handler> = {
@@ -85,15 +90,17 @@ export const handlers: Record<string, Handler> = {
   },
 
   /** One owner's treasury: every envelope sealed with that key, the agents under them, and where the money went. */
-  "GET /api/treasury/:principal": async ({ params }) => {
+  "POST /api/treasury/:principal": async ({ params, body }) => {
     if (!KEY.test(params.principal!)) return { status: 400, body: { error: "Not an owner key." } };
+    if (!(await ownerAsks(body, params.principal!))) return { status: 401, body: { error: "A treasury is shown only to its owner. Sign the request with the owner's key." } };
     const t = await G.treasury(params.principal!);
     return t ? { body: t } : { status: 404, body: { error: "No envelope has been sealed with that key." } };
   },
 
   /** Check that owner's recent payments against PayPal's own records. */
-  "POST /api/treasury/:principal/reconcile": async ({ params }) => {
+  "POST /api/treasury/:principal/reconcile": async ({ params, body }) => {
     if (!KEY.test(params.principal!)) return { status: 400, body: { error: "Not an owner key." } };
+    if (!(await ownerAsks(body, params.principal!))) return { status: 401, body: { error: "A treasury is shown only to its owner. Sign the request with the owner's key." } };
     const r = await G.reconcileTreasury(params.principal!);
     return r ? { body: r } : { status: 404, body: { error: "No envelope has been sealed with that key." } };
   },

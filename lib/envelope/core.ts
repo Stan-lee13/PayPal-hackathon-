@@ -40,6 +40,8 @@ export const CARD_VERSION = "envelope-card/1" as const;
 /** A merchant charging a card. Signed by the merchant the card is locked to. */
 export const CHARGE_VERSION = "envelope-charge/1" as const;
 export const CARD_CANCEL_VERSION = "envelope-card-cancel/1" as const;
+/** An owner asking to read their own books. A public key names an owner; only a signature proves who is asking. */
+export const READ_VERSION = "envelope-read/1" as const;
 
 export type Caps = {
   currency: string;
@@ -148,6 +150,8 @@ export type ChargeRequest = { v: typeof CHARGE_VERSION; card: string; merchant: 
 export type SignedCharge = { request: ChargeRequest; sig: string };
 export type CardCancelRequest = { v: typeof CARD_CANCEL_VERSION; card: string; nonce: string; at: string };
 export type SignedCardCancel = { request: CardCancelRequest; sig: string; by: string };
+export type ReadRequest = { v: typeof READ_VERSION; what: "treasury"; subject: string; nonce: string; at: string };
+export type SignedRead = { request: ReadRequest; sig: string; by: string };
 export type TransferRequest = { v: typeof TRANSFER_VERSION; from: string; kind: "pay" | "withdraw"; amount: number; currency: string; payee: string; purpose: string; memo: string; nonce: string; at: string };
 export type SignedTransfer = { request: TransferRequest; sig: string };
 export type FreezeRequest = { v: typeof FREEZE_VERSION; agent: string; frozen: boolean; nonce: string; at: string };
@@ -515,6 +519,17 @@ export async function verifyCardCancelSignature(c: SignedCardCancel, now = new D
   const r = c?.request;
   if (!r || r.v !== CARD_CANCEL_VERSION || typeof r.card !== "string" || Math.abs(now.getTime() - Date.parse(r.at)) > SPEND_WINDOW_MS) return false;
   return verify(c.by, CARD_CANCEL_VERSION, r, c.sig);
+}
+
+/** Prove, for the next five minutes, that the holder of `by` is the one asking to read `subject`. Grants nothing but the read. */
+export async function signRead(who: KeyPair, what: ReadRequest["what"], subject: string, now = new Date()): Promise<SignedRead> {
+  const request: ReadRequest = { v: READ_VERSION, what, subject, nonce: randomId("n"), at: now.toISOString() };
+  return { request, sig: await sign(who.privateKey, READ_VERSION, request), by: who.publicKey };
+}
+export async function verifyReadSignature(r: SignedRead, what: ReadRequest["what"], subject: string, now = new Date()): Promise<boolean> {
+  const q = r?.request;
+  if (!q || q.v !== READ_VERSION || q.what !== what || q.subject !== subject || typeof r.by !== "string" || Math.abs(now.getTime() - Date.parse(q.at)) > SPEND_WINDOW_MS) return false;
+  return verify(r.by, READ_VERSION, q, r.sig);
 }
 
 export async function signFreeze(owner: KeyPair, agent: string, frozen: boolean, now = new Date()): Promise<SignedFreeze> {

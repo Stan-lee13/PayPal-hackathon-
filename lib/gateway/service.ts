@@ -15,7 +15,7 @@
  *
  * No model output is read anywhere in this file. `agentNote` is stored for the human, never used.
  */
-import { and, asc, desc, eq, inArray, lt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lt, sql } from "drizzle-orm";
 import { getDb, type DB } from "../db";
 import { accounts, blocks, gatewayKeys, ledger, roots, spends, type Account, type BlockRow, type PromiseNote, type Receipt, type Root, type Spend } from "../db/schema";
 import { UserFacingError } from "../errors";
@@ -37,6 +37,8 @@ export const lockAccount = (tx: Tx, agent: string) => tx.execute(sql`select pg_a
 /** A payment to an account that keeps its income: there is an agent, and no PayPal address to pay out to. */
 export const isHeld = (s: Pick<Spend, "payeeAgent" | "payoutTo">) => Boolean(s.payeeAgent && !s.payoutTo);
 export const HELD = "HELD_IN_ACCOUNT" as const;
+/** PayPal accepted the capture but has not completed it. Nothing is paid out against it until it has. */
+export const AWAITING_CAPTURE = "AWAITING_CAPTURE" as const;
 const trail = (root: Pick<Root, "principal" | "id">, actor: Parameters<typeof audit>[1]["actor"], action: string, outcome: Parameters<typeof audit>[1]["outcome"], ref: string | null, detail: Record<string, unknown> = {}) =>
   audit(getDb(), { scopeId: root.principal, subjectId: root.id, actor, action, ref, outcome, detail });
 
@@ -290,12 +292,17 @@ export async function settle(spendId: string): Promise<Spend> {
     try {
       const cap = await capturePart(pp, root.authorizationId!, { spendId: s.id, amountMinor: s.amountMinor, currency: s.currency, note: `Envelope spend ${s.id}` });
       if (cap.status !== "COMPLETED" && cap.status !== "PENDING") throw new PayPalApiError(422, "CAPTURE_NOT_COMPLETED", cap.status, undefined, `capture ${cap.status}`, null);
-      await db.transaction(async (tx) => {
-        await tx.update(spends).set({ captureId: cap.id, status: "CAPTURED" }).where(eq(spends.id, s.id));
-        await tx.update(roots).set({ capturedMinor: sql`${roots.capturedMinor} + ${s.amountMinor}` }).where(eq(roots.id, root.id));
+      // The same request can arrive many times at once, and each arrival gets the same capture back from
+      // PayPal (one idempotency key). Only the one that records the capture id counts the money.
+      const claimed = await db.transaction(async (tx) => {
+        const [u] = await tx.update(spends).set({ captureId: cap.id, status: "CAPTURED", ...(cap.status === "PENDING" ? { payoutStatus: AWAITING_CAPTURE } : {}) })
+          .where(and(eq(spends.id, s.id), eq(spends.status, "RESERVED"), isNull(spends.captureId))).returning();
+        if (u) await tx.update(roots).set({ capturedMinor: sql`${roots.capturedMinor} + ${s.amountMinor}` }).where(eq(roots.id, root.id));
+        return u ?? null;
       });
-      s = { ...s, captureId: cap.id, status: "CAPTURED" };
-      await trail(root, "paypal", "hold.captured", "OK", cap.id, { spend: s.id, amount: formatMoney(s.amountMinor, s.currency), authorization: root.authorizationId });
+      if (claimed) await trail(root, "paypal", "hold.captured", "OK", cap.id, { spend: s.id, amount: formatMoney(s.amountMinor, s.currency), authorization: root.authorizationId, status: cap.status });
+      s = claimed ?? (await db.query.spends.findFirst({ where: eq(spends.id, s.id) }))!;
+      if (s.status !== "CAPTURED") return s; // another arrival already finished it, or it failed
     } catch (e) {
       if (e instanceof PayPalApiError && !e.retryable) {
         const failed = await release(s, "FAILED", { code: "PAYPAL_CAPTURE_FAILED", at: root.id, detail: `PayPal refused the capture: ${e.issue ?? e.paypalName}` });
@@ -304,6 +311,28 @@ export async function settle(spendId: string): Promise<Spend> {
       }
       return s; // in doubt (network / 5xx): the reservation stays; presenting the same request again resumes here
     }
+  }
+
+  // PayPal still has the capture under review: the money has not arrived, so nobody is paid yet.
+  if (s.payoutStatus === AWAITING_CAPTURE) {
+    const cap = await getCapture(pp, s.captureId!).catch(() => null);
+    if (!cap || cap.status === "PENDING") return s;
+    if (cap.status !== "COMPLETED") {
+      const reason: E.Violation = { code: "PAYPAL_CAPTURE_FAILED", at: root.id, detail: `PayPal did not complete the capture (${cap.status}); nothing was paid` };
+      const failed = await db.transaction(async (tx) => {
+        await lockRoot(tx, s.rootId);
+        const [u] = await tx.update(spends).set({ status: "FAILED", payoutStatus: null, reasons: [reason], settledAt: new Date() }).where(and(eq(spends.id, s.id), eq(spends.status, "CAPTURED"), eq(spends.payoutStatus, AWAITING_CAPTURE))).returning();
+        if (u) {
+          await tx.update(blocks).set({ reservedMinor: sql`${blocks.reservedMinor} - ${s.amountMinor}` }).where(inArray(blocks.id, s.chainIds));
+          await tx.update(roots).set({ capturedMinor: sql`${roots.capturedMinor} - ${s.amountMinor}` }).where(eq(roots.id, root.id));
+        }
+        return u ?? (await tx.query.spends.findFirst({ where: eq(spends.id, s.id) }))!;
+      });
+      await trail(root, "paypal", "hold.capture_not_completed", "FAILED", s.captureId, { spend: s.id, status: cap.status });
+      return failed;
+    }
+    await db.update(spends).set({ payoutStatus: null }).where(and(eq(spends.id, s.id), eq(spends.payoutStatus, AWAITING_CAPTURE)));
+    s = { ...s, payoutStatus: null };
   }
 
   // An account that holds its income: the captured money is credited to its balance, exactly once. No payout.
@@ -327,12 +356,9 @@ export async function settle(spendId: string): Promise<Spend> {
       s = { ...s, payoutBatchId: po.batchId, payoutItemId: po.itemId, payoutTransactionId: po.transactionId, payoutStatus: po.itemStatus ?? po.batchStatus };
     } catch (e) {
       if (e instanceof PayPalApiError && !e.retryable) {
-        // The money was captured but can't be sent: give it back to the principal and free the budget.
-        let refundId: string | null = null;
-        try { refundId = (await refundCapture(pp, s.captureId!, s.id, "Payout could not be sent")).id; } catch { /* reported below */ }
-        await db.update(roots).set({ capturedMinor: sql`${roots.capturedMinor} - ${s.amountMinor}` }).where(eq(roots.id, root.id));
-        const failed = await release(s, "FAILED", { code: "PAYPAL_PAYOUT_FAILED", at: root.id, detail: `PayPal refused the payout: ${e.issue ?? e.paypalName}${refundId ? "; the capture was refunded" : "; the refund also failed and needs attention"}` }, { refundId });
-        await trail(root, "paypal", "payout.refused", "FAILED", s.id, { issue: e.issue ?? e.paypalName, refunded: refundId });
+        // The money was captured but can't be sent: refund the owner. If PayPal won't refund either, say so and keep counting it.
+        const failed = await refundOrPark(s, root, `PayPal refused the payout: ${e.issue ?? e.paypalName}`, null);
+        await trail(root, "paypal", "payout.refused", "FAILED", s.id, { issue: e.issue ?? e.paypalName, refunded: failed.refundId, status: failed.status });
         return failed;
       }
       return s;
@@ -373,23 +399,44 @@ function payoutState(itemStatus: string | null): Spend["status"] {
   return "PAYOUT_PENDING";
 }
 
-/** PayPal accepted the payout request but later failed or returned it: refund the capture and give the budget back. */
-async function undoDeadPayout(s: Spend, itemStatus: string, error: string | null): Promise<Spend> {
+/**
+ * Captured money that cannot reach its payee goes back to the owner. If PayPal refuses the refund as
+ * well, the owner has still been charged: the spend is parked as REFUND_DUE, the capture stays in the
+ * books and the budget stays used, until a later attempt (syncSpend) gets the refund through.
+ */
+async function refundOrPark(s: Spend, root: Root, why: string, payoutStatus: string | null): Promise<Spend> {
   const db = getDb();
-  const root = (await db.query.roots.findFirst({ where: eq(roots.id, s.rootId) }))!;
   let refundId: string | null = null;
-  try { refundId = (await refundCapture(getPayPal(), s.captureId!, s.id, "Payout could not be delivered")).id; } catch { /* reported in the reason */ }
-  const reason: E.Violation = { code: "PAYPAL_PAYOUT_FAILED", at: root.id, detail: `PayPal could not deliver the payout (${error ?? itemStatus})${refundId ? "; the capture was refunded to the owner" : "; the refund also failed and needs attention"}` };
-  const u = await db.transaction(async (tx) => {
+  try { refundId = (await refundCapture(getPayPal(), s.captureId!, s.id, "Payout could not be delivered")).id; }
+  catch (e) { if (e instanceof PayPalApiError && e.issue === "CAPTURE_FULLY_REFUNDED") refundId = "already-refunded"; }
+  const reason: E.Violation = { code: "PAYPAL_PAYOUT_FAILED", at: root.id, detail: `${why}${refundId ? "; the capture was refunded to the owner" : "; the refund also failed, so the owner has been charged and the amount stays counted until PayPal accepts the refund"}` };
+  return db.transaction(async (tx) => {
     await lockRoot(tx, s.rootId);
-    const [row] = await tx.update(spends).set({ status: "FAILED", payoutStatus: itemStatus, reasons: [reason], refundId }).where(and(eq(spends.id, s.id), inArray(spends.status, ["PAID", "PAYOUT_PENDING", "UNCLAIMED"]))).returning();
-    if (row) {
-      await tx.update(blocks).set({ spentMinor: sql`${blocks.spentMinor} - ${s.amountMinor}` }).where(inArray(blocks.id, s.chainIds));
-      if (refundId) await tx.update(roots).set({ capturedMinor: sql`${roots.capturedMinor} - ${s.amountMinor}` }).where(eq(roots.id, root.id));
+    const live = (await tx.query.spends.findFirst({ where: eq(spends.id, s.id) }))!;
+    const inFlight = live.status === "RESERVED" || live.status === "CAPTURED"; // the amount sits in reservedMinor
+    const settled = ["PAID", "PAYOUT_PENDING", "UNCLAIMED", "REFUND_DUE"].includes(live.status); // the amount sits in spentMinor
+    if (!inFlight && !settled) return live;
+    if (refundId) {
+      const [u] = await tx.update(spends).set({ status: "FAILED", reasons: [reason], refundId, settledAt: new Date(), ...(payoutStatus ? { payoutStatus } : {}) }).where(and(eq(spends.id, s.id), eq(spends.status, live.status))).returning();
+      if (!u) return live;
+      await tx.update(blocks).set(inFlight ? { reservedMinor: sql`${blocks.reservedMinor} - ${s.amountMinor}` } : { spentMinor: sql`${blocks.spentMinor} - ${s.amountMinor}` }).where(inArray(blocks.id, s.chainIds));
+      await tx.update(roots).set({ capturedMinor: sql`${roots.capturedMinor} - ${s.amountMinor}` }).where(eq(roots.id, root.id));
+      return u;
     }
-    return row ?? s;
+    if (live.status === "REFUND_DUE") return live;
+    const [u] = await tx.update(spends).set({ status: "REFUND_DUE", reasons: [reason], ...(payoutStatus ? { payoutStatus } : {}) }).where(and(eq(spends.id, s.id), eq(spends.status, live.status))).returning();
+    if (!u) return live;
+    // Parked money always sits in spentMinor, so a later refund knows where to take it from.
+    if (inFlight) await tx.update(blocks).set({ reservedMinor: sql`${blocks.reservedMinor} - ${s.amountMinor}`, spentMinor: sql`${blocks.spentMinor} + ${s.amountMinor}` }).where(inArray(blocks.id, s.chainIds));
+    return u;
   });
-  await trail(root, "paypal", "payout.failed", "FAILED", s.payoutBatchId, { spend: s.id, status: itemStatus, error, refunded: refundId });
+}
+
+/** PayPal accepted the payout request but later failed or returned it. */
+async function undoDeadPayout(s: Spend, itemStatus: string, error: string | null): Promise<Spend> {
+  const root = (await getDb().query.roots.findFirst({ where: eq(roots.id, s.rootId) }))!;
+  const u = await refundOrPark(s, root, `PayPal could not deliver the payout (${error ?? itemStatus})`, itemStatus);
+  await trail(root, "paypal", "payout.failed", "FAILED", s.payoutBatchId, { spend: s.id, status: itemStatus, error, refunded: u.refundId, state: u.status });
   return u;
 }
 
@@ -398,6 +445,9 @@ export async function syncSpend(spendId: string): Promise<Spend> {
   const db = getDb();
   const s = await db.query.spends.findFirst({ where: eq(spends.id, spendId) });
   if (!s) throw new UserFacingError("No such spend.", 404);
+  // Unfinished work resumes here: a capture PayPal was still reviewing, or a refund PayPal refused earlier.
+  if (s.status === "RESERVED" || s.status === "CAPTURED") return settle(s.id);
+  if (s.status === "REFUND_DUE") { const root = (await db.query.roots.findFirst({ where: eq(roots.id, s.rootId) }))!; return refundOrPark(s, root, "The payout did not go through", null); }
   if (!s.payoutBatchId || !["PAYOUT_PENDING", "UNCLAIMED"].includes(s.status)) return s;
   const po = await getPayout(getPayPal(), s.payoutBatchId).catch(() => null);
   if (!po) return s;

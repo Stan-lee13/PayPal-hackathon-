@@ -54,7 +54,7 @@ export const blocks = pgTable("blocks", {
   firstSeenAt: ts("first_seen_at").notNull().defaultNow(),
 }, (t) => [index("blocks_root").on(t.rootId, t.depth)]);
 
-export const SPEND_STATES = ["DENIED", "PROMISED", "LAPSED", "RESERVED", "CAPTURED", "PAID", "PAYOUT_PENDING", "UNCLAIMED", "FAILED"] as const;
+export const SPEND_STATES = ["DENIED", "PROMISED", "LAPSED", "RESERVED", "CAPTURED", "PAID", "PAYOUT_PENDING", "UNCLAIMED", "FAILED", "REFUND_DUE"] as const;
 export type SpendState = (typeof SPEND_STATES)[number];
 
 export type Receipt = {
