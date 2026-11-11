@@ -30,7 +30,7 @@ const str = (x: unknown): string | null => (typeof x === "string" && x ? x : nul
 // What PayPal did for one envelope
 // ---------------------------------------------------------------------------
 
-export type RailCall = Pick<PayPalCall, "id" | "op" | "method" | "path" | "httpStatus" | "paypalStatus" | "resourceId" | "amountMinor" | "currency" | "debugId" | "ms" | "error" | "requestId"> & { at: string; text: string; moves: boolean };
+export type RailCall = Pick<PayPalCall, "id" | "op" | "method" | "path" | "httpStatus" | "paypalStatus" | "resourceId" | "amountMinor" | "currency" | "debugId" | "ms" | "error" | "requestId"> & { at: string; text: string; moves: boolean; /** The same request sent again (a retry): PayPal returned its first answer and did nothing new. */ repeat: boolean };
 
 export async function paypalTrail(rootId: string) {
   const db = getDb();
@@ -39,14 +39,16 @@ export async function paypalTrail(rootId: string) {
   const ss = await db.select({ id: spends.id, captureId: spends.captureId, payoutBatchId: spends.payoutBatchId, payoutItemId: spends.payoutItemId }).from(spends).where(eq(spends.rootId, rootId));
   const keys = [root.id, root.authorizationId, root.paypalOrderId, ...ss.flatMap((s) => [s.id, s.captureId, s.payoutBatchId, s.payoutItemId])].filter((x): x is string => Boolean(x));
   const rows = await callsFor(keys);
-  const calls: RailCall[] = rows.map((c) => ({ id: c.id, at: c.at.toISOString(), op: c.op, text: OP_TEXT[c.op] ?? c.op, moves: MOVES.includes(c.op), method: c.method, path: c.path, httpStatus: c.httpStatus, paypalStatus: c.paypalStatus, resourceId: c.resourceId, amountMinor: c.amountMinor, currency: c.currency, debugId: c.debugId, ms: c.ms, error: c.error, requestId: c.requestId }));
-  const ok = calls.filter((c) => c.httpStatus >= 200 && c.httpStatus < 300);
+  const first = new Set<string>();
+  const again = (c: PayPalCall) => { if (!c.requestId || c.httpStatus >= 300) return false; const k = `${c.op}|${c.requestId}`; if (first.has(k)) return true; first.add(k); return false; };
+  const calls: RailCall[] = rows.map((c) => ({ repeat: again(c), id: c.id, at: c.at.toISOString(), op: c.op, text: OP_TEXT[c.op] ?? c.op, moves: MOVES.includes(c.op), method: c.method, path: c.path, httpStatus: c.httpStatus, paypalStatus: c.paypalStatus, resourceId: c.resourceId, amountMinor: c.amountMinor, currency: c.currency, debugId: c.debugId, ms: c.ms, error: c.error, requestId: c.requestId }));
+  const ok = calls.filter((c) => c.httpStatus >= 200 && c.httpStatus < 300 && !c.repeat);
   const count = (op: string) => ok.filter((c) => c.op === op).length;
   const events = await db.select().from(paypalEvents).where(inArray(paypalEvents.subject, keys)).orderBy(asc(paypalEvents.receivedAt)).limit(100);
   return {
     mode: paypalMode(), currency: root.currency, calls,
     summary: {
-      total: calls.length, changed: ok.filter((c) => c.moves).length, asked: ok.filter((c) => !c.moves).length, refused: calls.length - ok.length,
+      total: calls.length, changed: ok.filter((c) => c.moves).length, asked: ok.filter((c) => !c.moves).length, repeats: calls.filter((c) => c.repeat).length, refused: calls.filter((c) => c.httpStatus < 200 || c.httpStatus >= 300).length,
       holds: count("hold.place"), captures: count("capture"), payouts: count("payout.send"), refunds: count("refund"), cancels: count("payout.cancel"), voids: count("hold.void"),
     },
     events: events.map((e) => ({ id: e.id, type: e.type, source: e.source, subject: e.subject, outcome: e.outcome, at: e.receivedAt.toISOString() })),
@@ -74,6 +76,8 @@ export async function recall(spendId: string, signed: E.SignedRead): Promise<Spe
   try {
     await cancelPayoutItem(getPayPal(), s.payoutItemId);
   } catch (e) {
+    // Seen on the sandbox: for a short while after a payout is sent, PayPal holds the item unclaimed but is still closing the batch, and refuses to cancel.
+    if (e instanceof PayPalApiError && (e.issue === "BATCH_NOT_COMPLETED" || e.paypalName === "BATCH_NOT_COMPLETED")) throw new UserFacingError("PayPal is still processing this payout batch and will not cancel it yet. Nothing changed; try again in a minute.", 409);
     // PayPal may have moved on in the meantime (claimed, already returned): its current word decides.
     const now = await syncSpend(spendId);
     if (now.status === "UNCLAIMED") throw new UserFacingError(`PayPal would not cancel the payout${e instanceof PayPalApiError ? ` (${e.issue ?? e.paypalName})` : ""}. Nothing changed.`, 502);

@@ -23,6 +23,7 @@ import { newId } from "../ids";
 import { formatMoney } from "../money";
 import * as E from "../envelope/core";
 import { getPayPal, PayPalApiError, paypalMode } from "../paypal/client";
+import "../paypal/journal"; // every PayPal call made through this gateway is recorded, whoever loads it
 import { authorizeHold, capturePart, getAuthorization, getCapture, getPayout, payout, refundCapture, voidAuthorization } from "../paypal/payments";
 import { openJwk, sealJwk } from "../keystore";
 import { audit } from "../services/audit";

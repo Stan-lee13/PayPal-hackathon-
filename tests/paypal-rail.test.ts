@@ -57,6 +57,9 @@ d("the PayPal rail (simulated PayPal)", async () => {
     expect(t.calls.find((c) => c.op === "hold.place")).toMatchObject({ amountMinor: 20000, paypalStatus: "CREATED", resourceId: w.root.authorizationId });
     const stored = JSON.stringify(await getDb().select().from(schema.paypalCalls));
     expect(stored).not.toMatch(/4012888888881881|4032039317984658|security_code|SIMULATED-TOKEN/);
+    // the same signed request arriving again makes the gateway ask PayPal again with the same key: recorded as a repeat, counted once
+    await G.settle(paid.spend!.id);
+    expect((await S.paypalTrail(w.root.id))!.summary).toMatchObject({ captures: 1, payouts: 1 });
     // another envelope's calls are not mixed in
     const other = await world("designer@example.com");
     expect((await S.paypalTrail(other.root.id))!.calls.map((c) => c.op)).toEqual(["hold.place"]);

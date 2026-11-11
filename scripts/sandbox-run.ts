@@ -165,6 +165,48 @@ for (const s of [pay1, acc, pay2, signedOff]) if (s.spend) {
   log("payout delivery, as PayPal reports it", { spend: u.id, payee: u.payee, sentTo: u.payoutTo ? G.maskEmail(u.payoutTo) : u.payee, statusesSeen: seen, final: u.payoutStatus, meaning: u.payoutStatus === "SUCCESS" ? "delivered to the payee's PayPal account" : u.payoutStatus === "UNCLAIMED" ? "accepted by PayPal and held for the payee to claim: this address has no sandbox account" : "not final when this run ended", transaction: u.payoutTransactionId });
 }
 
+// Third envelope: money that did not arrive comes back. A payout to an address with no PayPal account is
+// held by PayPal unclaimed for up to 30 days. The owner recalls it: PayPal cancels the payout item, the
+// gateway refunds the capture, and the budget is spendable again.
+const S = await import("../lib/gateway/settlement");
+const { getCapture } = await import("../lib/paypal/payments");
+const [fay, scout] = await Promise.all([1, 2].map(() => E.generateKeyPair()));
+const nobody = `nobody-${Date.now()}@example.com`;
+const chain3 = await E.seal(fay!, { publicKey: scout!.publicKey, label: "scout-agent" }, { currency: "USD", limit: 1500, perPayment: 1000, payees: [nobody], purposes: ["research"], notAfter, splits: 0 });
+const root3 = await G.registerRoot({ chain: chain3, principalName: "Fay (sandbox)", title: "Recall check" });
+log("third envelope sealed: PayPal hold placed", { root: root3.id, authorization: root3.authorizationId, held: "$15.00" });
+const lost = await G.spend(await E.signSpend(chain3, scout!, { amount: 700, payee: nobody, purpose: "research", memo: "Paid to an address nobody owns" }));
+let lostNow = lost.spend!;
+for (let i = 0; i < 12 && lostNow.status === "PAYOUT_PENDING"; i++) { await new Promise((r) => setTimeout(r, 5000)); lostNow = await G.syncSpend(lostNow.id); }
+log("scout-agent paid $7 to an address with no PayPal account: PayPal captured it and is holding the payout unclaimed", { status: lostNow.status, capture: lostNow.captureId, payoutBatch: lostNow.payoutBatchId, payoutItem: lostNow.payoutItemId, payoutStatus: lostNow.payoutStatus, capturedInBooks: usd((await G.tree(root3.id))!.root.capturedMinor) });
+let agentTried = "refused";
+try { await S.recall(lostNow.id, await E.signRead(scout!, "recall", lostNow.id)); agentTried = "NOT REFUSED"; } catch (e) { agentTried = `refused: ${e instanceof Error ? e.message : e}`; }
+// PayPal will not cancel an item while its batch is still being closed (BATCH_NOT_COMPLETED), and its sandbox sometimes
+// answers a cancel with a server error. Either way the gateway changes nothing and says so. Ask a few times and record every answer.
+let recalled = lostNow;
+const answers: string[] = [];
+for (let i = 0; i < 8 && recalled.status === "UNCLAIMED"; i++) {
+  try { recalled = await S.recall(lostNow.id, await E.signRead(fay!, "recall", lostNow.id)); answers.push(`recalled: ${recalled.status}`); }
+  catch (e) { answers.push(e instanceof Error ? e.message : String(e)); await new Promise((r) => setTimeout(r, 10000)); }
+}
+const done = recalled.status === "FAILED" && Boolean(recalled.refundId);
+log(done ? "the owner recalled it: PayPal cancelled the payout item and refunded the capture; the agent itself could not" : "the owner tried to recall it and PayPal's sandbox would not cancel the payout item: nothing changed, and the books still count it; the agent itself could not even ask", {
+  agentTriedToRecall: agentTried, whatPayPalAnswered: answers, status: recalled.status, payoutStatusAtPayPal: recalled.payoutStatus, refund: recalled.refundId, reason: recalled.reasons[0]?.code ?? null,
+  captureAtPayPal: (await getCapture(pp, recalled.captureId!).catch(() => null))?.status ?? "not readable", capturedInBooks: usd((await G.tree(root3.id))!.root.capturedMinor),
+});
+const reuse = await G.spend(await E.signSpend(chain3, scout!, { amount: 1000, payee: nobody, purpose: "research", memo: "Would only fit if the $7 came back" }));
+log(done ? "the returned budget is spendable again (a $10 payment that would not have fitted next to the $7 under the $15 limit)" : "because the $7 did not come back, a $10 payment still does not fit under the $15 limit", { status: reuse.status, capture: reuse.spend?.captureId, reasons: reuse.reasons.map((r) => r.code) });
+const sweep = await S.sweepUnfinished();
+log("sweep: every unfinished payment and transfer in this database was put to PayPal", { checked: sweep.checked, moved: sweep.moved, eventsFromPayPalFeed: sweep.events.seen });
+const { root: closed3 } = await G.revoke(await E.signRevoke(fay!, root3.id));
+log("third envelope closed", { captured: usd(closed3.capturedMinor), released: usd(closed3.releasedMinor), authorizationStatus: (await getAuthorization(pp, root3.authorizationId!)).status });
+
+// What PayPal did, call by call, for each envelope: read back from the gateway's record of its own PayPal calls.
+for (const [name, r] of [["first", root], ["second", root2], ["third", root3]] as const) {
+  const t = (await S.paypalTrail(r.id))!;
+  log(`PayPal calls behind the ${name} envelope`, { ...t.summary, calls: t.calls.filter((c) => c.moves || c.error).map((c) => `${c.method} ${c.path} → ${c.httpStatus}${c.paypalStatus ? ` ${c.paypalStatus}` : ""}${c.error ? ` ${c.error}` : ""}${c.amountMinor != null ? ` ${usd(c.amountMinor)}` : ""} · ${c.resourceId ?? "-"} · debug ${c.debugId ?? "-"} · ${c.ms}ms`) });
+}
+
 mkdirSync("docs/evidence", { recursive: true });
 writeFileSync("docs/evidence/sandbox-run.json", JSON.stringify({ ranAt: new Date().toISOString(), paypalMode: paypalMode(), note: "Real PayPal sandbox API calls. A completed capture and a delivered payout are different things: each payout's final status from PayPal is recorded at the end. Payee addresses without a sandbox account are reported by PayPal as UNCLAIMED.", steps, receipt: pay1.receipt }, null, 2));
 console.log("Evidence written to docs/evidence/sandbox-run.json");
