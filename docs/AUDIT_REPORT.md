@@ -1,0 +1,119 @@
+# Audit report
+
+An audit of the repository as it stood on 11 November 2026, done by reading the code and running it. Security faults are in [`RED_TEAM_REPORT.md`](RED_TEAM_REPORT.md); the money model is in [`FINANCIAL_ARCHITECTURE.md`](FINANCIAL_ARCHITECTURE.md). This document is the inventory: what exists, how real each part is, and what is wrong with it.
+
+## Starting facts, corrected
+
+- Pull requests #5 and #6 are merged. `main` already had balances, the card and the first replay fix when this audit began.
+- There are no leftovers from the two earlier projects in this repository (Kept, MergePay): no routes, tables or modules. The only traces are the local database name and two rows in the discovery document that record why they were set aside.
+- The submission checklist still told the owner to merge pull request #5. Corrected.
+
+## System map
+
+```
+ Browser pages (Next.js app router)                   Agents outside the app
+   /            landing                                scripts/agent.ts   command line
+   /console     seal an envelope                       scripts/mcp.ts     MCP server (stdio)
+   /e/[id]      an envelope: tree, statement, model
+   /proof/[id]  proof graph (whole envelope, or one payment)
+   /r/[id]      a receipt, checked against PayPal and in the browser
+   /a/[key]     an agent: passport, envelopes, balance, card
+   /bank        every account and whether the books add up
+   /treasury    one owner's control room
+   /spec        the protocol
+        │                                                     │
+        ▼                                                     ▼
+ lib/api/handlers.ts   one function per endpoint  ◀── lib/api/next.ts (server)  or  lib/local/router.ts (in the browser)
+        │
+        ├── lib/gateway/service.ts   envelopes, payments, promises, standing, treasury, reconcile
+        ├── lib/gateway/bank.ts      balances, transfers, cards, freeze, the books
+        ├── lib/gateway/proof.ts     read-only: records as a graph
+        ├── lib/demo/agents.ts       built-in agents whose keys the server keeps (demo only)
+        └── lib/ai/                  a model proposes tool calls; they are signed and judged like any request
+        │
+        ├── lib/envelope/core.ts     signatures and rules; no database; same file in browser, server, CLI
+        ├── lib/db/                  Postgres on a server, or Postgres-in-WebAssembly in the browser
+        └── lib/paypal/              client (sandbox) and a built-in simulator
+```
+
+Tables: `roots`, `blocks`, `spends`, `accounts`, `ledger`, `transfers`, `cards`, `audit_log` (hash-chained), `gateway_keys`, `demo_keys`, `rate_limits`, `emulator_state`. Six migrations.
+
+## Feature inventory
+
+How real each part is. **Operational** means it ran on the real PayPal sandbox and the evidence is in the repository. **Tested** means automated tests on the simulator only.
+
+| Feature | State | Evidence |
+|---|---|---|
+| Seal an envelope: owner's signature, PayPal hold | Operational | `evidence/sandbox-run.json`; authorization ids in the README |
+| Split, narrow-only, verified by anyone | Operational | same; `tests/envelope-core.test.ts` |
+| Spend: reserve at every ancestor, partial capture, payout | Operational | same; `tests/gateway.test.ts` |
+| Revoke, close, void | Operational | same |
+| Proof of funds with PayPal's live word | Operational | same |
+| Set aside, keep, release, lapse | Operational | same; `tests/accounts-promises.test.ts` |
+| Release on a named key's acceptance | Operational | same |
+| Owner approval above a threshold | Operational | same; shown in the video |
+| Agent accounts that receive | Operational | same |
+| Balances, transfers, withdrawal, freeze, the books | Operational | same (second hold); `tests/bank.test.ts` |
+| Card: issue, charge, limits, cancel | Operational, once | `evidence/card-run.md` (one run, one model, month two not reached); `tests/cards.test.ts` |
+| Daily limit on an account | Tested | `tests/cards.test.ts`, `tests/review-findings.test.ts` |
+| Receipts checked against PayPal and in the browser | Operational | receipt page; the browser test |
+| Treasury with reconciliation | Operational | sandbox run; shown in the video |
+| Signed reference | Operational | sandbox run |
+| Proof graph | Tested in a browser on the simulator in both gateway modes | `scripts/e2e.mjs`; not yet run against the sandbox |
+| A model playing the agents inside the app | Operational | `evidence/model-run.md` |
+| MCP server and command line | Operational for split, pay and cards; the balance commands were run on the simulator | `evidence/agent-run.md`, `evidence/card-run.md` |
+| In-browser gateway (the hosted try-it copy) | Operational as a simulator | the browser test; production health check |
+| Pending capture handling | Simulated only | the sandbox never returned a pending capture |
+| Refund-due handling | Simulated only | the sandbox never refused a refund |
+| Returned or failed payout handling | Simulated only | no sandbox payout failed |
+| Keys sealed at rest | Tested | `tests/settlement.test.ts` |
+| Hold reauthorization, webhooks, payer-present funding, disputes | Not built | — |
+| Lending, interest, insurance, network cards | Not built, and not to be built without licensed partners | — |
+
+## Findings
+
+Severity is about what could go wrong with money or private data. Faults that were fixed are listed in the red team report with their tests; the ones below are what remains or what an auditor should know.
+
+### Financial integrity
+
+| Finding | Severity | State |
+|---|---|---|
+| The database and PayPal cannot commit together; correctness depends on a fixed order of steps, idempotency keys and guarded status changes | — | By design. Described in the architecture document. Every step is retryable; four concurrency and failure cases have tests |
+| Nothing advances unfinished payments on a timer | Medium | Open. They advance when the envelope is opened or the status is asked for |
+| A hold that lapses at PayPal is not reauthorized | Medium | Open. An envelope can live at most 28 days for this reason |
+| Captured funds rest in the gateway's PayPal account between capture and payout, and for as long as an agent keeps a balance | High for real money | Open. This is the main reason the system is sandbox-only |
+| A payout accepted by PayPal and held `UNCLAIMED` stays debited until PayPal returns it | Low | Open; shown as unclaimed, never as paid |
+| A payment into a balance cannot be reversed by the payer | Medium | Open. Disputes are not built |
+
+### Security and privacy
+
+| Finding | Severity | State |
+|---|---|---|
+| Owner's key in browser storage | High for real money | Open |
+| Gateway and demo keys in the database | Medium | Mitigated: sealed at rest when `ENVELOPE_KEY_SECRET` is set; `/api/health` says which |
+| Pages addressed by an unguessable id or a public key are readable by anyone who has it (envelope, proof graph, agent page); the books page is public | Medium | Open, stated on the pages. Treasury and the list of an owner's envelopes need the owner's signature |
+| The shared demo agent can be used by any visitor | Low | Open, by design |
+| No sign-in anywhere | — | By design: every action that matters carries a signature, and reads of an owner's books carry one too |
+| Rate limits per address, with request bodies capped at 128 KB | Low | In place; the address comes from a proxy header |
+| Security headers (frame, content type, referrer, permissions, HSTS) | — | In place |
+| No external review | High | Open |
+
+### Product and interface
+
+Found by using the app on a desktop and a phone-sized screen, as an owner, a payee and a first-time visitor.
+
+| Finding | State |
+|---|---|
+| A first-time visitor could not see how one payment relates to the owner without opening three pages | Fixed by the proof graph and a link to it from every envelope and receipt |
+| The agent page scrolled sideways on a phone (a code sample wider than the screen) | Fixed |
+| "Failed · refunded" was shown for payments that failed with nothing to refund | Fixed: "Failed · not paid", and a separate "Refund due" |
+| The console listed every envelope on the gateway to every visitor | Fixed: it lists yours |
+| A payout PayPal is holding unclaimed could be read as paid at a glance on the envelope page | The stamp says "Unclaimed"; the proof graph says "not delivered" in words |
+| The agent page is long: passport, record, reference, account, balance, card, income, envelopes, statement | Open. It works; it is dense |
+| Pages are dense with small monospace text | Open. A deliberate look, at some cost to first-read comprehension |
+| No loading skeletons; pages show a one-line "looking" state | Open |
+| Phone layout was checked at one size on five pages, not tested by hand on a device | Open |
+
+## Verdict
+
+The core claim holds up: one PayPal hold, authority that can only be narrowed, every payment traceable to a person, and no model deciding whether money moves. The audit found fifteen real faults, most in the hours before submission, and fixed them with tests. What remains open is mostly what separates a sandbox demonstration from a product that touches real money: custody, key management, timers and webhooks, and a review by someone who did not write the code.

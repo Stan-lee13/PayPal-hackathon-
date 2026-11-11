@@ -108,7 +108,7 @@ export function AgentView({ agentKey }: { agentKey: string }) {
   const behind = best ? best.sponsors.map((s) => s.label) : p.receives ? [p.receives.owner.label] : [];
 
   return (
-    <div className="grid items-start gap-x-12 gap-y-10 lg:grid-cols-[minmax(0,1.08fr)_minmax(0,1fr)]">
+    <div className="grid grid-cols-[minmax(0,1fr)] items-start gap-x-12 gap-y-10 lg:grid-cols-[minmax(0,1.08fr)_minmax(0,1fr)]">
       <div className="space-y-9">
         <header>
           <p className="label">Agent on file</p>

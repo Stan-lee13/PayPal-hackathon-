@@ -359,6 +359,8 @@ export async function signSpend(chain: Envelope, holderKey: KeyPair, p: { amount
 
 /** Requests older or newer than this are refused, which bounds how long a replay cache must be kept. */
 export const SPEND_WINDOW_MS = 5 * 60_000;
+/** No single amount is larger than this (ten million dollars in cents). Keeps every amount inside a 32-bit column. */
+export const MAX_MINOR = 1_000_000_000;
 /** Within the acceptance window. A timestamp that does not parse is never fresh (NaN would pass a plain comparison). */
 const fresh = (at: unknown, now: Date): boolean => { const t = typeof at === "string" ? Date.parse(at) : NaN; return Number.isFinite(t) && Math.abs(now.getTime() - t) <= SPEND_WINDOW_MS; };
 
@@ -377,7 +379,7 @@ async function verifyIntent(version: string, s: { request: Intent; sig: string; 
   if (r.leaf !== leaf.id) add("WRONG_LEAF", "the request names a different envelope than the chain presented");
   if (!(await verify(leaf.holder, version, r, s.sig))) add("NOT_THE_HOLDER", "the request is not signed by the key this envelope was given to");
   if (!fresh(r.at, now)) add("STALE_REQUEST", "the request is outside the 5-minute acceptance window");
-  if (!Number.isSafeInteger(r.amount) || r.amount <= 0) add("BAD_AMOUNT", "amount must be a positive whole number of minor units");
+  if (!Number.isSafeInteger(r.amount) || r.amount <= 0 || r.amount > MAX_MINOR) add("BAD_AMOUNT", "amount must be a positive whole number of minor units");
   const c = chain.caps;
   if (r.currency !== c.currency) add("WRONG_CURRENCY", `this envelope is in ${c.currency}`);
   if (r.amount > c.perPayment) add("OVER_PER_PAYMENT", `${money(r.amount, c.currency)} is over the per-payment cap of ${money(c.perPayment, c.currency)}`);
@@ -468,7 +470,7 @@ export async function verifyTransfer(t: SignedTransfer, now = new Date()): Promi
   if (!r || r.v !== TRANSFER_VERSION || typeof t.sig !== "string" || typeof r.from !== "string" || (r.kind !== "pay" && r.kind !== "withdraw") || typeof r.payee !== "string" || typeof r.purpose !== "string" || typeof r.memo !== "string" || typeof r.nonce !== "string" || r.memo.length > 200) return [{ code: "MALFORMED", at: null, detail: "malformed transfer" }];
   if (!(await verify(r.from, TRANSFER_VERSION, r, t.sig))) v.push({ code: "NOT_THE_HOLDER", at: null, detail: "the transfer is not signed by the key that owns the account" });
   if (!fresh(r.at, now)) v.push({ code: "STALE_REQUEST", at: null, detail: "the request is outside the 5-minute acceptance window" });
-  if (!Number.isSafeInteger(r.amount) || r.amount <= 0) v.push({ code: "BAD_AMOUNT", at: null, detail: "amount must be a positive whole number of minor units" });
+  if (!Number.isSafeInteger(r.amount) || r.amount <= 0 || r.amount > MAX_MINOR) v.push({ code: "BAD_AMOUNT", at: null, detail: "amount must be a positive whole number of minor units" });
   if (r.currency !== "USD") v.push({ code: "WRONG_CURRENCY", at: null, detail: "balances are in USD" });
   if (r.kind === "pay" && !isAccountPayee(r.payee) && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(r.payee)) v.push({ code: "MALFORMED", at: null, detail: "the payee must be an account (acct:…) or a PayPal address" });
   return v;
@@ -508,7 +510,7 @@ export async function verifyCharge(c: SignedCharge, now = new Date()): Promise<V
   const v: Violation[] = [];
   if (!(await verify(r.merchant, CHARGE_VERSION, r, c.sig))) v.push({ code: "NOT_THE_MERCHANT", at: null, detail: "the charge is not signed by the key it names" });
   if (!fresh(r.at, now)) v.push({ code: "STALE_REQUEST", at: null, detail: "the request is outside the 5-minute acceptance window" });
-  if (!Number.isSafeInteger(r.amount) || r.amount <= 0) v.push({ code: "BAD_AMOUNT", at: null, detail: "amount must be a positive whole number of minor units" });
+  if (!Number.isSafeInteger(r.amount) || r.amount <= 0 || r.amount > MAX_MINOR) v.push({ code: "BAD_AMOUNT", at: null, detail: "amount must be a positive whole number of minor units" });
   if (r.currency !== "USD") v.push({ code: "WRONG_CURRENCY", at: null, detail: "balances are in USD" });
   return v;
 }
