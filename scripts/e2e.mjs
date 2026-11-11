@@ -130,6 +130,29 @@ try {
   await page.getByText(/You closed the envelope\. PayPal released/).waitFor(T);
   await page.getByText("Closed", { exact: true }).first().waitFor(T);
   console.log("closed");
+  // the proof graph: every record behind the envelope, each signature checked in this browser
+  await page.getByTestId("proof-link").click();
+  const sum = page.getByTestId("proof-summary");
+  await sum.getByText("Signatures checked in your browser").waitFor(T);
+  await page.waitForFunction(() => !document.querySelector('[data-testid="proof-summary"]')?.textContent?.includes("…"), null, T);
+  const [checked, failedSigs] = (await sum.locator(".figure").allInnerTexts()).map((x) => Number(x));
+  if (!(checked >= 12) || failedSigs !== 0) throw new Error(`Proof graph: ${checked} signatures checked, ${failedSigs} failed.`);
+  for (const kind of ["owner", "hold", "envelope", "commitment", "acceptance", "capture", "credit", "payout", "receipt", "refused", "account", "card"]) await page.getByTestId(`node-${kind}`).first().waitFor(T);
+  // pick the PayPal capture of a payment: its trail leads back to the owner, and PayPal confirms it
+  await page.getByTestId("node-capture").first().click();
+  await page.getByTestId("proof-trail").getByText(/Person · Ada/).waitFor(T);
+  await page.getByRole("button", { name: "Ask PayPal now" }).click();
+  await page.getByTestId("paypal-answer").getByText(/PayPal capture exists for exactly this amount/).waitFor(T);
+  if (OUT) await page.screenshot({ path: `${OUT}/local-7-proof.png`, fullPage: true }).catch(() => {});
+  // the page a payee can be shown: one payment only
+  await page.getByTestId("proof-share").click();
+  await page.getByText("traced back to a person.").waitFor(T);
+  await page.waitForFunction(() => !document.querySelector('[data-testid="proof-summary"]')?.textContent?.includes("…"), null, T);
+  if (await page.getByTestId("node-refused").count() || await page.getByTestId("node-account").count()) throw new Error("The single-payment proof shows more than that payment.");
+  if (OUT) await page.screenshot({ path: `${OUT}/local-8-proof-one.png`, fullPage: true }).catch(() => {});
+  console.log(`proof graph: ${checked} signatures checked in the browser, 0 failed; a capture traced to the owner and confirmed by PayPal; single-payment page shows only that payment`);
+  await page.goBack(); await page.goBack();
+  await page.getByText("PayPal hold backing this envelope").waitFor(T);
   // the owner's treasury: totals, agents, and the books checked against PayPal
   await page.goto(`${BASE}/treasury`);
   await page.getByTestId("totals").waitFor(T);

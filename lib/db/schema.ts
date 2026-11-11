@@ -109,7 +109,7 @@ export const spends = pgTable("spends", {
   promiseExpiresAt: ts("promise_expires_at"),
   promiseNote: jsonb("promise_note").$type<PromiseNote>(),
   /** The signed acceptance that released a promise, when it was released by the key it named. */
-  delivery: jsonb("delivery").$type<{ by: string; work: string; note: string; at: string; sig: string }>(),
+  delivery: jsonb("delivery").$type<{ by: string; work: string; note: string; at: string; sig: string; /** The signed acceptance itself, so anyone can check the acceptor's signature. */ request?: unknown }>(),
   createdAt: ts("created_at").notNull().defaultNow(),
   settledAt: ts("settled_at"),
 }, (t) => [index("spends_root").on(t.rootId, t.createdAt), index("spends_payee_agent").on(t.payeeAgent, t.createdAt)]);

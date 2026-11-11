@@ -60,6 +60,7 @@ export function ReceiptView({ id }: { id: string }) {
     <div className="grid items-start gap-x-12 gap-y-10 lg:grid-cols-[minmax(0,430px)_minmax(0,1fr)]">
       <div>
         <Link className="link text-sm" href={`/e/${d.chain[0]!.body.id}`}>← Envelope</Link>
+        <Link className="link ml-5 text-sm" href={`/proof/${d.chain[0]!.body.id}/${id}`}>This payment in the proof graph →</Link>
         <article className="receipt relative mt-4 px-6 pt-7 text-[.8rem] leading-relaxed sm:px-8" aria-label="Receipt">
           <p className="text-center text-[.68rem] tracking-[.34em]">ENVELOPE · RECEIPT</p>
           <h1 className="mt-5 text-center font-sans"><span className="sr-only">Receipt: </span><Figure minor={r.request.amount} className="text-[3.4rem]" /></h1>

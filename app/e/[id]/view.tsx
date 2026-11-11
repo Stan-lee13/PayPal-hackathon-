@@ -150,6 +150,7 @@ export function EnvelopeView({ id }: { id: string }) {
         <header>
           <p className="label">Envelope · owner {root.principalName} <span className="normal-case tracking-normal">{fingerprint(root.principal)}</span>{isOwner ? " (you)" : ""}</p>
           <h1 className="display mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-[clamp(2rem,4.4vw,3rem)]">{root.title} <Stamp tone={open ? "green" : "grey"}>{open ? "Open" : "Closed"}</Stamp></h1>
+          <p className="mt-2"><Link className="link text-[.9rem]" href={`/proof/${root.id}`} data-testid="proof-link">Proof graph: trace every dollar back to {isOwner ? "your" : `${root.principalName}'s`} signature →</Link></p>
         </header>
 
         <section className="sheet overflow-hidden p-5 sm:p-6" aria-label="PayPal hold">

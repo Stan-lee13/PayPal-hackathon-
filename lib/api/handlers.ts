@@ -10,6 +10,7 @@ import { auditLog, roots } from "../db/schema";
 import { act, attachDemoAgents, BANK_ACTIONS, bankAct, createDemoAgents, DEMO_ACTIONS, demoHello, ensureCounterparty, hasDemoAgents, isBankDemoAgent, isDemoAgent, runTool, TOOL_AGENTS } from "../demo/agents";
 import * as E from "../envelope/core";
 import * as B from "../gateway/bank";
+import { proof } from "../gateway/proof";
 import * as G from "../gateway/service";
 import { verifyChain } from "../ledger/chain";
 import { paypalMode } from "../paypal/client";
@@ -65,6 +66,17 @@ export const handlers: Record<string, Handler> = {
   "GET /api/spends/:id": async ({ params }) => {
     const r = await G.reconcile(params.id!);
     return { body: { ok: r.ok, checks: r.checks, receipt: r.receipt, chain: r.spend.signed.chain, spend: { id: r.spend.id, status: r.spend.status, payoutStatus: r.spend.payoutStatus, payoutTransactionId: r.spend.payoutTransactionId, agentNote: r.spend.agentNote } } };
+  },
+
+  /** The proof graph of an envelope: every signed record behind it, with what a browser needs to check each one. */
+  "GET /api/proof/:root": async ({ params }) => {
+    const g = await proof(params.root!);
+    return g ? { body: g } : { status: 404, body: { error: "No such envelope." } };
+  },
+  /** One payment's path back to the owner, and nothing else about the envelope. This is what a payee can be shown. */
+  "GET /api/proof/:root/:spend": async ({ params }) => {
+    const g = await proof(params.root!, params.spend!);
+    return g ? { body: g } : { status: 404, body: { error: "No such payment in that envelope." } };
   },
 
   "GET /api/agents": async () => ({ body: { agents: await G.recentAgents(12) } }),

@@ -597,7 +597,7 @@ export async function accept(signed: E.SignedAccept): Promise<SpendResult> {
   if (!named) throw new UserFacingError("This promise can only be paid by the agent that made it.", 403);
   if (signed.by !== named) throw new UserFacingError("This promise names a different key as the one that can release it.", 403);
   if (signed.request.decline) return decidePromise(s0, "release", { why: "declined by the key it named" });
-  return decidePromise(s0, "pay", { delivery: { by: signed.by, work: signed.request.work, note: signed.request.note, at: signed.request.at, sig: signed.sig } });
+  return decidePromise(s0, "pay", { delivery: { by: signed.by, work: signed.request.work, note: signed.request.note, at: signed.request.at, sig: signed.sig, request: signed.request } });
 }
 
 async function decidePromise(s0: Spend, action: "pay" | "release", o: { agentNote?: string; delivery?: NonNullable<Spend["delivery"]>; why?: string }): Promise<SpendResult> {
