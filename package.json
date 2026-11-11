@@ -15,7 +15,8 @@
     "db:migrate": "tsx scripts/migrate.ts",
     "sandbox:run": "tsx scripts/sandbox-run.ts",
     "e2e": "node scripts/e2e.mjs",
-    "agent": "tsx scripts/agent.ts"
+    "agent": "tsx scripts/agent.ts",
+    "mcp": "tsx scripts/mcp.ts"
   },
   "engines": {
     "node": ">=20.11"

@@ -54,9 +54,11 @@ Protocol: [`docs/SPEC.md`](docs/SPEC.md). Core (pure, isomorphic): [`lib/envelop
 | Real PayPal sandbox, API-only | **Ran.** [`docs/evidence/sandbox-run.json`](docs/evidence/sandbox-run.json): hold placed, two partial captures and payouts, three denials, receipt reconciled against PayPal, hold voided. Reproduce with `scripts/sandbox-run.ts`. |
 | Real PayPal sandbox, in a browser | **Ran.** `scripts/e2e.mjs` drives the console in Chromium: seal with a browser-held key, agents pay, three attacks denied, revoke, receipt verified, close. Screenshots in `docs/screenshots/`. |
 | Real AI agents | **Ran.** Four Claude agents (an orchestrator, two specialists, one red-team) used the CLI against the sandbox-backed gateway. Transcript summary: [`docs/evidence/agent-run.md`](docs/evidence/agent-run.md). |
+| MCP server for agents | **Ran.** `scripts/mcp.ts` over stdio against the sandbox-backed gateway: split, two payments captured and paid out, a widened split refused, a wrong payee and an over-cap payment denied. |
 | Automated tests | **18 pass** on the built-in PayPal simulator (`npm test`): narrowing rules, forged chains, ancestor budgets, replay, a 20-way race, revocation scope, close → void, audit chain. |
 | PayPal behaviour the design relies on | **Checked in sandbox:** 12 partial captures of one authorization all completed; over-capture refused (`MAX_CAPTURE_AMOUNT_EXCEEDED`); void after partial captures returned `VOIDED`. |
-| Payout delivery | Payouts are accepted by PayPal; payees in the recorded runs are placeholder addresses without sandbox accounts, so PayPal reports them `UNCLAIMED`. Set `ENVELOPE_PAYEE_1/2` to sandbox account emails to see `SUCCESS`. |
+| Payout delivery | Payouts are accepted by PayPal. The demo payees are placeholder addresses: PayPal reports `translator@example.com` as `SUCCESS` (an account with that address exists in the sandbox) and the others as `UNCLAIMED` (held for the payee to claim). Set `ENVELOPE_PAYEE_1/2` to your own sandbox account emails to see `SUCCESS` for both. |
+| Demo video | [`docs/demo/envelope-demo.mp4`](docs/demo/envelope-demo.mp4) (2:24), recorded by `scripts/record-demo.mjs` driving the app on the real sandbox. |
 | Hosted deployment | Not deployed. Run it locally (below). |
 
 ## Run it
@@ -82,6 +84,12 @@ npx tsx scripts/agent.ts keygen ops-agent                      # prints a public
 npx tsx scripts/agent.ts split --as ops-agent --to helper --limit 20 --payees translator@example.com --purposes translation
 npx tsx scripts/agent.ts pay   --as helper --amount 12 --payee translator@example.com --purpose translation --note "why"
 npx tsx scripts/agent.ts show  --as helper
+```
+
+Agents that speak MCP get the same three actions as tools (`envelope_show`, `envelope_split`, `envelope_pay`). The server acts as one agent, holds only that agent's key, and has no tool to seal or close a root envelope:
+
+```bash
+claude mcp add envelope -e ENVELOPE_AGENT=ops-agent -- npx tsx scripts/mcp.ts
 ```
 
 Or call the gateway directly: `POST /api/gateway/spend` with `{ signed, note }` (see the spec).
