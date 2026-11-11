@@ -1,0 +1,683 @@
+{
+  "ranAt": "2026-11-11T12:09:07.481Z",
+  "paypal": "built-in simulator",
+  "summary": {
+    "attacks": 90,
+    "refused": 90,
+    "movedMoney": 0
+  },
+  "byCategory": {
+    "Forged wider envelope": {
+      "attacks": 15,
+      "refused": 15,
+      "movedMoney": 0
+    },
+    "Tampered chain": {
+      "attacks": 14,
+      "refused": 14,
+      "movedMoney": 0
+    },
+    "Bad request": {
+      "attacks": 22,
+      "refused": 22,
+      "movedMoney": 0
+    },
+    "Budget": {
+      "attacks": 9,
+      "refused": 9,
+      "movedMoney": 0
+    },
+    "Cross-use": {
+      "attacks": 6,
+      "refused": 6,
+      "movedMoney": 0
+    },
+    "Promise": {
+      "attacks": 12,
+      "refused": 12,
+      "movedMoney": 0
+    },
+    "Account": {
+      "attacks": 5,
+      "refused": 5,
+      "movedMoney": 0
+    },
+    "Forged evidence": {
+      "attacks": 7,
+      "refused": 7,
+      "movedMoney": 0
+    }
+  },
+  "rows": [
+    {
+      "category": "Forged wider envelope",
+      "attack": "limit 1 cent above the parent's",
+      "refused": true,
+      "how": "WIDENED_LIMIT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Forged wider envelope",
+      "attack": "limit doubled",
+      "refused": true,
+      "how": "WIDENED_LIMIT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Forged wider envelope",
+      "attack": "limit 100 times the root",
+      "refused": true,
+      "how": "WIDENED_LIMIT, WIDENED_PER_PAYMENT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Forged wider envelope",
+      "attack": "per-payment cap above the parent's",
+      "refused": true,
+      "how": "WIDENED_PER_PAYMENT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Forged wider envelope",
+      "attack": "one extra payee added",
+      "refused": true,
+      "how": "WIDENED_PAYEES",
+      "moneyMoved": false
+    },
+    {
+      "category": "Forged wider envelope",
+      "attack": "payee list replaced by 'any payee'",
+      "refused": true,
+      "how": "WIDENED_PAYEES",
+      "moneyMoved": false
+    },
+    {
+      "category": "Forged wider envelope",
+      "attack": "payee list replaced by the attacker only",
+      "refused": true,
+      "how": "WIDENED_PAYEES",
+      "moneyMoved": false
+    },
+    {
+      "category": "Forged wider envelope",
+      "attack": "one extra purpose added",
+      "refused": true,
+      "how": "WIDENED_PURPOSES",
+      "moneyMoved": false
+    },
+    {
+      "category": "Forged wider envelope",
+      "attack": "purposes replaced by 'any purpose'",
+      "refused": true,
+      "how": "WIDENED_PURPOSES",
+      "moneyMoved": false
+    },
+    {
+      "category": "Forged wider envelope",
+      "attack": "expiry one second after the parent's",
+      "refused": true,
+      "how": "EXTENDED_EXPIRY",
+      "moneyMoved": false
+    },
+    {
+      "category": "Forged wider envelope",
+      "attack": "expiry a year later",
+      "refused": true,
+      "how": "EXTENDED_EXPIRY",
+      "moneyMoved": false
+    },
+    {
+      "category": "Forged wider envelope",
+      "attack": "currency changed",
+      "refused": true,
+      "how": "CURRENCY_CHANGED",
+      "moneyMoved": false
+    },
+    {
+      "category": "Forged wider envelope",
+      "attack": "more splits than the parent allows",
+      "refused": true,
+      "how": "SPLIT_NOT_ALLOWED",
+      "moneyMoved": false
+    },
+    {
+      "category": "Forged wider envelope",
+      "attack": "split an envelope that may not be split",
+      "refused": true,
+      "how": "SPLIT_NOT_ALLOWED",
+      "moneyMoved": false
+    },
+    {
+      "category": "Forged wider envelope",
+      "attack": "two forged levels, each a little wider",
+      "refused": true,
+      "how": "SPLIT_NOT_ALLOWED, WIDENED_LIMIT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Tampered chain",
+      "attack": "limit edited after signing",
+      "refused": true,
+      "how": "BAD_SIGNATURE",
+      "moneyMoved": false
+    },
+    {
+      "category": "Tampered chain",
+      "attack": "payee list edited after signing",
+      "refused": true,
+      "how": "BAD_SIGNATURE, WIDENED_PAYEES",
+      "moneyMoved": false
+    },
+    {
+      "category": "Tampered chain",
+      "attack": "holder swapped for the thief's key",
+      "refused": true,
+      "how": "BAD_SIGNATURE",
+      "moneyMoved": false
+    },
+    {
+      "category": "Tampered chain",
+      "attack": "root block's limit edited",
+      "refused": true,
+      "how": "BAD_SIGNATURE, BROKEN_LINK",
+      "moneyMoved": false
+    },
+    {
+      "category": "Tampered chain",
+      "attack": "signature bytes replaced",
+      "refused": true,
+      "how": "BAD_SIGNATURE",
+      "moneyMoved": false
+    },
+    {
+      "category": "Tampered chain",
+      "attack": "child block signed by a key that doesn't hold the parent",
+      "refused": true,
+      "how": "WRONG_ISSUER",
+      "moneyMoved": false
+    },
+    {
+      "category": "Tampered chain",
+      "attack": "middle block removed",
+      "refused": true,
+      "how": "BROKEN_LINK, WRONG_ISSUER",
+      "moneyMoved": false
+    },
+    {
+      "category": "Tampered chain",
+      "attack": "blocks presented out of order",
+      "refused": true,
+      "how": "BROKEN_LINK, NOT_THE_HOLDER, SPLIT_NOT_ALLOWED, WIDENED_LIMIT, WIDENED_PAYEES, WIDENED_PURPOSES, WRONG_ISSUER, WRONG_ROOT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Tampered chain",
+      "attack": "child grafted onto a different root",
+      "refused": true,
+      "how": "BROKEN_LINK, WRONG_ISSUER, WRONG_ROOT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Tampered chain",
+      "attack": "root that was never sealed with the gateway (no PayPal hold)",
+      "refused": true,
+      "how": "UNKNOWN_ROOT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Tampered chain",
+      "attack": "second block reusing a known id with different limits (fork)",
+      "refused": true,
+      "how": "FORKED_BLOCK",
+      "moneyMoved": false
+    },
+    {
+      "category": "Tampered chain",
+      "attack": "empty chain",
+      "refused": true,
+      "how": "MALFORMED",
+      "moneyMoved": false
+    },
+    {
+      "category": "Tampered chain",
+      "attack": "chain of nine blocks",
+      "refused": true,
+      "how": "MALFORMED",
+      "moneyMoved": false
+    },
+    {
+      "category": "Tampered chain",
+      "attack": "block with a malformed body",
+      "refused": true,
+      "how": "refused: Cannot read properties of undefined (reading 'currency')",
+      "moneyMoved": false
+    },
+    {
+      "category": "Bad request",
+      "attack": "copied envelope, signed with the thief's own key",
+      "refused": true,
+      "how": "NOT_THE_HOLDER",
+      "moneyMoved": false
+    },
+    {
+      "category": "Bad request",
+      "attack": "request signed by the parent agent instead of the holder",
+      "refused": true,
+      "how": "NOT_THE_HOLDER",
+      "moneyMoved": false
+    },
+    {
+      "category": "Bad request",
+      "attack": "amount of zero",
+      "refused": true,
+      "how": "BAD_AMOUNT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Bad request",
+      "attack": "negative amount",
+      "refused": true,
+      "how": "BAD_AMOUNT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Bad request",
+      "attack": "fractional cents",
+      "refused": true,
+      "how": "BAD_AMOUNT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Bad request",
+      "attack": "amount beyond safe integers",
+      "refused": true,
+      "how": "BAD_AMOUNT, OVER_PER_PAYMENT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Bad request",
+      "attack": "amount as a string",
+      "refused": true,
+      "how": "BAD_AMOUNT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Bad request",
+      "attack": "NaN amount",
+      "refused": true,
+      "how": "BAD_AMOUNT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Bad request",
+      "attack": "one cent over the per-payment cap",
+      "refused": true,
+      "how": "OVER_PER_PAYMENT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Bad request",
+      "attack": "payee not on the envelope",
+      "refused": true,
+      "how": "PAYEE_NOT_ALLOWED",
+      "moneyMoved": false
+    },
+    {
+      "category": "Bad request",
+      "attack": "look-alike payee (designer@exarnple.com)",
+      "refused": true,
+      "how": "PAYEE_NOT_ALLOWED",
+      "moneyMoved": false
+    },
+    {
+      "category": "Bad request",
+      "attack": "payee with the real address as a prefix",
+      "refused": true,
+      "how": "PAYEE_NOT_ALLOWED",
+      "moneyMoved": false
+    },
+    {
+      "category": "Bad request",
+      "attack": "two payees in one field",
+      "refused": true,
+      "how": "PAYEE_NOT_ALLOWED",
+      "moneyMoved": false
+    },
+    {
+      "category": "Bad request",
+      "attack": "sibling's payee (allowed by the root, not by this envelope)",
+      "refused": true,
+      "how": "PAYEE_NOT_ALLOWED",
+      "moneyMoved": false
+    },
+    {
+      "category": "Bad request",
+      "attack": "purpose not on the envelope",
+      "refused": true,
+      "how": "PURPOSE_NOT_ALLOWED",
+      "moneyMoved": false
+    },
+    {
+      "category": "Bad request",
+      "attack": "sibling's purpose",
+      "refused": true,
+      "how": "PURPOSE_NOT_ALLOWED",
+      "moneyMoved": false
+    },
+    {
+      "category": "Bad request",
+      "attack": "request dated ten minutes ago",
+      "refused": true,
+      "how": "STALE_REQUEST",
+      "moneyMoved": false
+    },
+    {
+      "category": "Bad request",
+      "attack": "request dated ten minutes ahead",
+      "refused": true,
+      "how": "STALE_REQUEST",
+      "moneyMoved": false
+    },
+    {
+      "category": "Bad request",
+      "attack": "request names a different envelope than the one presented",
+      "refused": true,
+      "how": "NOT_THE_HOLDER, PAYEE_NOT_ALLOWED, PURPOSE_NOT_ALLOWED, WRONG_LEAF",
+      "moneyMoved": false
+    },
+    {
+      "category": "Bad request",
+      "attack": "amount edited after signing",
+      "refused": true,
+      "how": "NOT_THE_HOLDER",
+      "moneyMoved": false
+    },
+    {
+      "category": "Bad request",
+      "attack": "payee edited after signing",
+      "refused": true,
+      "how": "NOT_THE_HOLDER, PAYEE_NOT_ALLOWED",
+      "moneyMoved": false
+    },
+    {
+      "category": "Bad request",
+      "attack": "wrong currency",
+      "refused": true,
+      "how": "WRONG_CURRENCY",
+      "moneyMoved": false
+    },
+    {
+      "category": "Budget",
+      "attack": "spend more than is left in the agent's own envelope",
+      "refused": true,
+      "how": "OVER_ENVELOPE_LIMIT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Budget",
+      "attack": "many small payments past the limit (41 x $0.50 against $20.00 left)",
+      "refused": true,
+      "how": "OVER_ENVELOPE_LIMIT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Budget",
+      "attack": "replay one signed payment five times (paid once)",
+      "refused": true,
+      "how": "paid once; four replays returned the first result",
+      "moneyMoved": false
+    },
+    {
+      "category": "Budget",
+      "attack": "twenty agents race for one $90.00 envelope with $80.00 payments (one wins)",
+      "refused": true,
+      "how": "exactly one paid; nineteen refused",
+      "moneyMoved": false
+    },
+    {
+      "category": "Budget",
+      "attack": "orchestrator hands out more than it holds, children try to spend it all",
+      "refused": true,
+      "how": "third child refused: OVER_ANCESTOR_LIMIT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Budget",
+      "attack": "spend from a revoked envelope",
+      "refused": true,
+      "how": "REVOKED",
+      "moneyMoved": false
+    },
+    {
+      "category": "Budget",
+      "attack": "spend from an envelope split off a revoked one",
+      "refused": true,
+      "how": "REVOKED",
+      "moneyMoved": false
+    },
+    {
+      "category": "Budget",
+      "attack": "spend after the owner closed the envelope (hold voided)",
+      "refused": true,
+      "how": "REVOKED",
+      "moneyMoved": false
+    },
+    {
+      "category": "Budget",
+      "attack": "spend from an expired envelope",
+      "refused": true,
+      "how": "EXPIRED",
+      "moneyMoved": false
+    },
+    {
+      "category": "Cross-use",
+      "attack": "an introduction replayed as a payment",
+      "refused": true,
+      "how": "NOT_THE_HOLDER",
+      "moneyMoved": false
+    },
+    {
+      "category": "Cross-use",
+      "attack": "a promise replayed as a payment",
+      "refused": true,
+      "how": "NOT_THE_HOLDER",
+      "moneyMoved": false
+    },
+    {
+      "category": "Cross-use",
+      "attack": "a payment replayed as a promise",
+      "refused": true,
+      "how": "NOT_THE_HOLDER",
+      "moneyMoved": false
+    },
+    {
+      "category": "Cross-use",
+      "attack": "revocation signed by a sibling agent",
+      "refused": true,
+      "how": "refused: The gateway hasn't seen that envelope.",
+      "moneyMoved": false
+    },
+    {
+      "category": "Cross-use",
+      "attack": "revocation signed by an outsider",
+      "refused": true,
+      "how": "refused: Only the owner, or the holder of an envelope above this one, can revoke it.",
+      "moneyMoved": false
+    },
+    {
+      "category": "Cross-use",
+      "attack": "revocation dated ten minutes ago",
+      "refused": true,
+      "how": "refused: The revocation isn't properly signed, or is too old.",
+      "moneyMoved": false
+    },
+    {
+      "category": "Promise",
+      "attack": "set money aside for a payee not on the envelope",
+      "refused": true,
+      "how": "PAYEE_NOT_ALLOWED",
+      "moneyMoved": false
+    },
+    {
+      "category": "Promise",
+      "attack": "set aside more than the envelope holds",
+      "refused": true,
+      "how": "OVER_PER_PAYMENT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Promise",
+      "attack": "hold money for a week (lifetime out of range)",
+      "refused": true,
+      "how": "MALFORMED",
+      "moneyMoved": false
+    },
+    {
+      "category": "Promise",
+      "attack": "spend money that is already set aside for someone",
+      "refused": true,
+      "how": "OVER_ENVELOPE_LIMIT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Promise",
+      "attack": "set aside the same money twice",
+      "refused": true,
+      "how": "OVER_ENVELOPE_LIMIT",
+      "moneyMoved": false
+    },
+    {
+      "category": "Promise",
+      "attack": "another agent pays out a promise it didn't make",
+      "refused": true,
+      "how": "refused: Only the agent that made a promise can pay or release it.",
+      "moneyMoved": false
+    },
+    {
+      "category": "Promise",
+      "attack": "the payee's owner tries to pay itself from the promise",
+      "refused": true,
+      "how": "refused: Only the agent that made a promise can pay or release it.",
+      "moneyMoved": false
+    },
+    {
+      "category": "Promise",
+      "attack": "pay a promise after releasing it",
+      "refused": true,
+      "how": "PROMISE_LAPSED",
+      "moneyMoved": false
+    },
+    {
+      "category": "Promise",
+      "attack": "pay a promise after it ran out",
+      "refused": true,
+      "how": "PROMISE_LAPSED",
+      "moneyMoved": false
+    },
+    {
+      "category": "Promise",
+      "attack": "pay a promise after the owner revoked the agent",
+      "refused": true,
+      "how": "REVOKED",
+      "moneyMoved": false
+    },
+    {
+      "category": "Promise",
+      "attack": "forged note: amount edited",
+      "refused": true,
+      "how": "verification failed",
+      "moneyMoved": false
+    },
+    {
+      "category": "Promise",
+      "attack": "forged note: signed by a different key",
+      "refused": true,
+      "how": "valid only under the attacker's key; a payee pins the gateway's key",
+      "moneyMoved": false
+    },
+    {
+      "category": "Account",
+      "attack": "point someone else's account at the attacker's PayPal address",
+      "refused": true,
+      "how": "refused: An account opening must be signed by both the agent's key and its owner's key.",
+      "moneyMoved": false
+    },
+    {
+      "category": "Account",
+      "attack": "owner alone moves the account without the agent's signature",
+      "refused": true,
+      "how": "refused: An account opening must be signed by both the agent's key and its owner's key.",
+      "moneyMoved": false
+    },
+    {
+      "category": "Account",
+      "attack": "replay an old account opening to move the money back",
+      "refused": true,
+      "how": "ignored: the newer signed opening stands",
+      "moneyMoved": false
+    },
+    {
+      "category": "Account",
+      "attack": "pay an account number nobody opened",
+      "refused": true,
+      "how": "PAYEE_ACCOUNT_UNKNOWN, PAYEE_NOT_ALLOWED",
+      "moneyMoved": false
+    },
+    {
+      "category": "Account",
+      "attack": "settlement address that isn't an address",
+      "refused": true,
+      "how": "refused: An account opening must be signed by both the agent's key and its owner's key.",
+      "moneyMoved": false
+    },
+    {
+      "category": "Forged evidence",
+      "attack": "receipt with the amount edited",
+      "refused": true,
+      "how": "verification failed",
+      "moneyMoved": false
+    },
+    {
+      "category": "Forged evidence",
+      "attack": "receipt with a different PayPal capture id",
+      "refused": true,
+      "how": "verification failed",
+      "moneyMoved": false
+    },
+    {
+      "category": "Forged evidence",
+      "attack": "statement of standing with 'good' flipped",
+      "refused": true,
+      "how": "verification failed",
+      "moneyMoved": false
+    },
+    {
+      "category": "Forged evidence",
+      "attack": "statement of standing with more money available",
+      "refused": true,
+      "how": "verification failed",
+      "moneyMoved": false
+    },
+    {
+      "category": "Forged evidence",
+      "attack": "statement of standing used after it expired",
+      "refused": true,
+      "how": "verification failed",
+      "moneyMoved": false
+    },
+    {
+      "category": "Forged evidence",
+      "attack": "proof of funds asked by an impostor without the agent's key",
+      "refused": true,
+      "how": "NOT_THE_HOLDER",
+      "moneyMoved": false
+    },
+    {
+      "category": "Forged evidence",
+      "attack": "proof of funds for a payee the agent can't pay",
+      "refused": true,
+      "how": "PAYEE_NOT_ALLOWED",
+      "moneyMoved": false
+    }
+  ]
+}

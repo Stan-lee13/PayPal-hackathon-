@@ -1,0 +1,227 @@
+/**
+ * A corpus of attacks on the gateway, run against the built-in PayPal simulator.
+ *
+ * Every case is something a compromised agent, a thief with a copied envelope, or a dishonest
+ * counterparty could try. A case passes when the attack is refused AND the simulator saw no capture
+ * or payout because of it. `runCorpus` returns one row per case; tests/attacks.test.ts asserts on
+ * them and scripts/attack-suite.ts writes them to docs/evidence/attack-suite.json.
+ */
+import * as E from "../lib/envelope/core";
+
+export type AttackRow = { category: string; attack: string; refused: boolean; how: string; moneyMoved: boolean };
+
+type G = typeof import("../lib/gateway/service");
+type Sim = typeof import("../lib/paypal/emulator");
+
+export async function runCorpus(deps: { G: G; sim: Sim; reset: () => Promise<void>; db: { expirePromise(id: string): Promise<void> } }): Promise<AttackRow[]> {
+  const { G, sim } = deps;
+  const rows: AttackRow[] = [];
+  const EXP = () => new Date(Date.now() + 3600_000).toISOString();
+  const moved = async () => (await sim.simCalls()).filter((c) => c.includes("/capture") || c.includes("/payouts")).length;
+
+  /** Run one attack. `fn` returns the gateway's verdict: denial codes, a thrown refusal, or `false` from a verifier. */
+  async function attack(category: string, name: string, fn: () => Promise<unknown>, legitMoves = 0) {
+    const before = await moved();
+    let refused = false, how = "";
+    try {
+      const r = await fn();
+      if (r === false) { refused = true; how = "verification failed"; }
+      else if (r && typeof r === "object" && "status" in r) {
+        const s = r as { status: string; reasons?: Array<{ code: string }>; good?: boolean; duplicate?: boolean };
+        refused = s.status === "DENIED" || s.status === "LAPSED";
+        how = refused ? [...new Set((s.reasons ?? []).map((x) => x.code))].sort().join(", ") || s.status : `NOT REFUSED (${s.status})`;
+      } else if (r && typeof r === "object" && "good" in r) {
+        const s = r as { good: boolean; reasons: Array<{ code: string }> };
+        refused = !s.good; how = refused ? s.reasons.map((x) => x.code).sort().join(", ") : "NOT REFUSED (good)";
+      } else if (typeof r === "string") { refused = true; how = r; }
+      else how = `NOT REFUSED (${JSON.stringify(r)?.slice(0, 60)})`;
+    } catch (e) { refused = true; how = `refused: ${e instanceof Error ? e.message.slice(0, 90) : "error"}`; }
+    rows.push({ category, attack: name, refused, how, moneyMoved: (await moved()) - before !== legitMoves });
+  }
+
+  async function world() {
+    await deps.reset();
+    const [ada, ops, loc, art, rogue, bea, tr] = await Promise.all([1, 2, 3, 4, 5, 6, 7].map(() => E.generateKeyPair()));
+    await G.openAccount(await E.signAccount(tr!, bea!, { label: "translator-agent", ownerName: "Bea", settleTo: "bea@example.com" }));
+    const acct = E.accountPayee(tr!.publicKey);
+    const base: E.Caps = { currency: "USD", limit: 20000, perPayment: 8000, payees: [acct, "designer@example.com"], purposes: ["translation", "design"], notAfter: EXP(), splits: 2 };
+    const rootChain = await E.seal(ada!, { publicKey: ops!.publicKey, label: "ops-agent" }, base);
+    const root = await G.registerRoot({ chain: rootChain, principalName: "Ada", title: "Launch budget" });
+    const locChain = await E.split(rootChain, ops!, { publicKey: loc!.publicKey, label: "localization-agent" }, { ...base, limit: 6000, perPayment: 5000, payees: [acct], purposes: ["translation"], splits: 0 });
+    const artChain = await E.split(rootChain, ops!, { publicKey: art!.publicKey, label: "creative-agent" }, { ...base, limit: 9000, perPayment: 8000, payees: ["designer@example.com"], purposes: ["design"], splits: 1 });
+    return { ada: ada!, ops: ops!, loc: loc!, art: art!, rogue: rogue!, bea: bea!, tr: tr!, acct, base, rootChain, locChain, artChain, root };
+  }
+  type W = Awaited<ReturnType<typeof world>>;
+  /** A block signed by hand, skipping the library's refusal to sign anything wider than its parent. */
+  async function forge(parent: E.Envelope, issuer: E.KeyPair, holder: E.KeyPair, caps: Partial<E.Caps>, tweak: (b: E.BlockBody) => void = () => {}): Promise<E.Envelope> {
+    const last = parent[parent.length - 1]!;
+    const body: E.BlockBody = { v: E.BLOCK_VERSION, id: E.randomId("env"), root: parent[0]!.body.id, parent: await E.blockHash(last), issuer: issuer.publicKey, holder: holder.publicKey, holderLabel: "helper", caps: E.normalizeCaps({ ...last.body.caps, splits: 0, ...caps }), issuedAt: new Date().toISOString() };
+    tweak(body);
+    return [...parent, { body, sig: await E.signDetached(issuer.privateKey, E.BLOCK_VERSION, body) }];
+  }
+  const pay = (chain: E.Envelope, key: E.KeyPair, p: Partial<{ amount: number; payee: string; purpose: string }> = {}) => E.signSpend(chain, key, { amount: 1000, payee: "designer@example.com", purpose: "design", ...p }).then((s) => G.spend(s));
+
+  // ---- 1. A sub-agent signs itself (or a helper) a wider envelope ---------------------------------
+  let w = await world();
+  const widenings: Array<[string, Partial<E.Caps>, Partial<{ amount: number; payee: string; purpose: string }>]> = [
+    ["limit 1 cent above the parent's", { limit: 9001, perPayment: 8000 }, {}],
+    ["limit doubled", { limit: 18000 }, {}],
+    ["limit 100 times the root", { limit: 2_000_000, perPayment: 2_000_000 }, { amount: 50000 }],
+    ["per-payment cap above the parent's", { perPayment: 9000 }, {}],
+    ["one extra payee added", { payees: ["designer@example.com", "attacker@evil.example"] }, { payee: "attacker@evil.example" }],
+    ["payee list replaced by 'any payee'", { payees: null }, { payee: "attacker@evil.example" }],
+    ["payee list replaced by the attacker only", { payees: ["attacker@evil.example"] }, { payee: "attacker@evil.example" }],
+    ["one extra purpose added", { purposes: ["design", "gift-cards"] }, { purpose: "gift-cards" }],
+    ["purposes replaced by 'any purpose'", { purposes: null }, { purpose: "anything" }],
+    ["expiry one second after the parent's", { notAfter: new Date(Date.parse(w.artChain[1]!.body.caps.notAfter) + 1000).toISOString() }, {}],
+    ["expiry a year later", { notAfter: new Date(Date.now() + 365 * 86400_000).toISOString() }, {}],
+    ["currency changed", { currency: "EUR" }, {}],
+    ["more splits than the parent allows", { splits: 5 }, {}],
+  ];
+  for (const [name, caps, p] of widenings) {
+    await attack("Forged wider envelope", name, async () => pay(await forge(w.artChain, w.art, w.rogue, caps), w.rogue, p));
+  }
+  await attack("Forged wider envelope", "split an envelope that may not be split", async () => pay(await forge(w.locChain, w.loc, w.rogue, {}), w.rogue, { payee: w.acct, purpose: "translation" }));
+  await attack("Forged wider envelope", "two forged levels, each a little wider", async () => {
+    const one = await forge(w.artChain, w.art, w.rogue, { limit: 9500, splits: 1 });
+    return pay(await forge(one, w.rogue, w.loc, { limit: 9900 }), w.loc);
+  });
+
+  // ---- 2. Broken or stolen chains ------------------------------------------------------------------
+  w = await world();
+  const clone = <T>(x: T): T => JSON.parse(JSON.stringify(x));
+  await attack("Tampered chain", "limit edited after signing", async () => { const c = clone(w.artChain); c[1]!.body.caps.limit = 20000; return pay(c, w.art); });
+  await attack("Tampered chain", "payee list edited after signing", async () => { const c = clone(w.artChain); c[1]!.body.caps.payees = ["attacker@evil.example"]; return pay(c, w.art, { payee: "attacker@evil.example" }); });
+  await attack("Tampered chain", "holder swapped for the thief's key", async () => { const c = clone(w.artChain); c[1]!.body.holder = w.rogue.publicKey; return pay(c, w.rogue); });
+  await attack("Tampered chain", "root block's limit edited", async () => { const c = clone(w.artChain); c[0]!.body.caps.limit = 999999; return pay(c, w.art); });
+  await attack("Tampered chain", "signature bytes replaced", async () => { const c = clone(w.artChain); c[1]!.sig = c[0]!.sig; return pay(c, w.art); });
+  await attack("Tampered chain", "child block signed by a key that doesn't hold the parent", async () => pay(await forge(w.rootChain, w.rogue, w.rogue, { limit: 5000 }), w.rogue));
+  await attack("Tampered chain", "middle block removed", async () => { const deep = await E.split(w.artChain, w.art, { publicKey: w.rogue.publicKey, label: "helper" }, { ...w.artChain[1]!.body.caps, limit: 1000, perPayment: 1000, splits: 0 }); return pay([deep[0]!, deep[2]!], w.rogue); });
+  await attack("Tampered chain", "blocks presented out of order", async () => pay([w.artChain[1]!, w.artChain[0]!], w.art));
+  await attack("Tampered chain", "child grafted onto a different root", async () => { const other = await world(); return pay([other.rootChain[0]!, w.artChain[1]!], w.art); });
+  w = await world();
+  await attack("Tampered chain", "root that was never sealed with the gateway (no PayPal hold)", async () => { const fake = await E.seal(w.rogue, { publicKey: w.rogue.publicKey, label: "self" }, { ...w.base, payees: null, purposes: null }); return pay(fake, w.rogue, { payee: "attacker@evil.example" }); });
+  await G.announce(w.artChain); // the gateway has the real block on record; a different block with its id is a fork
+  await attack("Tampered chain", "second block reusing a known id with different limits (fork)", async () => pay(await forge(w.rootChain, w.ops, w.rogue, { limit: 15000 }, (b) => { b.id = w.artChain[1]!.body.id; }), w.rogue));
+  await attack("Tampered chain", "empty chain", async () => G.spend({ request: (await E.signSpend(w.artChain, w.art, { amount: 100, payee: "designer@example.com", purpose: "design" })).request, sig: "x", chain: [] }));
+  await attack("Tampered chain", "chain of nine blocks", async () => { const c = [...w.artChain]; while (c.length < 9) c.push(c[1]!); return pay(c, w.art); });
+  await attack("Tampered chain", "block with a malformed body", async () => { const c = clone(w.artChain) as unknown as Array<{ body: Record<string, unknown>; sig: string }>; delete c[1]!.body.caps; return pay(c as never, w.art); });
+
+  // ---- 3. Requests ----------------------------------------------------------------------------------
+  w = await world();
+  await attack("Bad request", "copied envelope, signed with the thief's own key", async () => pay(w.artChain, w.rogue));
+  await attack("Bad request", "request signed by the parent agent instead of the holder", async () => pay(w.artChain, w.ops));
+  for (const [name, amount] of [["amount of zero", 0], ["negative amount", -500], ["fractional cents", 10.5], ["amount beyond safe integers", Number.MAX_SAFE_INTEGER * 2], ["amount as a string", "1000" as unknown as number], ["NaN amount", NaN]] as const) {
+    await attack("Bad request", name, async () => pay(w.artChain, w.art, { amount: amount as number }));
+  }
+  await attack("Bad request", "one cent over the per-payment cap", async () => pay(w.artChain, w.art, { amount: 8001 }));
+  await attack("Bad request", "payee not on the envelope", async () => pay(w.artChain, w.art, { payee: "attacker@evil.example" }));
+  await attack("Bad request", "look-alike payee (designer@exarnple.com)", async () => pay(w.artChain, w.art, { payee: "designer@exarnple.com" }));
+  await attack("Bad request", "payee with the real address as a prefix", async () => pay(w.artChain, w.art, { payee: "designer@example.com.evil.example" }));
+  await attack("Bad request", "two payees in one field", async () => pay(w.artChain, w.art, { payee: "designer@example.com,attacker@evil.example" }));
+  await attack("Bad request", "sibling's payee (allowed by the root, not by this envelope)", async () => pay(w.artChain, w.art, { payee: w.acct }));
+  await attack("Bad request", "purpose not on the envelope", async () => pay(w.artChain, w.art, { purpose: "gift-cards" }));
+  await attack("Bad request", "sibling's purpose", async () => pay(w.artChain, w.art, { purpose: "translation" }));
+  await attack("Bad request", "request dated ten minutes ago", async () => G.spend(await E.signSpend(w.artChain, w.art, { amount: 1000, payee: "designer@example.com", purpose: "design" }, new Date(Date.now() - 600_000))));
+  await attack("Bad request", "request dated ten minutes ahead", async () => G.spend(await E.signSpend(w.artChain, w.art, { amount: 1000, payee: "designer@example.com", purpose: "design" }, new Date(Date.now() + 600_000))));
+  await attack("Bad request", "request names a different envelope than the one presented", async () => { const s = await E.signSpend(w.locChain, w.loc, { amount: 1000, payee: w.acct, purpose: "translation" }); return G.spend({ ...s, chain: w.artChain }); });
+  await attack("Bad request", "amount edited after signing", async () => { const s = await E.signSpend(w.artChain, w.art, { amount: 100, payee: "designer@example.com", purpose: "design" }); return G.spend({ ...s, request: { ...s.request, amount: 8000 } }); });
+  await attack("Bad request", "payee edited after signing", async () => { const s = await E.signSpend(w.artChain, w.art, { amount: 100, payee: "designer@example.com", purpose: "design" }); return G.spend({ ...s, request: { ...s.request, payee: "attacker@evil.example" } }); });
+  await attack("Bad request", "wrong currency", async () => { const s = await E.signSpend(w.artChain, w.art, { amount: 100, payee: "designer@example.com", purpose: "design" }); const request = { ...s.request, currency: "EUR" }; return G.spend({ request, sig: await E.signDetached(w.art.privateKey, E.SPEND_VERSION, request), chain: s.chain }); });
+
+  // ---- 4. Budgets, replay, races ---------------------------------------------------------------------
+  w = await world();
+  await pay(w.artChain, w.art, { amount: 7000 });
+  await attack("Budget", "spend more than is left in the agent's own envelope", async () => pay(w.artChain, w.art, { amount: 2001 }));
+  await attack("Budget", "many small payments past the limit (41 x $0.50 against $20.00 left)", async () => { let last: unknown; for (let i = 0; i < 41; i++) last = await pay(w.artChain, w.art, { amount: 50 }); return last; }, 80);
+  w = await world();
+  await attack("Budget", "replay one signed payment five times (paid once)", async () => {
+    const s = await E.signSpend(w.artChain, w.art, { amount: 3000, payee: "designer@example.com", purpose: "design" });
+    const all = [await G.spend(s), await G.spend(s), await G.spend(s), await G.spend(s), await G.spend(s)];
+    return all.filter((x) => !x.duplicate).length === 1 && all.every((x) => x.spend!.id === all[0]!.spend!.id) ? "paid once; four replays returned the first result" : { status: "REPLAYED" };
+  }, 2);
+  w = await world();
+  await attack("Budget", "twenty agents race for one $90.00 envelope with $80.00 payments (one wins)", async () => {
+    const all = await Promise.all(Array.from({ length: 20 }, () => pay(w.artChain, w.art, { amount: 8000 })));
+    return all.filter((x) => x.status === "PAID").length === 1 ? "exactly one paid; nineteen refused" : { status: `${all.filter((x) => x.status === "PAID").length} PAID` };
+  }, 2);
+  w = await world();
+  await attack("Budget", "orchestrator hands out more than it holds, children try to spend it all", async () => {
+    const [a, b, c] = await Promise.all([1, 2, 3].map(() => E.generateKeyPair()));
+    const any = { ...w.base, limit: 8000, perPayment: 8000, payees: ["designer@example.com"], purposes: ["design"], splits: 0 };
+    const chains = await Promise.all([a!, b!, c!].map((k, i) => E.split(w.rootChain, w.ops, { publicKey: k.publicKey, label: `child-${i}` }, any)));
+    const res = [await pay(chains[0]!, a!, { amount: 8000 }), await pay(chains[1]!, b!, { amount: 8000 }), await pay(chains[2]!, c!, { amount: 8000 })];
+    return res[2]!.status === "DENIED" && res[2]!.reasons.some((x) => x.code === "OVER_ANCESTOR_LIMIT") ? "third child refused: OVER_ANCESTOR_LIMIT" : { status: "ALL PAID" };
+  }, 4);
+  w = await world();
+  await G.announce(w.artChain);
+  await G.revoke(await E.signRevoke(w.ada, w.artChain[1]!.body.id));
+  await attack("Budget", "spend from a revoked envelope", async () => pay(w.artChain, w.art));
+  await attack("Budget", "spend from an envelope split off a revoked one", async () => pay(await E.split(w.artChain, w.art, { publicKey: w.rogue.publicKey, label: "helper" }, { ...w.artChain[1]!.body.caps, limit: 1000, perPayment: 1000, splits: 0 }), w.rogue));
+  await G.revoke(await E.signRevoke(w.ada, w.root.id));
+  await attack("Budget", "spend after the owner closed the envelope (hold voided)", async () => pay(w.locChain, w.loc, { payee: w.acct, purpose: "translation" }));
+  w = await world();
+  await attack("Budget", "spend from an expired envelope", async () => {
+    const soon = { ...w.base, limit: 1000, perPayment: 1000, payees: ["designer@example.com"], purposes: ["design"], splits: 0, notAfter: new Date(Date.now() + 700).toISOString() };
+    const chain = await E.split(w.rootChain, w.ops, { publicKey: w.rogue.publicKey, label: "short-lived" }, soon);
+    await new Promise((r) => setTimeout(r, 900));
+    return pay(chain, w.rogue);
+  });
+
+  // ---- 5. One kind of signed message passed off as another ---------------------------------------------
+  w = await world();
+  await attack("Cross-use", "an introduction replayed as a payment", async () => { const h = await E.signHello(w.artChain, w.art, { amount: 5000, payee: "designer@example.com", purpose: "design" }); return G.spend({ request: { ...h.request, v: E.SPEND_VERSION, memo: "" }, sig: h.sig, chain: h.chain }); });
+  await attack("Cross-use", "a promise replayed as a payment", async () => { const p = await E.signPromise(w.artChain, w.art, { amount: 5000, payee: "designer@example.com", purpose: "design" }); const { ttl: _t, ...rest } = p.request; return G.spend({ request: { ...rest, v: E.SPEND_VERSION }, sig: p.sig, chain: p.chain }); });
+  await attack("Cross-use", "a payment replayed as a promise", async () => { const s = await E.signSpend(w.artChain, w.art, { amount: 5000, payee: "designer@example.com", purpose: "design" }); return G.promise({ request: { ...s.request, v: E.PROMISE_VERSION, ttl: 600 }, sig: s.sig, chain: s.chain }); });
+  await attack("Cross-use", "revocation signed by a sibling agent", async () => G.revoke(await E.signRevoke(w.loc, w.artChain[1]!.body.id)));
+  await attack("Cross-use", "revocation signed by an outsider", async () => G.revoke(await E.signRevoke(w.rogue, w.root.id)));
+  await attack("Cross-use", "revocation dated ten minutes ago", async () => G.revoke(await E.signRevoke(w.ada, w.root.id, new Date(Date.now() - 600_000))));
+
+  // ---- 6. Promises --------------------------------------------------------------------------------------
+  w = await world();
+  const promise = (p: Partial<{ amount: number; payee: string; purpose: string; ttl: number }> = {}) => E.signPromise(w.locChain, w.loc, { amount: 4000, payee: w.acct, purpose: "translation", ttl: 600, ...p }).then((s) => G.promise(s));
+  await attack("Promise", "set money aside for a payee not on the envelope", async () => promise({ payee: "attacker@evil.example" }));
+  await attack("Promise", "set aside more than the envelope holds", async () => promise({ amount: 6001 }));
+  await attack("Promise", "hold money for a week (lifetime out of range)", async () => promise({ ttl: 7 * 86400 }));
+  const p1 = await promise();
+  await attack("Promise", "spend money that is already set aside for someone", async () => pay(w.locChain, w.loc, { amount: 2500, payee: w.acct, purpose: "translation" }));
+  await attack("Promise", "set aside the same money twice", async () => promise({ amount: 2500 }));
+  await attack("Promise", "another agent pays out a promise it didn't make", async () => G.keep(await E.signKeep(w.rogue, p1.spend!.id, "pay")));
+  await attack("Promise", "the payee's owner tries to pay itself from the promise", async () => G.keep(await E.signKeep(w.bea, p1.spend!.id, "pay")));
+  await G.keep(await E.signKeep(w.loc, p1.spend!.id, "release"));
+  await attack("Promise", "pay a promise after releasing it", async () => G.keep(await E.signKeep(w.loc, p1.spend!.id, "pay")));
+  const p2 = await promise();
+  await deps.db.expirePromise(p2.spend!.id);
+  await attack("Promise", "pay a promise after it ran out", async () => G.keep(await E.signKeep(w.loc, p2.spend!.id, "pay")));
+  const p3 = await promise();
+  await G.revoke(await E.signRevoke(w.ada, w.locChain[1]!.body.id));
+  await attack("Promise", "pay a promise after the owner revoked the agent", async () => G.keep(await E.signKeep(w.loc, p3.spend!.id, "pay")));
+  await attack("Promise", "forged note: amount edited", async () => G.verifyPromiseNote({ ...p3.note!, amount: 999999 }));
+  await attack("Promise", "forged note: signed by a different key", async () => { const { sig: _s, ...body } = p3.note!; const fake = { ...body, gateway: w.rogue.publicKey }; return G.verifyPromiseNote({ ...fake, sig: await E.signDetached(w.rogue.privateKey, G.PROMISE_NOTE_VERSION, fake) }).then(async (ok) => (ok && fake.gateway !== (await G.gatewayKey()).publicKey ? "valid only under the attacker's key; a payee pins the gateway's key" : ok)); });
+
+  // ---- 7. Accounts ---------------------------------------------------------------------------------------
+  w = await world();
+  await attack("Account", "point someone else's account at the attacker's PayPal address", async () => { const f = await E.signAccount(w.rogue, w.rogue, { label: "translator-agent", ownerName: "Mallory", settleTo: "mallory@evil.example" }); f.body.agent = w.tr.publicKey; return G.openAccount(f); });
+  await attack("Account", "owner alone moves the account without the agent's signature", async () => { const real = await E.signAccount(w.tr, w.bea, { label: "translator-agent", ownerName: "Bea", settleTo: "elsewhere@example.com" }, new Date(Date.now() + 1000)); return G.openAccount({ ...real, agentSig: real.ownerSig }); });
+  await attack("Account", "replay an old account opening to move the money back", async () => {
+    const first = (await G.accountByNumber(w.acct))!.signed;
+    await G.openAccount(await E.signAccount(w.tr, w.bea, { label: "translator-agent", ownerName: "Bea", settleTo: "bea-new@example.com" }, new Date(Date.now() + 2000)));
+    return (await G.openAccount(first)).settleTo === "bea-new@example.com" ? "ignored: the newer signed opening stands" : { status: "MOVED BACK" };
+  });
+  await attack("Account", "pay an account number nobody opened", async () => pay(w.locChain, w.loc, { payee: E.accountPayee(w.rogue.publicKey), purpose: "translation" }));
+  await attack("Account", "settlement address that isn't an address", async () => G.openAccount(await E.signAccount(w.rogue, w.rogue, { label: "x", ownerName: "x", settleTo: "not-an-email" })));
+
+  // ---- 8. Evidence -------------------------------------------------------------------------------------
+  w = await world();
+  const paidOk = await pay(w.artChain, w.art, { amount: 2500 });
+  const st = await G.standing(await E.signHello(w.artChain, w.art, { amount: 1000, payee: "designer@example.com", purpose: "design" }));
+  await attack("Forged evidence", "receipt with the amount edited", async () => G.verifyReceipt({ ...paidOk.receipt!, request: { ...paidOk.receipt!.request, amount: 1 } }));
+  await attack("Forged evidence", "receipt with a different PayPal capture id", async () => G.verifyReceipt({ ...paidOk.receipt!, paypal: { ...paidOk.receipt!.paypal, captureId: "SIMCAPFAKE" } }));
+  await attack("Forged evidence", "statement of standing with 'good' flipped", async () => G.verifyStanding({ ...st, good: !st.good }));
+  await attack("Forged evidence", "statement of standing with more money available", async () => G.verifyStanding({ ...st, availableMinor: 999999 }));
+  await attack("Forged evidence", "statement of standing used after it expired", async () => G.verifyStanding(st, new Date(Date.now() + 6 * 60_000)));
+  await attack("Forged evidence", "proof of funds asked by an impostor without the agent's key", async () => G.standing(await E.signHello(w.artChain, w.rogue, { amount: 1000, payee: "designer@example.com", purpose: "design" })));
+  await attack("Forged evidence", "proof of funds for a payee the agent can't pay", async () => G.standing(await E.signHello(w.artChain, w.art, { amount: 1000, payee: "attacker@evil.example", purpose: "design" })));
+
+  return rows;
+}
