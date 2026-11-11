@@ -7,7 +7,7 @@ import { asc, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "../db";
 import { auditLog, roots } from "../db/schema";
-import { act, attachDemoAgents, createDemoAgents, DEMO_ACTIONS, demoHello, ensureCounterparty, hasDemoAgents, isDemoAgent } from "../demo/agents";
+import { act, attachDemoAgents, createDemoAgents, DEMO_ACTIONS, demoHello, ensureCounterparty, hasDemoAgents, isDemoAgent, runTool, TOOL_AGENTS } from "../demo/agents";
 import * as E from "../envelope/core";
 import * as G from "../gateway/service";
 import { verifyChain } from "../ledger/chain";
@@ -141,6 +141,13 @@ export const handlers: Record<string, Handler> = {
     const b = z.object({ rootId: z.string().max(60), action: z.enum(DEMO_ACTIONS) }).parse(body);
     const r = await act(b.rootId, b.action);
     return { body: { action: r.action, narration: r.narration, status: r.result?.status ?? null, reasons: withMeaning(r.result?.reasons ?? []) } };
+  },
+
+  /** DEMO: carry out one tool call a language model made while playing a built-in agent. The gateway decides. */
+  "POST /api/demo/tool": async ({ body }) => {
+    const b = z.object({ rootId: z.string().max(60), agent: z.enum(TOOL_AGENTS), tool: z.string().max(40), args: z.record(z.string(), z.unknown()).default({}) }).parse(body);
+    const r = await runTool(b.rootId, b.agent, b.tool, b.args);
+    return { body: { text: r.text, status: r.status, reasons: withMeaning(r.reasons) } };
   },
 
   /** DEMO: have a built-in agent introduce itself to a payee. The result is checked through the public standing endpoint. */

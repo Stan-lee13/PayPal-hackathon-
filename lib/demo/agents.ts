@@ -159,6 +159,87 @@ export async function act(rootId: string, action: DemoAction): Promise<{ action:
   }
 }
 
+export const TOOL_AGENTS = ["ops-agent", "localization-agent", "creative-agent"] as const;
+export type ToolAgent = (typeof TOOL_AGENTS)[number];
+export type ToolOutcome = { text: string; status: string | null; reasons: E.Violation[] };
+
+const dollars = (n: number) => `$${(n / 100).toFixed(2)}`;
+const reasonsText = (r: E.Violation[]) => r.map((x) => `${x.code} (${x.detail})`).join("; ");
+
+/**
+ * DEMO: carry out one tool call that a language model made while playing a built-in agent.
+ *
+ * Whatever the model asked for is signed with that agent's key and handed to the gateway unchanged:
+ * the amounts, payees and purposes below come straight from model output. That is the point. The
+ * gateway (lib/gateway/service.ts) decides, and it reads signatures and numbers, never the model's words.
+ * The returned text is what the model is told happened.
+ */
+export async function runTool(rootId: string, label: ToolAgent, tool: string, args: Record<string, unknown>): Promise<ToolOutcome> {
+  const out = (text: string, status: string | null = null, reasons: E.Violation[] = []): ToolOutcome => ({ text, status, reasons });
+  const a = await agent(rootId, label);
+  const str = (k: string, max: number) => (typeof args[k] === "string" ? (args[k] as string).trim().slice(0, max) : "");
+  const cents = (k: string) => (typeof args[k] === "number" && Number.isFinite(args[k] as number) ? Math.round((args[k] as number) * 100) : NaN);
+  const whyNote = str("why", 500) || undefined;
+
+  if (tool === "look_at_my_envelope") {
+    if (!a.chain) return out("You hold no envelope yet. You cannot pay anyone.");
+    const t = await G.tree(rootId);
+    const leaf = a.chain[a.chain.length - 1]!.body;
+    const rows = new Map((t?.blocks ?? []).map((b) => [b.id, b]));
+    const left = Math.min(...a.chain.map((b) => { const r = rows.get(b.body.id); return b.body.caps.limit - (r ? r.spentMinor + r.reservedMinor : 0); }));
+    const c = leaf.caps;
+    return out(`You hold an envelope: up to ${dollars(c.limit)} in total, at most ${dollars(c.perPayment)} per payment, payees: ${c.payees ? c.payees.join(", ") : "any"}, purposes: ${c.purposes ? c.purposes.join(", ") : "any"}, ${c.splits > 0 ? `may be split ${c.splits} more time(s)` : "may not be split"}. ${dollars(Math.max(0, left))} can still be spent from it.${t?.root.status !== "ACTIVE" ? " The owner has CLOSED it." : ""}`);
+  }
+
+  if (tool === "split_envelope") {
+    if (label !== "ops-agent") return out("Only ops-agent has an envelope that can be split.");
+    if (!a.chain) return out("You hold no envelope.");
+    const toLabel = str("to", 40);
+    if (toLabel !== "localization-agent" && toLabel !== "creative-agent") return out("You can split only for localization-agent or creative-agent.");
+    const to = await agent(rootId, toLabel);
+    if (to.chain) return out(`${toLabel} already holds an envelope: up to ${dollars(to.chain[to.chain.length - 1]!.body.caps.limit)}.`);
+    const limit = cents("limit_usd");
+    if (!Number.isSafeInteger(limit) || limit <= 0) return out("limit_usd must be a positive dollar amount.");
+    const parent = a.chain[a.chain.length - 1]!.body.caps;
+    const caps: E.Caps = { currency: parent.currency, limit, perPayment: Math.min(limit, parent.perPayment), payees: [str("payee", 127)], purposes: [str("purpose", 60)], notAfter: parent.notAfter, splits: 0 };
+    let chain: E.Envelope;
+    try { chain = await E.split(a.chain, a.key, { publicKey: to.row.publicKey, label: toLabel }, caps); }
+    catch (e) { return out(`NOT SPLIT. ${e instanceof Error ? e.message : "The sub-envelope was wider than yours."}`, "DENIED"); }
+    await G.announce(chain);
+    await saveChain(rootId, toLabel, chain);
+    return out(`SPLIT. ${toLabel} now holds its own envelope: up to ${dollars(limit)}, only to ${caps.payees![0]}, only for ${caps.purposes![0]}. It cannot be split further.`, "OK");
+  }
+
+  if (!a.chain) return out("You hold no envelope, so you cannot pay or set money aside. Tell ops-agent.", "DENIED");
+  const paid = (r: G.SpendResult, amount: number, payee: string) => r.status === "DENIED" || r.status === "FAILED" || r.status === "LAPSED"
+    ? out(`${r.status} by the gateway. No money moved. ${reasonsText(r.reasons)}`, r.status, r.reasons)
+    : out(`${r.status === "PAID" ? "PAID" : "PAID (PayPal is still delivering it)"}. PayPal captured ${dollars(amount)} from the owner's hold and paid ${payee}. Receipt ${r.spend?.id}.`, r.status);
+
+  if (tool === "pay") {
+    const amount = cents("amount_usd");
+    if (!Number.isFinite(amount)) return out("amount_usd must be a number.");
+    const payee = str("payee", 127).toLowerCase();
+    return paid(await G.spend(await E.signSpend(a.chain, a.key, { amount, payee, purpose: str("purpose", 60), memo: str("memo", 200) }), whyNote), amount, payee);
+  }
+  if (tool === "set_aside") {
+    const amount = cents("amount_usd");
+    if (!Number.isFinite(amount)) return out("amount_usd must be a number.");
+    const payee = str("payee", 127).toLowerCase();
+    const r = await G.promise(await E.signPromise(a.chain, a.key, { amount, payee, purpose: str("purpose", 60), ttl: 900 }), whyNote);
+    if (r.status !== "PROMISED" || !r.note) return out(`${r.status} by the gateway. Nothing was set aside. ${reasonsText(r.reasons)}`, r.status, r.reasons);
+    // The payee's side, done for real: check the gateway's signature on the note. Its reply is scripted.
+    const noteOk = await G.verifyPromiseNote(r.note);
+    return out(`SET ASIDE. ${dollars(amount)} is reserved for ${payee} until ${r.note.expiresAt}; nothing else can spend it. The payee checked the gateway's note (${noteOk ? "signature valid" : "SIGNATURE INVALID"}, PayPal reports the hold as ${r.note.paypal.status}) and replied: "Thank you. Both files are delivered. Please pay what you set aside."`, "PROMISED");
+  }
+  if (tool === "pay_what_was_set_aside") {
+    const leafId = a.chain[a.chain.length - 1]!.body.id;
+    const open = await getDb().query.spends.findFirst({ where: and(eq(spends.leafId, leafId), eq(spends.status, "PROMISED")), orderBy: desc(spends.createdAt) });
+    if (!open) return out("You have no money set aside right now.");
+    return paid(await G.keep(await E.signKeep(a.key, open.id, "pay"), whyNote), open.amountMinor, open.payee);
+  }
+  return out("There is no such tool.");
+}
+
 /** DEMO: a built-in agent introduces itself to a payee (signs a hello with the key this server holds for it). */
 export async function demoHello(agentKey: string, p: { amountMinor: number; payee: string; purpose: string }): Promise<E.SignedHello> {
   const row = await getDb().query.demoKeys.findFirst({ where: eq(demoKeys.publicKey, agentKey) });
