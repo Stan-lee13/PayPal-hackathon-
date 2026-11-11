@@ -284,13 +284,35 @@ export async function settle(spendId: string): Promise<Spend> {
     return u ?? (await tx.query.spends.findFirst({ where: eq(spends.id, s.id) }))!;
   });
   await trail(root, "paypal", "payout.sent", "OK", s.payoutBatchId, { spend: s.id, to: s.payee, amount: formatMoney(s.amountMinor, s.currency), item: s.payoutItemId, status: s.payoutStatus });
+  if (s.payoutStatus && PAYOUT_DEAD.includes(s.payoutStatus)) return undoDeadPayout(final, s.payoutStatus, null);
   return final;
 }
 
+const PAYOUT_DEAD = ["FAILED", "RETURNED", "BLOCKED", "REFUNDED", "REVERSED", "DENIED", "CANCELED"];
 function payoutState(itemStatus: string | null): Spend["status"] {
   if (itemStatus === "SUCCESS") return "PAID";
   if (itemStatus === "UNCLAIMED") return "UNCLAIMED";
   return "PAYOUT_PENDING";
+}
+
+/** PayPal accepted the payout request but later failed or returned it: refund the capture and give the budget back. */
+async function undoDeadPayout(s: Spend, itemStatus: string, error: string | null): Promise<Spend> {
+  const db = getDb();
+  const root = (await db.query.roots.findFirst({ where: eq(roots.id, s.rootId) }))!;
+  let refundId: string | null = null;
+  try { refundId = (await refundCapture(getPayPal(), s.captureId!, s.id, "Payout could not be delivered")).id; } catch { /* reported in the reason */ }
+  const reason: E.Violation = { code: "PAYPAL_PAYOUT_FAILED", at: root.id, detail: `PayPal could not deliver the payout (${error ?? itemStatus})${refundId ? "; the capture was refunded to the owner" : "; the refund also failed and needs attention"}` };
+  const u = await db.transaction(async (tx) => {
+    await lockRoot(tx, s.rootId);
+    const [row] = await tx.update(spends).set({ status: "FAILED", payoutStatus: itemStatus, reasons: [reason], refundId }).where(and(eq(spends.id, s.id), inArray(spends.status, ["PAID", "PAYOUT_PENDING", "UNCLAIMED"]))).returning();
+    if (row) {
+      await tx.update(blocks).set({ spentMinor: sql`${blocks.spentMinor} - ${s.amountMinor}` }).where(inArray(blocks.id, s.chainIds));
+      if (refundId) await tx.update(roots).set({ capturedMinor: sql`${roots.capturedMinor} - ${s.amountMinor}` }).where(eq(roots.id, root.id));
+    }
+    return row ?? s;
+  });
+  await trail(root, "paypal", "payout.failed", "FAILED", s.payoutBatchId, { spend: s.id, status: itemStatus, error, refunded: refundId });
+  return u;
 }
 
 /** Ask PayPal where a pending payout is. */
@@ -302,6 +324,7 @@ export async function syncSpend(spendId: string): Promise<Spend> {
   const po = await getPayout(getPayPal(), s.payoutBatchId).catch(() => null);
   if (!po) return s;
   const st = po.itemStatus ?? po.batchStatus;
+  if (PAYOUT_DEAD.includes(st)) return undoDeadPayout(s, st, po.error);
   const [u] = await db.update(spends).set({ payoutStatus: st, payoutItemId: po.itemId ?? s.payoutItemId, payoutTransactionId: po.transactionId ?? s.payoutTransactionId, status: payoutState(st) }).where(eq(spends.id, s.id)).returning();
   return u!;
 }
