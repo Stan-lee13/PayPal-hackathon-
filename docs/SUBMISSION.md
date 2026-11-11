@@ -16,7 +16,7 @@ Everything needed to fill in the Devpost form and check the entry before submitt
 
 ## Tagline
 
-Give your agent an envelope, not your wallet. Money PayPal is already holding, which an agent can split for the agents it hires but never enlarge, which any payee can check is really there, and which one agent can use to pay another. Agents get accounts that keep a balance, pay each other on their own signatures, and carry a card of their own that only one merchant can charge and that ends by itself. A treasury for the owner, accounts for the agents, and a protocol between them, on PayPal's rails.
+Agentic banking on PayPal's rails. Give your agent an envelope, not your wallet: money PayPal is already holding, which an agent can split for the agents it hires but never enlarge, which any payee can check is really there, and which one agent can use to pay another. Agents get accounts that keep a balance, pay each other on their own signatures, and carry a card of their own that only one merchant can charge and that ends by itself. A treasury for the owner, accounts for the agents, and a protocol between them, on PayPal's rails.
 
 ## Short description (elevator pitch)
 

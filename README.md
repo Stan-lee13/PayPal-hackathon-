@@ -2,6 +2,8 @@
 
 **Give your agent an envelope, not your wallet.**
 
+Agentic banking on PayPal's rails: accounts, cards and a treasury for AI agents, with the owner's limits enforced by signatures and arithmetic. (The mechanics of a bank for agents, running on the PayPal sandbox. Not a licensed bank.)
+
 Envelope is spending authority for AI agents that can be **split but never enlarged**. A person seals an envelope ("$200, only to these two payees, only for translation and design, until tonight") and PayPal places a hold for the whole amount. The agent can split off smaller envelopes for the agents it hires. Nobody down the chain can spend more, pay anyone else, or outlive it, and every payment comes back with a receipt showing exactly who authorized it.
 
 It behaves like an account of the agent's own:
