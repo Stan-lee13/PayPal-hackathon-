@@ -24,6 +24,7 @@ import { formatMoney } from "../money";
 import * as E from "../envelope/core";
 import { getPayPal, PayPalApiError, paypalMode } from "../paypal/client";
 import { authorizeHold, capturePart, getAuthorization, getCapture, getPayout, payout, refundCapture, voidAuthorization } from "../paypal/payments";
+import { openJwk, sealJwk } from "../keystore";
 import { audit } from "../services/audit";
 
 export const MAX_ROOT_MINOR = 1_000_00; // demo ceiling: $1,000 per envelope
@@ -53,10 +54,10 @@ export async function gatewayKey(): Promise<E.KeyPair> {
   let row = await db.query.gatewayKeys.findFirst({ where: eq(gatewayKeys.id, "default") });
   if (!row) {
     const kp = await E.generateKeyPair();
-    await db.insert(gatewayKeys).values({ id: "default", publicKey: kp.publicKey, privateJwk: await E.exportPrivateJwk(kp.privateKey) }).onConflictDoNothing();
+    await db.insert(gatewayKeys).values({ id: "default", publicKey: kp.publicKey, privateJwk: await sealJwk(await E.exportPrivateJwk(kp.privateKey)) }).onConflictDoNothing();
     row = (await db.query.gatewayKeys.findFirst({ where: eq(gatewayKeys.id, "default") }))!;
   }
-  cachedKey = await E.importPrivateJwk(row.privateJwk);
+  cachedKey = await E.importPrivateJwk(await openJwk(row.privateJwk));
   return cachedKey;
 }
 /** Tests switch databases; forget the cached key. */

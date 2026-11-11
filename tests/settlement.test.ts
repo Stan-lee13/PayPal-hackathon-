@@ -144,3 +144,36 @@ d("an owner's books are shown only to the owner (handler level)", async () => {
     expect((ok.body as { totals: { open: number } }).totals.open).toBe(1);
   });
 });
+
+d("private keys at rest", async () => {
+  const { getDb } = await import("../lib/db");
+  const schema = await import("../lib/db/schema");
+  const { sql } = await import("drizzle-orm");
+  const G = await import("../lib/gateway/service");
+
+  beforeEach(async () => {
+    G.forgetGatewayKey();
+    await getDb().execute(sql`truncate table audit_log, spends, blocks, roots, demo_keys, gateway_keys, emulator_state, rate_limits, accounts, ledger, transfers, cards restart identity cascade`);
+  });
+
+  it("with a secret set, the gateway's signing key is not readable from the database alone", async () => {
+    process.env.ENVELOPE_KEY_SECRET = "a-test-secret-of-enough-length-000";
+    try {
+      const key = await G.gatewayKey();
+      const row = (await getDb().select().from(schema.gatewayKeys))[0]!;
+      expect((row.privateJwk as JsonWebKey).d).toBeUndefined();
+      expect(JSON.stringify(row.privateJwk)).toContain("A256GCM");
+      // the same secret opens it again and it is the same key
+      G.forgetGatewayKey();
+      expect((await G.gatewayKey()).publicKey).toBe(key.publicKey);
+      const sig = await E.signDetached((await G.gatewayKey()).privateKey, "test/1", { a: 1 });
+      expect(await E.verifyDetached(key.publicKey, "test/1", { a: 1 }, sig)).toBe(true);
+      // another secret, or none, does not
+      G.forgetGatewayKey();
+      process.env.ENVELOPE_KEY_SECRET = "a-different-secret-of-enough-length";
+      await expect(G.gatewayKey()).rejects.toThrow(/does not open/);
+      delete process.env.ENVELOPE_KEY_SECRET;
+      await expect(G.gatewayKey()).rejects.toThrow(/not set/);
+    } finally { delete process.env.ENVELOPE_KEY_SECRET; G.forgetGatewayKey(); }
+  });
+});

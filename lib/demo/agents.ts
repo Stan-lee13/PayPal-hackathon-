@@ -9,6 +9,7 @@ import { getDb } from "../db";
 import { accounts, demoKeys, spends } from "../db/schema";
 import { UserFacingError } from "../errors";
 import * as E from "../envelope/core";
+import { openJwk, sealJwk } from "../keystore";
 import * as B from "../gateway/bank";
 import * as G from "../gateway/service";
 
@@ -27,10 +28,10 @@ async function globalKey(label: string) {
   let row = await db.query.demoKeys.findFirst({ where });
   if (!row) {
     const kp = await E.generateKeyPair();
-    await db.insert(demoKeys).values({ id: E.randomId("dk"), rootId: GLOBAL, label, publicKey: kp.publicKey, privateJwk: await E.exportPrivateJwk(kp.privateKey) }).onConflictDoNothing();
+    await db.insert(demoKeys).values({ id: E.randomId("dk"), rootId: GLOBAL, label, publicKey: kp.publicKey, privateJwk: await sealJwk(await E.exportPrivateJwk(kp.privateKey)) }).onConflictDoNothing();
     row = (await db.query.demoKeys.findFirst({ where }))!;
   }
-  return { row, key: await E.importPrivateJwk(row.privateJwk) };
+  return { row, key: await E.importPrivateJwk(await openJwk(row.privateJwk)) };
 }
 /** What Bea lets translator-agent pay out of its balance in one go. */
 const TRANSLATOR_CAP = 3000;
@@ -127,7 +128,7 @@ export async function createDemoAgents(draftId: string): Promise<{ opsPublicKey:
   let ops = "";
   for (const label of DEMO_LABELS) {
     const kp = await E.generateKeyPair();
-    await db.insert(demoKeys).values({ id: E.randomId("dk"), rootId: draftId, label, publicKey: kp.publicKey, privateJwk: await E.exportPrivateJwk(kp.privateKey) }).onConflictDoNothing();
+    await db.insert(demoKeys).values({ id: E.randomId("dk"), rootId: draftId, label, publicKey: kp.publicKey, privateJwk: await sealJwk(await E.exportPrivateJwk(kp.privateKey)) }).onConflictDoNothing();
     if (label === "ops-agent") ops = (await db.query.demoKeys.findFirst({ where: and(eq(demoKeys.rootId, draftId), eq(demoKeys.label, label)) }))!.publicKey;
   }
   return { opsPublicKey: ops };
@@ -147,7 +148,7 @@ export async function attachDemoAgents(draftId: string, chain: E.Envelope) {
 async function agent(rootId: string, label: Label) {
   const row = await getDb().query.demoKeys.findFirst({ where: and(eq(demoKeys.rootId, rootId), eq(demoKeys.label, label)) });
   if (!row) throw new UserFacingError("This envelope has no built-in demo agents (it was sealed for an external agent).", 409);
-  return { row, key: await E.importPrivateJwk(row.privateJwk), chain: row.chain as E.Envelope | null };
+  return { row, key: await E.importPrivateJwk(await openJwk(row.privateJwk)), chain: row.chain as E.Envelope | null };
 }
 const saveChain = (rootId: string, label: Label, chain: E.Envelope) => getDb().update(demoKeys).set({ chain }).where(and(eq(demoKeys.rootId, rootId), eq(demoKeys.label, label)));
 
@@ -347,7 +348,7 @@ export async function runTool(rootId: string, label: ToolAgent, tool: string, ar
 export async function demoHello(agentKey: string, p: { amountMinor: number; payee: string; purpose: string }): Promise<E.SignedHello> {
   const row = await getDb().query.demoKeys.findFirst({ where: eq(demoKeys.publicKey, agentKey) });
   if (!row?.chain) throw new UserFacingError("This agent keeps its own key, so only it can introduce itself. Use: npx tsx scripts/agent.ts hello", 409);
-  return E.signHello(row.chain as E.Envelope, await E.importPrivateJwk(row.privateJwk), { amount: p.amountMinor, payee: p.payee, purpose: p.purpose });
+  return E.signHello(row.chain as E.Envelope, await E.importPrivateJwk(await openJwk(row.privateJwk)), { amount: p.amountMinor, payee: p.payee, purpose: p.purpose });
 }
 export async function isDemoAgent(agentKey: string): Promise<boolean> {
   const row = await getDb().query.demoKeys.findFirst({ where: eq(demoKeys.publicKey, agentKey) });
