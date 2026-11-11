@@ -92,7 +92,7 @@ export type Authority = {
   verified: boolean;
   violations: E.Violation[];
   /** One line per level, owner's envelope first: what is left there once spending and reservations are counted. Null when the gateway could not be asked. */
-  path: Array<{ id: string; label: string; limitMinor: number; leftMinor: number | null; revoked: boolean }>;
+  path: Array<{ id: string; label: string; limitMinor: number; leftMinor: number | null; revoked: boolean; /** False when the gateway has not been told about this envelope yet (a split that was never announced or used). */ known: boolean }>;
   /** The most this agent could spend in total right now: the smallest amount left at any level. Null when the gateway could not be asked. */
   availableMinor: number | null;
   rootStatus: "ACTIVE" | "CLOSED" | null;
@@ -223,7 +223,7 @@ export class Agent extends Party {
     try { state = await this.gateway.envelope(chain[0]!.body.id); } catch (e) { if (!(e instanceof EnvelopeError) || (e.kind !== "network" && e.status !== 404)) throw e; }
     const path = chain.map((b) => {
       const row = state?.blocks.find((x) => x.id === b.body.id);
-      return { id: b.body.id, label: b.body.holderLabel, limitMinor: b.body.caps.limit, leftMinor: row ? row.caps.limit - row.spentMinor - row.reservedMinor : state ? b.body.caps.limit : null, revoked: Boolean(row?.revokedAt) };
+      return { id: b.body.id, label: b.body.holderLabel, limitMinor: b.body.caps.limit, leftMinor: row ? row.caps.limit - row.spentMinor - row.reservedMinor : state ? b.body.caps.limit : null, revoked: Boolean(row?.revokedAt), known: Boolean(row) };
     });
     const rootStatus = state?.root.status ?? null;
     const availableMinor = state ? Math.max(0, Math.min(...path.map((p) => p.leftMinor ?? 0))) : null;
@@ -288,7 +288,7 @@ export class Agent extends Party {
    */
   async setAside(p: { amount: Amount; payee: string; purpose: string; memo?: string; minutes?: number; releaseBy?: string | { publicKey: string }; note?: string }): Promise<{ promiseId: string; expiresAt: string; note: PromiseNote; token: string; outcome: PromiseOutcome }> {
     const minutes = p.minutes === undefined ? 15 : p.minutes;
-    if (typeof minutes !== "number" || !(minutes >= 1 && minutes <= 60)) throw refuseLocally("minutes must be from 1 to 60.");
+    if (typeof minutes !== "number" || !(minutes >= 0.5 && minutes <= 60)) throw refuseLocally("minutes must be from 0.5 (thirty seconds) to 60.");
     const signed = await E.signPromise(this.held(), this.key, {
       amount: toMinor(p.amount), payee: text(p.payee, "payee", 254), purpose: text(p.purpose, "purpose", 60), memo: optional(p.memo, "memo", 200),
       ttl: Math.round(minutes * 60), releaseBy: p.releaseBy === undefined ? undefined : publicKeyOf(p.releaseBy, "releaseBy"),

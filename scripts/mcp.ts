@@ -1,68 +1,184 @@
 /**
- * Envelope as MCP tools for one agent (stdio, JSON-RPC 2.0, no dependencies).
+ * Envelope as MCP tools for one agent (stdio, JSON-RPC 2.0), built on the SDK in ../sdk.
  *
  * The server acts as a single agent: it holds that agent's private key and envelope in ./.envelope/
  * (the same files the CLI uses) and can only do what that envelope allows. It has no tool to seal a
- * root envelope or close one: authority comes from a person, never from the agent.
+ * root envelope or close one: authority comes from a person, never from the agent. It never holds
+ * PayPal credentials; only the gateway talks to PayPal.
  *
  *   ENVELOPE_AGENT=ops-agent GATEWAY=http://localhost:3000 npx tsx scripts/mcp.ts
  *
  * Claude Code:  claude mcp add envelope -e ENVELOPE_AGENT=ops-agent -- npx tsx scripts/mcp.ts
+ *
+ * Tools come in two groups. READ tools look and check; they move nothing. ACT tools sign a request
+ * with the agent's key; the gateway decides whether it is allowed. Set ENVELOPE_MCP_READ_ONLY=1 to
+ * serve the read tools only.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
-import * as E from "../lib/envelope/core";
+import { Agent, EnvelopeError, Gateway, checkIntroduction, getReceipt, protocol as E, type Card, type GatewayReason, type SpendOutcome, type TransferOutcome } from "../sdk/src";
 
 const GATEWAY = (process.env.GATEWAY ?? "http://localhost:3000").replace(/\/$/, "");
 const DIR = process.env.ENVELOPE_DIR ?? ".envelope";
 const AGENT = process.env.ENVELOPE_AGENT ?? "";
+const READ_ONLY = process.env.ENVELOPE_MCP_READ_ONLY === "1";
 if (!/^[a-z0-9][a-z0-9-]{0,40}$/i.test(AGENT)) { console.error("Set ENVELOPE_AGENT to this agent's name (letters, digits, hyphens)."); process.exit(2); }
 mkdirSync(DIR, { recursive: true });
+const gateway = new Gateway(GATEWAY);
 
 class ToolError extends Error {}
+/** The gateway said no on the merits. The text is for the model; the call is marked as an error. */
+class Refused extends Error {}
 const usd = (n: number) => `$${(n / 100).toFixed(2)}`;
 const safeName = (s: unknown) => { if (typeof s !== "string" || !/^[a-z0-9][a-z0-9-]{0,40}$/i.test(s)) throw new ToolError("Agent names use letters, digits and hyphens."); return s; };
-const cents = (v: unknown, field: string) => { if (typeof v !== "number" || !Number.isFinite(v) || v <= 0 || Math.round(v * 100) !== Number((v * 100).toFixed(6))) throw new ToolError(`${field} must be a positive dollar amount with at most two decimals.`); return Math.round(v * 100); };
+const cents = (v: unknown, field: string) => { if (typeof v !== "number" || !Number.isFinite(v) || v <= 0 || Math.round(v * 100) !== Number((v * 100).toFixed(6))) throw new ToolError(`${field} must be a positive dollar amount with at most two decimals.`); return { minor: Math.round(v * 100) }; };
 const strings = (v: unknown, field: string) => { if (v === undefined) return undefined; if (!Array.isArray(v) || v.some((x) => typeof x !== "string")) throw new ToolError(`${field} must be a list of strings.`); return v as string[]; };
 const text = (v: unknown, field: string, max: number) => { if (typeof v !== "string" || !v.trim() || v.length > max) throw new ToolError(`${field} is required (up to ${max} characters).`); return v.trim(); };
+const reasonLines = (reasons: GatewayReason[] | undefined) => (reasons ?? []).map((x) => `  ${x.code}: ${x.meaning} (${x.detail})`);
+const paypalLine = (p: NonNullable<SpendOutcome["paypal"]>) => `PayPal capture ${p.captureId}, ${p.payoutStatus === "HELD_IN_ACCOUNT" ? "credited to the payee agent's balance (no payout)" : `payout ${p.payoutBatchId} (${p.payoutStatus ?? "pending"})`}`;
 
-async function key(name: string, create: boolean): Promise<E.KeyPair> {
-  const f = `${DIR}/${name}.key.json`;
-  if (existsSync(f)) return E.importPrivateJwk(JSON.parse(readFileSync(f, "utf8")));
-  if (!create) throw new ToolError(`No key for "${name}" on this machine.`);
-  const kp = await E.generateKeyPair();
-  writeFileSync(f, JSON.stringify(await E.exportPrivateJwk(kp.privateKey)), { mode: 0o600 });
-  return kp;
-}
+const keyFile = (name: string) => `${DIR}/${name}.key.json`;
 const envFile = (name: string) => `${DIR}/${name}.envelope.json`;
-function envelope(): E.Envelope {
-  if (!existsSync(envFile(AGENT))) throw new ToolError(`${AGENT} holds no envelope yet. Someone has to seal one for it, or split one off for it.`);
-  return JSON.parse(readFileSync(envFile(AGENT), "utf8"));
+/** This agent, read from disk for each call: another process may have split a new envelope for it since the last one. */
+async function me(needEnvelope = false): Promise<Agent> {
+  if (!existsSync(keyFile(AGENT))) throw new ToolError(`No key for "${AGENT}" on this machine.`);
+  const envelope = existsSync(envFile(AGENT)) ? (JSON.parse(readFileSync(envFile(AGENT), "utf8")) as E.Envelope) : null;
+  if (needEnvelope && !envelope) throw new ToolError(`${AGENT} holds no envelope yet. Someone has to seal one for it, or split one off for it.`);
+  return Agent.fromJSON({ label: AGENT, key: JSON.parse(readFileSync(keyFile(AGENT), "utf8")), envelope }, { gateway });
 }
-async function post(path: string, body: unknown) {
-  const r = await fetch(`${GATEWAY}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-  return { status: r.status, json: (await r.json().catch(() => ({}))) as Record<string, any> }; // eslint-disable-line @typescript-eslint/no-explicit-any
+/** The public key of another agent on this machine, creating its key if it has none. Only the public half is used here. */
+async function publicKeyFor(name: string): Promise<string> {
+  if (existsSync(keyFile(name))) return (await E.importPrivateJwk(JSON.parse(readFileSync(keyFile(name), "utf8")))).publicKey;
+  const kp = await E.generateKeyPair();
+  writeFileSync(keyFile(name), JSON.stringify(await E.exportPrivateJwk(kp.privateKey)), { mode: 0o600 });
+  return kp.publicKey;
 }
 const describe = (c: E.Caps) =>
   `up to ${usd(c.limit)} in total, at most ${usd(c.perPayment)} per payment, payees: ${c.payees ? c.payees.join(", ") : "any"}, purposes: ${c.purposes ? c.purposes.join(", ") : "any"}, expires ${c.notAfter}, ${c.splits > 0 ? `may be split ${c.splits} more time(s)` : "may not be split"}`;
 
+/**
+ * Run an SDK call that the gateway answers with a verdict. A verdict that means "this did not
+ * happen" comes back as `refused` with the gateway's own answer; anything else unexpected is a ToolError.
+ */
+async function attempt<T>(call: () => Promise<T>, prefix = "Gateway error"): Promise<{ ok: T; refused?: undefined } | { ok?: undefined; refused: { outcome: string; reasons: GatewayReason[]; body: Record<string, unknown> } }> {
+  try { return { ok: await call() }; } catch (e) {
+    if (!(e instanceof EnvelopeError)) throw e;
+    if (e.kind === "local") throw new ToolError(e.message);
+    if (e.outcome) return { refused: { outcome: e.outcome, reasons: e.reasons, body: (e.body ?? {}) as Record<string, unknown> } };
+    throw new ToolError(`${prefix}: ${e.kind === "network" ? e.message : e.detail}`);
+  }
+}
+/** The lines every paid-or-not answer shares. */
+function settled(head: string, o: { paypal: SpendOutcome["paypal"]; spendId: string | null }): string {
+  const lines = [head];
+  if (o.paypal) lines.push(paypalLine(o.paypal));
+  lines.push(`Receipt: ${GATEWAY}/r/${o.spendId}`);
+  return lines.join("\n");
+}
+
 type Args = Record<string, unknown>;
-const TOOLS: Array<{ name: string; description: string; inputSchema: object; run: (a: Args) => Promise<string> }> = [
+type Tool = { name: string; description: string; inputSchema: object; run: (a: Args) => Promise<string> };
+const NONE = { type: "object", properties: {}, additionalProperties: false };
+
+// ─────────────────────────────────────────── READ: look and check; nothing moves ───────────────────────────────────────────
+const READ_TOOLS: Tool[] = [
   {
     name: "envelope_show",
     description: "Show the spending envelope this agent holds: its limits, allowed payees and purposes, expiry, how much is left at every level above it, and whether it has been revoked. Call this before paying or splitting.",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    inputSchema: NONE,
     async run() {
-      const chain = envelope();
-      const leaf = chain[chain.length - 1]!.body;
-      const lines = [`${AGENT} holds ${leaf.id} (${chain.length === 1 ? "root" : `under ${chain.slice(0, -1).map((b) => b.body.holderLabel).join(" → ")}`}): ${describe(leaf.caps)}`];
-      const r = (await fetch(`${GATEWAY}/api/envelopes/${chain[0]!.body.id}`).then((x) => x.json()).catch(() => null)) as { blocks?: Array<{ id: string; holderLabel: string; caps: E.Caps; spentMinor: number; reservedMinor: number; revokedAt: string | null }>; root?: { status: string } } | null;
-      if (!r?.blocks) lines.push("The gateway could not be reached, so remaining budgets are unknown.");
-      else for (const b of chain) { const row = r.blocks.find((x) => x.id === b.body.id); if (row) lines.push(`  ${row.holderLabel}: ${usd(row.caps.limit - row.spentMinor - row.reservedMinor)} left of ${usd(row.caps.limit)}${row.revokedAt ? " (REVOKED)" : ""}`); }
-      if (r?.root && r.root.status !== "ACTIVE") lines.push("The root envelope is CLOSED: nothing more can be spent.");
+      const agent = await me(true);
+      const a = await agent.authority();
+      const chain = agent.envelope!;
+      const lines = [`${AGENT} holds ${a.envelope} (${chain.length === 1 ? "root" : `under ${chain.slice(0, -1).map((b) => b.body.holderLabel).join(" → ")}`}): ${describe(a.caps)}`];
+      if (a.rootStatus === null) lines.push("The gateway could not be reached, so remaining budgets are unknown.");
+      else for (const p of a.path) if (p.known) lines.push(`  ${p.label}: ${usd(p.leftMinor ?? 0)} left of ${usd(p.limitMinor)}${p.revoked ? " (REVOKED)" : ""}`);
+      if (a.rootStatus === "CLOSED") lines.push("The root envelope is CLOSED: nothing more can be spent.");
       return lines.join("\n");
     },
   },
+  {
+    name: "envelope_balance",
+    description: "Show the balance of THIS agent's own account (money it has earned and kept), whether its owner has frozen it, the most it may pay at once, and its recent ledger. Call this before sending money from the balance.",
+    inputSchema: NONE,
+    async run() {
+      const p = await (await me()).profile();
+      if (!p?.balance) return `${AGENT} has no account that keeps a balance. Its owner opens one with: agent.ts open-account --hold.`;
+      const b = p.balance;
+      return [`Balance ${usd(b.minor)}${b.frozen ? " (FROZEN by the owner: nothing can leave)" : ""}${b.perPaymentMinor ? `; at most ${usd(b.perPaymentMinor)} per payment` : ""}. You are paid as ${p.receives!.payee}.`, ...b.ledger.slice(0, 12).map((l) => `${l.deltaMinor < 0 ? "-" : "+"}${usd(Math.abs(l.deltaMinor))} ${l.kind} ${l.counterparty ?? ""} → ${usd(l.balanceAfterMinor)}`)].join("\n");
+    },
+  },
+  {
+    name: "envelope_card_list",
+    description: "List the cards THIS agent has issued: which merchant each is locked to, its limits, how many charges have been used, and whether it is active, ended, cancelled or expired. Use it to decide whether a subscription should be cancelled before the next charge.",
+    inputSchema: NONE,
+    async run() {
+      const list = await (await me()).cards();
+      if (!list.length) return `${AGENT} has issued no cards.`;
+      return list.map((c: Card) => `${c.id} · ${c.number} · ${c.state} · ${c.label} → ${c.merchant.label}: ${usd(c.perChargeMinor)} a charge, ${c.charges} of ${c.maxCharges} used (${usd(c.chargedMinor)})${c.nextChargeFrom ? `, next charge allowed from ${c.nextChargeFrom}` : ""}, valid until ${c.notAfter}`).join("\n");
+    },
+  },
+  {
+    name: "envelope_introduce",
+    description: "Introduce this agent to a payee before any work is done. Returns a token the payee (or its agent) can check to learn who stands behind this agent and whether a payment of this size to them would go through. Moves no money and cannot be reused as a payment.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        payee: { type: "string", description: "The payee's PayPal email" },
+        amount: { type: "number", description: "The amount you expect to pay, in dollars" },
+        purpose: { type: "string", description: "One of the envelope's allowed purposes" },
+      },
+      required: ["payee", "amount", "purpose"],
+      additionalProperties: false,
+    },
+    async run(a) {
+      return (await (await me(true)).introduce({ amount: cents(a.amount, "amount"), payee: text(a.payee, "payee", 254), purpose: text(a.purpose, "purpose", 60) })).token;
+    },
+  },
+  {
+    name: "envelope_check_agent",
+    description: "Check an introduction token another agent gave you before you do work for it. The gateway confirms the agent controls its key, names who stands behind it back to a person, asks PayPal whether the hold is still there, and says whether the payment it proposed would be accepted right now. The answer is signed and expires after five minutes.",
+    inputSchema: { type: "object", properties: { token: { type: "string", description: "The introduction token" } }, required: ["token"], additionalProperties: false },
+    async run(a) {
+      const token = text(a.token, "token", 20000);
+      let hello: E.SignedHello;
+      try { hello = JSON.parse(new TextDecoder().decode(E.unb64u(token))); } catch { throw new ToolError("That is not an introduction token."); }
+      let c: Awaited<ReturnType<typeof checkIntroduction>>;
+      try { c = await checkIntroduction(gateway, hello); } catch (e) { throw new ToolError(`Gateway: ${e instanceof EnvelopeError ? (e.kind === "network" ? e.message : e.detail) : (e as Error).message}`); }
+      const s = c.standing;
+      return [
+        `${s.agentLabel}, account ${s.account}`,
+        `Stands behind it: ${s.sponsors.map((x) => `${x.label} (${x.role})`).join(" → ")}`,
+        `PayPal hold ${s.paypal.authorizationId ?? "none"}: ${s.paypal.status ?? "not confirmed"}${s.paypal.unusedMinor !== null ? `, ${usd(s.paypal.unusedMinor)} unused` : ""} (${s.paypal.mode})`,
+        `Asked: ${usd(s.ask.amount)} to ${s.ask.payee} for ${s.ask.purpose}`,
+        s.good ? `GOOD: it can pay up to ${usd(s.availableMinor)} in one payment right now.` : `NOT GOOD: this payment would be refused. ${s.reasons.map((x) => `${x.code} (${x.detail})`).join("; ")}`,
+        `Gateway signature: ${c.signature.ok ? "valid" : "INVALID, do not rely on this"}. Valid until ${s.validUntil}.`,
+      ].join("\n");
+    },
+  },
+  {
+    name: "envelope_receipt",
+    description: "Look up a payment by its id: where it stands with PayPal right now, and whether its receipt holds up. The gateway compares the receipt with PayPal's own records, and every signature on it (the owner's, each agent's, the gateway's) is checked again on this machine. UNCLAIMED or PAYOUT_PENDING means the payee has NOT received the money yet.",
+    inputSchema: { type: "object", properties: { spend: { type: "string", description: "The payment id (sp_… or pr_…), as printed after a payment" } }, required: ["spend"], additionalProperties: false },
+    async run(a) {
+      let r: Awaited<ReturnType<typeof getReceipt>>;
+      try { r = await getReceipt(gateway, text(a.spend, "spend", 60)); } catch (e) { throw new ToolError(`Gateway: ${e instanceof EnvelopeError ? (e.kind === "network" ? e.message : e.detail) : (e as Error).message}`); }
+      const local = await r.verify();
+      const req = r.receipt.request;
+      return [
+        `${r.spend.status}: ${usd(req.amount)} to ${req.payee} for ${req.purpose}${r.spend.status === "PAID" ? "" : " (not delivered to the payee yet)"}`,
+        `PayPal hold ${r.receipt.paypal.authorizationId}, capture ${r.receipt.paypal.captureId}${r.receipt.paypal.payoutBatchId ? `, payout ${r.receipt.paypal.payoutBatchId} (${r.spend.payoutStatus ?? "pending"})` : ", no payout: credited to the payee agent's balance"} (${r.receipt.paypal.mode})`,
+        `Checked against PayPal just now: ${r.paypal.ok ? "all checks pass" : `MISMATCH: ${r.paypal.checks.filter((c) => !c.ok).map((c) => c.name).join("; ")}`}`,
+        `Signatures checked on this machine: ${local.ok ? "all valid" : `INVALID: ${local.checks.filter((c) => !c.ok).map((c) => c.name).join("; ")}`}`,
+        `Authorized by: ${r.receipt.chain.map((c) => c.holderLabel).join(" → ")}, under the owner key ${E.fingerprint(r.receipt.principal)}`,
+        `${GATEWAY}/r/${r.spend.id}`,
+      ].join("\n");
+    },
+  },
+];
+
+// ─────────────────────────────────────────── ACT: sign a request; the gateway decides ───────────────────────────────────────────
+const ACT_TOOLS: Tool[] = [
   {
     name: "envelope_split",
     description: "Give another agent a smaller envelope cut from this agent's own. It can only narrow: a lower total, a lower per-payment cap, a subset of the payees and purposes, an earlier expiry. Give the least the other agent needs. The other agent's key is created on this machine if it has none.",
@@ -83,25 +199,17 @@ const TOOLS: Array<{ name: string; description: string; inputSchema: object; run
     async run(a) {
       const toName = safeName(a.to);
       if (toName === AGENT) throw new ToolError("An agent cannot split an envelope for itself.");
-      const me = await key(AGENT, false);
-      const to = await key(toName, true);
-      const mine = envelope();
-      const parent = mine[mine.length - 1]!.body.caps;
+      const agent = await me(true);
       const limit = cents(a.limit, "limit");
-      let chain: E.Envelope;
+      const perPayment = a.per_payment === undefined ? undefined : cents(a.per_payment, "per_payment");
+      const payees = strings(a.payees, "payees"), purposes = strings(a.purposes, "purposes");
+      const to = { publicKey: await publicKeyFor(toName), label: toName };
+      let s: Awaited<ReturnType<Agent["split"]>>;
       try {
-        chain = await E.split(mine, me, { publicKey: to.publicKey, label: toName }, {
-          currency: parent.currency, limit,
-          perPayment: a.per_payment === undefined ? Math.min(limit, parent.perPayment) : cents(a.per_payment, "per_payment"),
-          payees: strings(a.payees, "payees") ?? parent.payees,
-          purposes: strings(a.purposes, "purposes") ?? parent.purposes,
-          notAfter: a.hours === undefined ? parent.notAfter : new Date(Date.now() + Number(a.hours) * 3600_000).toISOString(),
-          splits: a.splits === undefined ? 0 : Number(a.splits),
-        });
+        s = await agent.split({ to, limit, perPayment, payees, purposes, hours: a.hours === undefined ? undefined : Number(a.hours), splits: a.splits === undefined ? 0 : Number(a.splits) });
       } catch (e) { throw new ToolError(`Refused: ${(e as Error).message}`); }
-      writeFileSync(envFile(toName), JSON.stringify(chain));
-      const r = await post("/api/gateway/announce", { chain });
-      return `${AGENT} gave ${toName} a sub-envelope: ${describe(chain[chain.length - 1]!.body.caps)}\n${r.status === 200 ? "Announced to the gateway, so the owner can see and revoke it." : `Not announced (${r.json.error ?? r.status}); it is still valid.`}`;
+      writeFileSync(envFile(toName), JSON.stringify(s.chain));
+      return `${AGENT} gave ${toName} a sub-envelope: ${describe(s.chain[s.chain.length - 1]!.body.caps)}\n${s.announced ? "Announced to the gateway, so the owner can see and revoke it." : `Not announced (${s.announceError}); it is still valid.`}`;
     },
   },
   {
@@ -120,15 +228,14 @@ const TOOLS: Array<{ name: string; description: string; inputSchema: object; run
       additionalProperties: false,
     },
     async run(a) {
-      const me = await key(AGENT, false);
-      const signed = await E.signSpend(envelope(), me, { amount: cents(a.amount, "amount"), payee: text(a.payee, "payee", 254), purpose: text(a.purpose, "purpose", 60), memo: typeof a.memo === "string" ? a.memo.slice(0, 200) : undefined });
-      const r = await post("/api/gateway/spend", { signed, note: typeof a.note === "string" ? a.note.slice(0, 500) : undefined });
-      if (r.json.status === "DENIED") return ["DENIED. Nothing was paid.", ...(r.json.reasons ?? []).map((x: { code: string; meaning: string; detail: string }) => `  ${x.code}: ${x.meaning} (${x.detail})`)].join("\n");
-      if (!r.json.status) throw new ToolError(`Gateway error: ${r.json.error ?? r.status}`);
-      const lines = [`${r.json.status}: ${usd(signed.request.amount)} to ${signed.request.payee}${r.json.duplicate ? " (already done; not paid twice)" : ""}`];
-      if (r.json.paypal) lines.push(`PayPal capture ${r.json.paypal.captureId}, ${r.json.paypal.payoutStatus === "HELD_IN_ACCOUNT" ? "credited to the payee agent's balance (no payout)" : `payout ${r.json.paypal.payoutBatchId} (${r.json.paypal.payoutStatus ?? "pending"})`}`);
-      lines.push(`Receipt: ${GATEWAY}/r/${r.json.spendId}`);
-      return lines.join("\n");
+      const amount = cents(a.amount, "amount"), payee = text(a.payee, "payee", 254);
+      const agent = await me(true);
+      const r = await attempt(() => agent.pay({ amount, payee, purpose: text(a.purpose, "purpose", 60), memo: typeof a.memo === "string" ? a.memo.slice(0, 200) : undefined, note: typeof a.note === "string" ? a.note.slice(0, 500) : undefined }));
+      if (r.refused?.outcome === "DENIED") throw new Refused(["DENIED. Nothing was paid.", ...reasonLines(r.refused.reasons)].join("\n"));
+      const o = r.refused ? (r.refused.body as unknown as SpendOutcome) : r.ok;
+      const out = settled(`${o.status}: ${usd(amount.minor)} to ${payee.toLowerCase()}${o.duplicate ? " (already done; not paid twice)" : ""}`, o);
+      if (r.refused) throw new Refused(out);
+      return out;
     },
   },
   {
@@ -150,13 +257,11 @@ const TOOLS: Array<{ name: string; description: string; inputSchema: object; run
     },
     async run(a) {
       const minutes = typeof a.minutes === "number" && a.minutes >= 1 && a.minutes <= 60 ? a.minutes : 15;
-      const signed = await E.signPromise(envelope(), await key(AGENT, false), { amount: cents(a.amount, "amount"), payee: text(a.payee, "payee", 254), purpose: text(a.purpose, "purpose", 60), memo: typeof a.memo === "string" ? a.memo.slice(0, 200) : undefined, ttl: Math.round(minutes * 60), releaseBy: typeof a.release_by === "string" && /^[A-Za-z0-9_-]{43}$/.test(a.release_by) ? a.release_by : undefined });
-      const r = await post("/api/gateway/promise", { signed, note: typeof a.note === "string" ? a.note.slice(0, 500) : undefined });
-      if (r.json.status !== "PROMISED") {
-        if (!r.json.status) throw new ToolError(`Gateway error: ${r.json.error ?? r.status}`);
-        return [`${r.json.status}. Nothing was set aside.`, ...(r.json.reasons ?? []).map((x: { code: string; meaning: string; detail: string }) => `  ${x.code}: ${x.meaning} (${x.detail})`)].join("\n");
-      }
-      return [`SET ASIDE: ${usd(signed.request.amount)} for ${signed.request.payee} until ${r.json.expiresAt}.`, `Promise id: ${r.json.promiseId}`, `Note for the payee: ${E.b64u(new TextEncoder().encode(JSON.stringify(r.json.note)))}`].join("\n");
+      const amount = cents(a.amount, "amount"), payee = text(a.payee, "payee", 254);
+      const agent = await me(true);
+      const r = await attempt(() => agent.setAside({ amount, payee, purpose: text(a.purpose, "purpose", 60), memo: typeof a.memo === "string" ? a.memo.slice(0, 200) : undefined, minutes, releaseBy: typeof a.release_by === "string" && /^[A-Za-z0-9_-]{43}$/.test(a.release_by) ? a.release_by : undefined, note: typeof a.note === "string" ? a.note.slice(0, 500) : undefined }));
+      if (r.refused) throw new Refused([`${r.refused.outcome}. Nothing was set aside.`, ...reasonLines(r.refused.reasons)].join("\n"));
+      return [`SET ASIDE: ${usd(amount.minor)} for ${payee.toLowerCase()} until ${r.ok.expiresAt}.`, `Promise id: ${r.ok.promiseId}`, `Note for the payee: ${r.ok.token}`].join("\n");
     },
   },
   {
@@ -173,15 +278,16 @@ const TOOLS: Array<{ name: string; description: string; inputSchema: object; run
       additionalProperties: false,
     },
     async run(a) {
-      const action = a.action === "release" ? "release" : "pay";
-      const r = await post("/api/gateway/keep", { signed: await E.signKeep(await key(AGENT, false), text(a.promise, "promise", 60), action), note: typeof a.note === "string" ? a.note.slice(0, 500) : undefined });
-      if (!r.json.status) throw new ToolError(`Gateway error: ${r.json.error ?? r.status}`);
-      if (action === "release") return r.json.status === "LAPSED" ? "Released. The money is back in the envelope." : `Not released: the promise is ${r.json.status}.`;
-      if (["LAPSED", "DENIED", "FAILED"].includes(r.json.status)) return [`${r.json.status}. Nothing was paid.`, ...(r.json.reasons ?? []).map((x: { code: string; meaning: string; detail: string }) => `  ${x.code}: ${x.meaning} (${x.detail})`)].join("\n");
-      const lines = [`${r.json.status}: the promise was paid${r.json.duplicate ? " (already done; not paid twice)" : ""}`];
-      if (r.json.paypal) lines.push(`PayPal capture ${r.json.paypal.captureId}, ${r.json.paypal.payoutStatus === "HELD_IN_ACCOUNT" ? "credited to the payee agent's balance (no payout)" : `payout ${r.json.paypal.payoutBatchId} (${r.json.paypal.payoutStatus ?? "pending"})`}`);
-      lines.push(`Receipt: ${GATEWAY}/r/${r.json.spendId}`);
-      return lines.join("\n");
+      const promise = text(a.promise, "promise", 60), note = typeof a.note === "string" ? a.note.slice(0, 500) : undefined;
+      const agent = await me();
+      if (a.action === "release") {
+        const r = await attempt(() => agent.release(promise, { note }));
+        if (r.refused) throw new Refused(`Not released: the promise is ${r.refused.outcome}.`);
+        return r.ok.released ? "Released. The money is back in the envelope." : `Not released: the promise is ${r.ok.status}.`;
+      }
+      const r = await attempt(() => agent.keep(promise, { note }));
+      if (r.refused) throw new Refused([`${r.refused.outcome}. Nothing was paid.`, ...reasonLines(r.refused.reasons)].join("\n"));
+      return settled(`${r.ok.status}: the promise was paid${r.ok.duplicate ? " (already done; not paid twice)" : ""}`, r.ok);
     },
   },
   {
@@ -198,26 +304,11 @@ const TOOLS: Array<{ name: string; description: string; inputSchema: object; run
       additionalProperties: false,
     },
     async run(a) {
-      const work = typeof a.work === "string" && /^[0-9a-f]{64}$/.test(a.work) ? a.work : "";
-      const r = await post("/api/gateway/accept", { signed: await E.signAccept(await key(AGENT, false), text(a.promise, "promise", 60), { work, note: typeof a.note === "string" ? a.note.slice(0, 200) : undefined }) });
-      if (!r.json.status) throw new ToolError(`Gateway: ${r.json.error ?? r.status}`);
-      if (["LAPSED", "DENIED", "FAILED"].includes(r.json.status)) return [`${r.json.status}. Nothing was paid.`, ...(r.json.reasons ?? []).map((x: { code: string; meaning: string; detail: string }) => `  ${x.code}: ${x.meaning} (${x.detail})`)].join("\n");
-      const lines = [`${r.json.status}: your acceptance released the money${r.json.duplicate ? " (already done; not paid twice)" : ""}`];
-      if (r.json.paypal) lines.push(`PayPal capture ${r.json.paypal.captureId}, ${r.json.paypal.payoutStatus === "HELD_IN_ACCOUNT" ? "credited to the payee agent's balance (no payout)" : `payout ${r.json.paypal.payoutBatchId} (${r.json.paypal.payoutStatus ?? "pending"})`}`);
-      lines.push(`Receipt: ${GATEWAY}/r/${r.json.spendId}`);
-      return lines.join("\n");
-    },
-  },
-  {
-    name: "envelope_balance",
-    description: "Show the balance of THIS agent's own account (money it has earned and kept), whether its owner has frozen it, the most it may pay at once, and its recent ledger. Call this before sending money from the balance.",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false },
-    async run() {
-      const me = await key(AGENT, false);
-      const r = await fetch(`${GATEWAY}/api/agents/${me.publicKey}`).then(async (x) => ({ status: x.status, json: (await x.json().catch(() => ({}))) as Record<string, any> })); // eslint-disable-line @typescript-eslint/no-explicit-any
-      if (r.status !== 200 || !r.json.balance) return `${AGENT} has no account that keeps a balance. Its owner opens one with: agent.ts open-account --hold.`;
-      const b = r.json.balance;
-      return [`Balance ${usd(b.minor)}${b.frozen ? " (FROZEN by the owner: nothing can leave)" : ""}${b.perPaymentMinor ? `; at most ${usd(b.perPaymentMinor)} per payment` : ""}. You are paid as ${r.json.receives.payee}.`, ...b.ledger.slice(0, 12).map((l: { deltaMinor: number; kind: string; counterparty: string | null; balanceAfterMinor: number }) => `${l.deltaMinor < 0 ? "-" : "+"}${usd(Math.abs(l.deltaMinor))} ${l.kind} ${l.counterparty ?? ""} → ${usd(l.balanceAfterMinor)}`)].join("\n");
+      const work = typeof a.work === "string" && /^[0-9a-f]{64}$/.test(a.work) ? a.work : undefined;
+      const agent = await me();
+      const r = await attempt(() => agent.accept(text(a.promise, "promise", 60), { work, note: typeof a.note === "string" ? a.note.slice(0, 200) : undefined }), "Gateway");
+      if (r.refused) throw new Refused([`${r.refused.outcome}. Nothing was paid.`, ...reasonLines(r.refused.reasons)].join("\n"));
+      return settled(`${r.ok.status}: your acceptance released the money${r.ok.duplicate ? " (already done; not paid twice)" : ""}`, r.ok);
     },
   },
   {
@@ -236,14 +327,16 @@ const TOOLS: Array<{ name: string; description: string; inputSchema: object; run
       additionalProperties: false,
     },
     async run(a) {
-      const me = await key(AGENT, false);
+      const agent = await me();
       const amount = cents(a.amount, "amount");
       const memo = typeof a.memo === "string" ? a.memo.slice(0, 200) : undefined;
-      const signed = a.withdraw === true ? await E.signTransfer(me, { kind: "withdraw", amount, memo }) : await E.signTransfer(me, { amount, payee: text(a.payee, "payee", 127), purpose: typeof a.purpose === "string" ? a.purpose.slice(0, 60) : undefined, memo });
-      const r = await post("/api/bank/transfer", { signed });
-      if (r.json.status === "DENIED") return `DENIED. Nothing moved. ${(r.json.reasons ?? []).map((x: { code: string; meaning: string; detail: string }) => `${x.code}: ${x.meaning} (${x.detail})`).join("; ")}`;
-      if (!r.json.status) throw new ToolError(`Gateway error: ${r.json.error ?? r.status}`);
-      return `${r.json.status}: ${usd(amount)} ${a.withdraw === true ? "to the owner" : `to ${signed.request.payee}`}${r.json.duplicate ? " (already done; not moved twice)" : ""}. Balance now ${usd(r.json.balanceMinor)}.${r.json.paypal ? ` PayPal payout ${r.json.paypal.payoutBatchId} (${r.json.paypal.payoutStatus ?? "pending"}).` : r.json.status === "BOOKED" ? " Moved on the ledger; no PayPal call." : ""} Transfer ${r.json.transferId}.`;
+      const payee = a.withdraw === true ? "" : text(a.payee, "payee", 127);
+      const r = await attempt(() => (a.withdraw === true ? agent.withdraw({ amount, memo }) : agent.transfer({ amount, payee, purpose: typeof a.purpose === "string" ? a.purpose.slice(0, 60) : undefined, memo })));
+      if (r.refused?.outcome === "DENIED") throw new Refused(`DENIED. Nothing moved. ${r.refused.reasons.map((x) => `${x.code}: ${x.meaning} (${x.detail})`).join("; ")}`);
+      const o = r.refused ? (r.refused.body as unknown as TransferOutcome) : r.ok;
+      const out = `${o.status}: ${usd(amount.minor)} ${a.withdraw === true ? "to the owner" : `to ${payee.toLowerCase()}`}${o.duplicate ? " (already done; not moved twice)" : ""}. Balance now ${usd(o.balanceMinor ?? 0)}.${o.paypal ? ` PayPal payout ${o.paypal.payoutBatchId} (${o.paypal.payoutStatus ?? "pending"}).` : o.status === "BOOKED" ? " Moved on the ledger; no PayPal call." : ""} Transfer ${o.transferId}.`;
+      if (r.refused) throw new Refused(out);
+      return out;
     },
   },
   {
@@ -263,26 +356,15 @@ const TOOLS: Array<{ name: string; description: string; inputSchema: object; run
       additionalProperties: false,
     },
     async run(a) {
-      const me = await key(AGENT, false);
+      const agent = await me();
       const charges = typeof a.charges === "number" && Number.isInteger(a.charges) && a.charges >= 1 ? a.charges : 1;
       const everyDays = typeof a.every_days === "number" && a.every_days >= 0 ? a.every_days : 30;
       const validDays = typeof a.valid_days === "number" && a.valid_days > 0 ? a.valid_days : everyDays * charges + 7;
-      const signed = await E.signCard(me, { merchant: text(a.merchant, "merchant", 40), label: text(a.label, "label", 60), perCharge: cents(a.per_charge, "per_charge"), maxCharges: charges, every: Math.round(everyDays * 86400), life: Math.round(validDays * 86400) });
-      const r = await post("/api/cards", { signed });
-      if (r.status !== 200) throw new ToolError(`Refused: ${r.json.error ?? r.status}`);
-      return `Card ${r.json.number} (id ${r.json.id}) issued for ${r.json.merchant.label}: at most ${usd(r.json.perChargeMinor)} a charge, ${r.json.maxCharges} charge(s), one per ${everyDays} day(s), valid until ${r.json.notAfter}. Give the merchant the card id. It will end by itself; cancel it earlier with envelope_card_cancel.`;
-    },
-  },
-  {
-    name: "envelope_card_list",
-    description: "List the cards THIS agent has issued: which merchant each is locked to, its limits, how many charges have been used, and whether it is active, ended, cancelled or expired. Use it to decide whether a subscription should be cancelled before the next charge.",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false },
-    async run() {
-      const me = await key(AGENT, false);
-      const r = await fetch(`${GATEWAY}/api/agents/${me.publicKey}`).then(async (x) => ({ status: x.status, json: (await x.json().catch(() => ({}))) as Record<string, any> })); // eslint-disable-line @typescript-eslint/no-explicit-any
-      const list = (r.json.cards ?? []) as Array<{ id: string; number: string; state: string; label: string; merchant: { label: string }; perChargeMinor: number; charges: number; maxCharges: number; chargedMinor: number; nextChargeFrom: string | null; notAfter: string }>;
-      if (!list.length) return `${AGENT} has issued no cards.`;
-      return list.map((c) => `${c.id} · ${c.number} · ${c.state} · ${c.label} → ${c.merchant.label}: ${usd(c.perChargeMinor)} a charge, ${c.charges} of ${c.maxCharges} used (${usd(c.chargedMinor)})${c.nextChargeFrom ? `, next charge allowed from ${c.nextChargeFrom}` : ""}, valid until ${c.notAfter}`).join("\n");
+      const merchant = text(a.merchant, "merchant", 40), label = text(a.label, "label", 60), perCharge = cents(a.per_charge, "per_charge");
+      let c: Card;
+      try { c = await agent.issueCard({ merchant, label, perCharge, maxCharges: charges, everySeconds: Math.round(everyDays * 86400), lifeSeconds: Math.round(validDays * 86400) }); }
+      catch (e) { throw new ToolError(`Refused: ${e instanceof EnvelopeError ? (e.kind === "gateway" ? e.detail : e.message) : (e as Error).message}`); }
+      return `Card ${c.number} (id ${c.id}) issued for ${c.merchant.label}: at most ${usd(c.perChargeMinor)} a charge, ${c.maxCharges} charge(s), one per ${everyDays} day(s), valid until ${c.notAfter}. Give the merchant the card id. It will end by itself; cancel it earlier with envelope_card_cancel.`;
     },
   },
   {
@@ -290,53 +372,22 @@ const TOOLS: Array<{ name: string; description: string; inputSchema: object; run
     description: "Cancel a card THIS agent issued, for example to end a subscription before the next charge. The merchant can never charge it again. It cannot be undone; issue a new card to resubscribe.",
     inputSchema: { type: "object", properties: { card: { type: "string", description: "The card id (card_…)" } }, required: ["card"], additionalProperties: false },
     async run(a) {
-      const r = await post("/api/cards/cancel", { signed: await E.signCardCancel(await key(AGENT, false), text(a.card, "card", 60)) });
-      if (r.status !== 200) throw new ToolError(`Refused: ${r.json.error ?? r.status}`);
-      return `Card ${r.json.number} is cancelled. ${r.json.merchant.label} cannot charge it again. It was charged ${r.json.charges} time(s), ${usd(r.json.chargedMinor)} in all.`;
-    },
-  },
-  {
-    name: "envelope_introduce",
-    description: "Introduce this agent to a payee before any work is done. Returns a token the payee (or its agent) can check to learn who stands behind this agent and whether a payment of this size to them would go through. Moves no money and cannot be reused as a payment.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        payee: { type: "string", description: "The payee's PayPal email" },
-        amount: { type: "number", description: "The amount you expect to pay, in dollars" },
-        purpose: { type: "string", description: "One of the envelope's allowed purposes" },
-      },
-      required: ["payee", "amount", "purpose"],
-      additionalProperties: false,
-    },
-    async run(a) {
-      const hello = await E.signHello(envelope(), await key(AGENT, false), { amount: cents(a.amount, "amount"), payee: text(a.payee, "payee", 254), purpose: text(a.purpose, "purpose", 60) });
-      return E.b64u(new TextEncoder().encode(JSON.stringify(hello)));
-    },
-  },
-  {
-    name: "envelope_check_agent",
-    description: "Check an introduction token another agent gave you before you do work for it. The gateway confirms the agent controls its key, names who stands behind it back to a person, asks PayPal whether the hold is still there, and says whether the payment it proposed would be accepted right now. The answer is signed and expires after five minutes.",
-    inputSchema: { type: "object", properties: { token: { type: "string", description: "The introduction token" } }, required: ["token"], additionalProperties: false },
-    async run(a) {
-      let hello: unknown;
-      try { hello = JSON.parse(new TextDecoder().decode(E.unb64u(text(a.token, "token", 20000)))); } catch { throw new ToolError("That is not an introduction token."); }
-      const r = await post("/api/gateway/standing", { hello });
-      const s = r.json.standing;
-      if (!s) throw new ToolError(`Gateway: ${r.json.error ?? r.status}`);
-      const { sig, ...body } = s;
-      const pinned = (await fetch(`${GATEWAY}/api/gateway/key`).then((x) => x.json()).catch(() => null)) as { publicKey?: string } | null;
-      const signed = (await E.verifyDetached(s.gateway, "envelope-standing/1", body, sig)) && pinned?.publicKey === s.gateway;
-      return [
-        `${s.agentLabel}, account ${s.account}`,
-        `Stands behind it: ${s.sponsors.map((x: { role: string; label: string }) => `${x.label} (${x.role})`).join(" → ")}`,
-        `PayPal hold ${s.paypal.authorizationId ?? "none"}: ${s.paypal.status ?? "not confirmed"}${s.paypal.unusedMinor !== null ? `, ${usd(s.paypal.unusedMinor)} unused` : ""} (${s.paypal.mode})`,
-        `Asked: ${usd(s.ask.amount)} to ${s.ask.payee} for ${s.ask.purpose}`,
-        s.good ? `GOOD: it can pay up to ${usd(s.availableMinor)} in one payment right now.` : `NOT GOOD: this payment would be refused. ${s.reasons.map((x: { code: string; detail: string }) => `${x.code} (${x.detail})`).join("; ")}`,
-        `Gateway signature: ${signed ? "valid" : "INVALID, do not rely on this"}. Valid until ${s.validUntil}.`,
-      ].join("\n");
+      const agent = await me();
+      let c: Card;
+      try { c = await agent.cancelCard(text(a.card, "card", 60)); }
+      catch (e) { if (e instanceof ToolError) throw e; throw new ToolError(`Refused: ${e instanceof EnvelopeError ? (e.kind === "gateway" ? e.detail : e.message) : (e as Error).message}`); }
+      return `Card ${c.number} is cancelled. ${c.merchant.label} cannot charge it again. It was charged ${c.charges} time(s), ${usd(c.chargedMinor)} in all.`;
     },
   },
 ];
+
+/** What a client may assume about a tool without calling it (MCP tool annotations). */
+const READ = new Set(READ_TOOLS.map((t) => t.name));
+const IRREVERSIBLE = new Set(["envelope_pay", "envelope_keep", "envelope_accept", "envelope_transfer", "envelope_card_cancel"]);
+const annotations = (name: string) => (READ.has(name)
+  ? { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
+  : { readOnlyHint: false, destructiveHint: IRREVERSIBLE.has(name), idempotentHint: false, openWorldHint: true });
+const TOOLS: Tool[] = READ_ONLY ? READ_TOOLS : [...READ_TOOLS, ...ACT_TOOLS];
 
 const send = (msg: object) => process.stdout.write(JSON.stringify(msg) + "\n");
 async function handle(m: { jsonrpc?: string; id?: unknown; method?: string; params?: Record<string, unknown> }) {
@@ -344,18 +395,18 @@ async function handle(m: { jsonrpc?: string; id?: unknown; method?: string; para
   const fail = (code: number, message: string) => { if (m.id !== undefined) send({ jsonrpc: "2.0", id: m.id, error: { code, message } }); };
   switch (m.method) {
     case "initialize":
-      return reply({ protocolVersion: typeof m.params?.protocolVersion === "string" ? m.params.protocolVersion : "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "envelope", version: "1.0.0" }, instructions: `You are acting as "${AGENT}". You can spend only what your envelope allows; call envelope_show first.` });
+      return reply({ protocolVersion: typeof m.params?.protocolVersion === "string" ? m.params.protocolVersion : "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "envelope", version: "1.1.0" }, instructions: `You are acting as "${AGENT}". You can spend only what your envelope allows; call envelope_show first.${READ_ONLY ? " This server is read-only: it can look and check, not pay." : ""}` });
     case "ping":
       return reply({});
     case "tools/list":
-      return reply({ tools: TOOLS.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })) });
+      return reply({ tools: TOOLS.map(({ name, description, inputSchema }) => ({ name, description, inputSchema, annotations: annotations(name) })) });
     case "tools/call": {
       const tool = TOOLS.find((t) => t.name === m.params?.name);
       if (!tool) return fail(-32602, `Unknown tool: ${String(m.params?.name)}`);
       try {
         return reply({ content: [{ type: "text", text: await tool.run((m.params?.arguments ?? {}) as Args) }], isError: false });
       } catch (e) {
-        return reply({ content: [{ type: "text", text: e instanceof ToolError ? e.message : `Unexpected error: ${(e as Error).message}` }], isError: true });
+        return reply({ content: [{ type: "text", text: e instanceof ToolError || e instanceof Refused ? e.message : `Unexpected error: ${(e as Error).message}` }], isError: true });
       }
     }
     default:
