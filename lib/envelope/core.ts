@@ -23,6 +23,12 @@ export const SPEND_VERSION = "envelope-spend/1" as const;
 export const REVOKE_VERSION = "envelope-revoke/1" as const;
 /** A request for a statement of standing ("can this agent pay me?"). Same shape as a spend, different signature domain, so it can never be replayed as a payment. */
 export const HELLO_VERSION = "envelope-hello/1" as const;
+/** A request to set money aside for one payee ("earmark"). Same shape as a spend plus a lifetime; its own signature domain. */
+export const PROMISE_VERSION = "envelope-promise/1" as const;
+/** The holder's later decision on its own promise: pay it or release it. */
+export const KEEP_VERSION = "envelope-keep/1" as const;
+/** An agent's account for RECEIVING money: where payments to its account number are settled. */
+export const ACCOUNT_VERSION = "envelope-account/1" as const;
 
 export type Caps = {
   currency: string;
@@ -76,6 +82,19 @@ export type SignedSpend = { request: SpendRequest; sig: string; chain: Envelope 
 export type HelloRequest = Omit<SpendRequest, "v" | "memo"> & { v: typeof HELLO_VERSION };
 export type SignedHello = { request: HelloRequest; sig: string; chain: Envelope };
 
+/** "Set this much aside for this payee until `ttl` seconds from now." Reserves at every level like a spend; moves no money. */
+export type PromiseRequest = Omit<SpendRequest, "v"> & { v: typeof PROMISE_VERSION; ttl: number };
+export type SignedPromise = { request: PromiseRequest; sig: string; chain: Envelope };
+export type KeepRequest = { v: typeof KEEP_VERSION; promise: string; action: "pay" | "release"; nonce: string; at: string };
+export type SignedKeep = { request: KeepRequest; sig: string; by: string };
+
+/**
+ * Opening an account that can receive. Signed twice: by the agent's own key (so nobody can point
+ * someone else's account number at their own PayPal address) and by the owner who answers for it.
+ */
+export type AccountBody = { v: typeof ACCOUNT_VERSION; agent: string; label: string; owner: string; ownerName: string; settleTo: string; at: string };
+export type SignedAccount = { body: AccountBody; agentSig: string; ownerSig: string };
+
 export type RevokeRequest = { v: typeof REVOKE_VERSION; block: string; nonce: string; at: string };
 export type SignedRevoke = { request: RevokeRequest; sig: string; by: string };
 
@@ -85,6 +104,7 @@ export type Reason =
   | "EXPIRED" | "NOT_THE_HOLDER" | "STALE_REQUEST" | "WRONG_LEAF"
   | "OVER_PER_PAYMENT" | "PAYEE_NOT_ALLOWED" | "PURPOSE_NOT_ALLOWED" | "WRONG_CURRENCY" | "BAD_AMOUNT"
   // stateful (gateway)
+  | "PAYEE_ACCOUNT_UNKNOWN" | "PROMISE_LAPSED"
   | "UNKNOWN_ROOT" | "ROOT_NOT_FUNDED" | "REVOKED" | "REPLAY" | "OVER_ENVELOPE_LIMIT" | "OVER_ANCESTOR_LIMIT" | "FORKED_BLOCK"
   | "PAYPAL_CAPTURE_FAILED" | "PAYPAL_PAYOUT_FAILED";
 
@@ -298,6 +318,47 @@ export async function signHello(chain: Envelope, holderKey: KeyPair, p: { amount
   return { request, sig: await sign(holderKey.privateKey, HELLO_VERSION, request), chain };
 }
 export const verifyHello = (s: SignedHello, now = new Date()): Promise<IntentVerdict> => verifyIntent(HELLO_VERSION, s, now);
+
+/** Longest a promise may hold money aside. */
+export const PROMISE_MAX_TTL_S = 3600;
+export async function signPromise(chain: Envelope, holderKey: KeyPair, p: { amount: number; payee: string; purpose: string; memo?: string; ttl?: number }, now = new Date()): Promise<SignedPromise> {
+  const leaf = chain[chain.length - 1]!.body;
+  const request: PromiseRequest = { v: PROMISE_VERSION, leaf: leaf.id, amount: p.amount, currency: leaf.caps.currency, payee: p.payee.trim().toLowerCase(), purpose: p.purpose.trim().toLowerCase(), memo: (p.memo ?? "").slice(0, 200), ttl: p.ttl ?? 900, nonce: randomId("n"), at: now.toISOString() };
+  return { request, sig: await sign(holderKey.privateKey, PROMISE_VERSION, request), chain };
+}
+export async function verifyPromise(s: SignedPromise, now = new Date()): Promise<IntentVerdict> {
+  const v = await verifyIntent(PROMISE_VERSION, s, now);
+  const ttl = s?.request?.ttl;
+  if (!Number.isSafeInteger(ttl) || ttl < 30 || ttl > PROMISE_MAX_TTL_S) { v.violations.push({ code: "MALFORMED", at: s?.request?.leaf ?? null, detail: `a promise lasts between 30 seconds and ${PROMISE_MAX_TTL_S / 60} minutes` }); v.ok = false; }
+  return v;
+}
+export async function signKeep(by: KeyPair, promise: string, action: KeepRequest["action"], now = new Date()): Promise<SignedKeep> {
+  const request: KeepRequest = { v: KEEP_VERSION, promise, action, nonce: randomId("n"), at: now.toISOString() };
+  return { request, sig: await sign(by.privateKey, KEEP_VERSION, request), by: by.publicKey };
+}
+export async function verifyKeepSignature(k: SignedKeep, now = new Date()): Promise<boolean> {
+  if (!k?.request || k.request.v !== KEEP_VERSION || (k.request.action !== "pay" && k.request.action !== "release") || typeof k.request.promise !== "string" || Math.abs(now.getTime() - Date.parse(k.request.at)) > SPEND_WINDOW_MS) return false;
+  return verify(k.by, KEEP_VERSION, k.request, k.sig);
+}
+
+// ---------------------------------------------------------------------------
+// Accounts that receive
+// ---------------------------------------------------------------------------
+
+/** How an agent's account is written as a payee: "acct:7k2q-9m4x-t0pa". */
+export const accountPayee = (publicKey: string) => `acct:${accountNumber(publicKey).toLowerCase()}`;
+export const isAccountPayee = (payee: string) => /^acct:[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}$/.test(payee);
+
+export async function signAccount(agent: KeyPair, owner: KeyPair, p: { label: string; ownerName: string; settleTo: string }, now = new Date()): Promise<SignedAccount> {
+  const body: AccountBody = { v: ACCOUNT_VERSION, agent: agent.publicKey, label: p.label.trim().slice(0, 80), owner: owner.publicKey, ownerName: p.ownerName.trim().slice(0, 80), settleTo: p.settleTo.trim().toLowerCase(), at: now.toISOString() };
+  return { body, agentSig: await sign(agent.privateKey, ACCOUNT_VERSION, body), ownerSig: await sign(owner.privateKey, ACCOUNT_VERSION, body) };
+}
+export async function verifyAccount(a: SignedAccount): Promise<boolean> {
+  const b = a?.body;
+  if (!b || b.v !== ACCOUNT_VERSION || typeof b.agent !== "string" || typeof b.owner !== "string" || typeof b.label !== "string" || !b.label || typeof b.ownerName !== "string" || Number.isNaN(Date.parse(b.at))) return false;
+  if (typeof b.settleTo !== "string" || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(b.settleTo) || b.settleTo.length > 127 || b.settleTo !== b.settleTo.toLowerCase()) return false;
+  return (await verify(b.agent, ACCOUNT_VERSION, b, a.agentSig)) && (await verify(b.owner, ACCOUNT_VERSION, b, a.ownerSig));
+}
 
 export async function signRevoke(by: KeyPair, block: string, now = new Date()): Promise<SignedRevoke> {
   const request: RevokeRequest = { v: REVOKE_VERSION, block, nonce: randomId("n"), at: now.toISOString() };

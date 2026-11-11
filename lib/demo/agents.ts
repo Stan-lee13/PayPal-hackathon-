@@ -4,15 +4,40 @@
  * script (no model). Real agents keep their own keys and use the same gateway endpoints
  * (see scripts/agent.ts): the gateway treats both identically.
  */
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { getDb } from "../db";
-import { demoKeys } from "../db/schema";
+import { accounts, demoKeys, spends } from "../db/schema";
 import { UserFacingError } from "../errors";
 import * as E from "../envelope/core";
 import * as G from "../gateway/service";
 
 export const DEMO_LABELS = ["ops-agent", "localization-agent", "creative-agent", "helper"] as const;
 type Label = (typeof DEMO_LABELS)[number];
+
+/**
+ * DEMO: the agent on the other side of the table. "translator-agent" belongs to a different owner
+ * (Bea), holds no envelope, and has an account that can RECEIVE: payments to its account number are
+ * settled to Bea's PayPal address. One per gateway, so its record grows across envelopes.
+ */
+const GLOBAL = "counterparty";
+async function globalKey(label: string) {
+  const db = getDb();
+  const where = and(eq(demoKeys.rootId, GLOBAL), eq(demoKeys.label, label));
+  let row = await db.query.demoKeys.findFirst({ where });
+  if (!row) {
+    const kp = await E.generateKeyPair();
+    await db.insert(demoKeys).values({ id: E.randomId("dk"), rootId: GLOBAL, label, publicKey: kp.publicKey, privateJwk: await E.exportPrivateJwk(kp.privateKey) }).onConflictDoNothing();
+    row = (await db.query.demoKeys.findFirst({ where }))!;
+  }
+  return { row, key: await E.importPrivateJwk(row.privateJwk) };
+}
+export async function ensureCounterparty() {
+  const [agent, owner] = [await globalKey("translator-agent"), await globalKey("bea")];
+  const settleTo = (process.env.ENVELOPE_PAYEE_1 || "translator@example.com").toLowerCase();
+  const existing = await getDb().query.accounts.findFirst({ where: eq(accounts.agent, agent.key.publicKey) });
+  if (!existing || existing.settleTo !== settleTo) await G.openAccount(await E.signAccount(agent.key, owner.key, { label: "translator-agent", ownerName: "Bea", settleTo }));
+  return { key: agent.key.publicKey, label: "translator-agent", owner: "Bea", account: E.accountNumber(agent.key.publicKey), payee: E.accountPayee(agent.key.publicKey) };
+}
 
 /** Create the demo agents' keys for a draft (before the root exists) and return the ops agent's public key. */
 export async function createDemoAgents(draftId: string): Promise<{ opsPublicKey: string }> {
@@ -48,7 +73,7 @@ export async function hasDemoAgents(rootId: string): Promise<boolean> {
   return Boolean(await getDb().query.demoKeys.findFirst({ where: eq(demoKeys.rootId, rootId) }));
 }
 
-export const DEMO_ACTIONS = ["split-localization", "split-creative", "pay-translator", "pay-designer", "attack-payee", "attack-overspend", "attack-forge"] as const;
+export const DEMO_ACTIONS = ["split-localization", "split-creative", "promise-translator", "keep-translator", "pay-translator", "pay-designer", "attack-payee", "attack-overspend", "attack-forge"] as const;
 export type DemoAction = (typeof DEMO_ACTIONS)[number];
 
 /** One scripted step. Amounts scale with the root so any envelope size works. */
@@ -59,7 +84,9 @@ export async function act(rootId: string, action: DemoAction): Promise<{ action:
   const payees = rootCaps.payees ?? [];
   // caps lists are stored sorted, so pick by meaning where possible and by position otherwise
   const pick = (list: string[], hint: RegExp, fallback: number) => list.find((x) => hint.test(x)) ?? list[Math.min(fallback, list.length - 1)];
-  const translator = pick(payees, /transl|locali/i, 0) ?? "translator@example.com";
+  // An agent's account (acct:…) is the translator when there is one: agents can be payees too.
+  const translator = payees.find(E.isAccountPayee) ?? pick(payees, /transl|locali/i, 0) ?? "translator@example.com";
+  const who = async (payee: string) => (E.isAccountPayee(payee) ? (await G.accountByNumber(payee))?.label ?? payee : payee);
   const designer = payees.find((p) => p !== translator && /design|creativ|art/i.test(p)) ?? payees.find((p) => p !== translator) ?? translator;
   const purposes = rootCaps.purposes ?? ["translation", "design"];
   const pTr = pick(purposes, /transl|locali/i, 0)!;
@@ -77,7 +104,24 @@ export async function act(rootId: string, action: DemoAction): Promise<{ action:
       const chain = await E.split(ops.chain, ops.key, { publicKey: to.row.publicKey, label: to.row.label }, caps);
       await G.announce(chain);
       await saveChain(rootId, to.row.label as Label, chain);
-      return { action, narration: `ops-agent split off an envelope for ${to.row.label}: up to $${(caps.limit / 100).toFixed(2)}, only to ${caps.payees![0]}, only for ${caps.purposes![0]}. No server was asked.` };
+      return { action, narration: `ops-agent split off an envelope for ${to.row.label}: up to $${(caps.limit / 100).toFixed(2)}, only to ${await who(caps.payees![0]!)}, only for ${caps.purposes![0]}. No server was asked.` };
+    }
+    case "promise-translator": {
+      const a = await agent(rootId, "localization-agent");
+      if (!a.chain) throw new UserFacingError("Run the splits first.", 409);
+      const leaf = a.chain[a.chain.length - 1]!.body.caps;
+      const amount = Math.floor((leaf.limit * 0.75) / 100) * 100;
+      const result = await G.promise(await E.signPromise(a.chain, a.key, { amount, payee: leaf.payees![0]!, purpose: leaf.purposes![0]!, memo: "Store strings: FR + YO", ttl: 900 }), "The translator wants to know the money is there before starting. Setting the fee aside for it.");
+      return { action, narration: `${a.row.label} set $${(amount / 100).toFixed(2)} aside for ${await who(leaf.payees![0]!)} before any work started. Nothing else can spend it for 15 minutes.`, result };
+    }
+    case "keep-translator": {
+      const a = await agent(rootId, "localization-agent");
+      if (!a.chain) throw new UserFacingError("Run the splits first.", 409);
+      const leafId = a.chain[a.chain.length - 1]!.body.id;
+      const open = await getDb().query.spends.findFirst({ where: and(eq(spends.leafId, leafId), eq(spends.status, "PROMISED")), orderBy: desc(spends.createdAt) });
+      if (!open) throw new UserFacingError("There is no open promise to pay.", 409);
+      const result = await G.keep(await E.signKeep(a.key, open.id, "pay"), "Translator delivered both language files; paying what was set aside.");
+      return { action, narration: `${a.row.label} paid the $${(open.amountMinor / 100).toFixed(2)} it had set aside.`, result };
     }
     case "pay-translator":
     case "pay-designer": {

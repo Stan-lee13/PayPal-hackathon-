@@ -1,17 +1,6 @@
-import { z } from "zod";
-import { getDb } from "@/lib/db";
-import { rateLimit } from "@/lib/security/rate-limit";
-import { clientIp, errorResponse, json, sameOrigin } from "@/lib/http";
-import { createDemoAgents } from "@/lib/demo/agents";
+import { route } from "@/lib/api/next";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 30;
 
-/** DEMO: create the console's scripted agents for a draft envelope; returns the key to seal it for. */
-export async function POST(req: Request) {
-  try {
-    if (!sameOrigin(req)) return json({ error: "Cross-origin request refused." }, 403);
-    if (!(await rateLimit(getDb(), `demoagents:${clientIp(req)}`, 30, 3600))) return json({ error: "Too many demo runs; try later." }, 429);
-    const { draftId } = z.object({ draftId: z.string().regex(/^draft_[A-Za-z0-9_-]{8,40}$/) }).parse(await req.json());
-    return json(await createDemoAgents(draftId));
-  } catch (e) { return errorResponse(e); }
-}
+export const POST = route("POST /api/demo/agents", { sameOrigin: true, limit: ["demoagents", 30, 3600] });

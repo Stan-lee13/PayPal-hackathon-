@@ -15,9 +15,9 @@
  *
  * No model output is read anywhere in this file. `agentNote` is stored for the human, never used.
  */
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, lt, sql } from "drizzle-orm";
 import { getDb, type DB } from "../db";
-import { blocks, gatewayKeys, roots, spends, type BlockRow, type Receipt, type Root, type Spend } from "../db/schema";
+import { accounts, blocks, gatewayKeys, roots, spends, type Account, type BlockRow, type PromiseNote, type Receipt, type Root, type Spend } from "../db/schema";
 import { UserFacingError } from "../errors";
 import { newId } from "../ids";
 import { formatMoney } from "../money";
@@ -28,6 +28,7 @@ import { audit } from "../services/audit";
 
 export const MAX_ROOT_MINOR = 1_000_00; // demo ceiling: $1,000 per envelope
 export const RECEIPT_VERSION = "envelope-receipt/1" as const;
+export const PROMISE_NOTE_VERSION = "envelope-promise-note/1" as const;
 
 type Tx = Parameters<Parameters<DB["transaction"]>[0]>[0];
 const lockRoot = (tx: Tx, rootId: string) => tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`envelope-root|${rootId}`}, 0))`);
@@ -145,9 +146,41 @@ export async function announce(chain: E.Envelope): Promise<{ ids: string[] }> {
 
 export type SpendResult = { status: Spend["status"]; spend: Spend | null; reasons: E.Violation[]; receipt: Receipt | null; duplicate: boolean };
 
-export async function spend(signed: E.SignedSpend, agentNote?: string): Promise<SpendResult> {
+/** Under the root lock: give back the reservation of one promise. */
+async function lapse(tx: Tx, s: Spend, reason: E.Violation): Promise<Spend | null> {
+  const [u] = await tx.update(spends).set({ status: "LAPSED", reasons: [reason], settledAt: new Date() }).where(and(eq(spends.id, s.id), eq(spends.status, "PROMISED"))).returning();
+  if (u) await tx.update(blocks).set({ reservedMinor: sql`${blocks.reservedMinor} - ${s.amountMinor}` }).where(inArray(blocks.id, s.chainIds));
+  return u ?? null;
+}
+/** Under the root lock: release every promise whose time has run out. */
+async function sweep(tx: Tx, rootId: string): Promise<Spend[]> {
+  const due = await tx.select().from(spends).where(and(eq(spends.rootId, rootId), eq(spends.status, "PROMISED"), lt(spends.promiseExpiresAt, new Date())));
+  const out: Spend[] = [];
+  for (const s of due) { const u = await lapse(tx, s, { code: "PROMISE_LAPSED", at: s.leafId, detail: "the promise ran out before it was paid" }); if (u) out.push(u); }
+  return out;
+}
+const trailLapsed = async (root: Pick<Root, "principal" | "id">, lapsed: Spend[]) => {
+  for (const s of lapsed) await trail(root, "gateway", "promise.lapsed", "INFO", s.id, { agent: s.leafLabel, amount: s.amountMinor, payee: s.payee, why: s.reasons[0]?.detail ?? null });
+};
+/** Reads call this so budgets never show money held by a promise that has already run out. */
+export async function sweepExpired(rootId: string): Promise<void> {
   const db = getDb();
-  const stateless = await E.verifySpend(signed);
+  const due = await db.select({ id: spends.id }).from(spends).where(and(eq(spends.rootId, rootId), eq(spends.status, "PROMISED"), lt(spends.promiseExpiresAt, new Date()))).limit(1);
+  if (due.length === 0) return;
+  const root = await db.query.roots.findFirst({ where: eq(roots.id, rootId) });
+  if (!root) return;
+  await trailLapsed(root, await db.transaction(async (tx) => { await lockRoot(tx, rootId); return sweep(tx, rootId); }));
+}
+
+export const spend = (signed: E.SignedSpend, agentNote?: string): Promise<SpendResult> => admit("spend", signed, agentNote);
+
+/**
+ * Admission, shared by payments and promises: both are checked against the same rules and reserve the
+ * amount at every level. A payment then settles on PayPal; a promise waits for its maker to pay or release it.
+ */
+async function admit(kind: "spend" | "promise", signed: E.SignedSpend | E.SignedPromise, agentNote?: string): Promise<SpendResult> {
+  const db = getDb();
+  const stateless = kind === "spend" ? await E.verifySpend(signed as E.SignedSpend) : await E.verifyPromise(signed as E.SignedPromise);
   const chain = Array.isArray(signed?.chain) ? signed.chain : [];
   const rootId: string | null = chain[0]?.body?.id ?? null;
   const leaf = chain[chain.length - 1]?.body;
@@ -163,11 +196,20 @@ export async function spend(signed: E.SignedSpend, agentNote?: string): Promise<
     agentNote: agentNote?.trim().slice(0, 500) || null,
   };
 
-  const outcome = await db.transaction(async (tx): Promise<{ row: Spend; fresh: boolean }> => {
+  const outcome = await db.transaction(async (tx): Promise<{ row: Spend; fresh: boolean; lapsed: Spend[] }> => {
     await lockRoot(tx, root.id);
+    const lapsed = await sweep(tx, root.id);
     const seen = await tx.query.spends.findFirst({ where: eq(spends.requestHash, requestHash) });
-    if (seen) return { row: seen, fresh: false };
+    if (seen) return { row: seen, fresh: false, lapsed };
     const reasons: E.Violation[] = [...stateless.violations];
+    // A payee written as an account number is an agent: fix where its income is settled now, so a later change can't redirect this payment.
+    let payeeAgent: string | null = null, payoutTo: string | null = null;
+    if (E.isAccountPayee(base.payee)) {
+      const number = base.payee.slice(5).toUpperCase();
+      const acct = await tx.query.accounts.findFirst({ where: eq(accounts.account, number) });
+      if (acct) { payeeAgent = acct.agent; payoutTo = acct.settleTo; }
+      else reasons.push({ code: "PAYEE_ACCOUNT_UNKNOWN", at: null, detail: `no agent has opened account ${number}` });
+    }
     const live = (await tx.query.roots.findFirst({ where: eq(roots.id, root.id) }))!;
     if (live.status !== "ACTIVE") reasons.push({ code: "REVOKED", at: root.id, detail: "the root envelope was closed by its owner" });
     else if (!live.authorizationId) reasons.push({ code: "ROOT_NOT_FUNDED", at: root.id, detail: "no PayPal authorization backs this envelope" });
@@ -188,15 +230,23 @@ export async function spend(signed: E.SignedSpend, agentNote?: string): Promise<
         }
       }
     }
+    const promiseExpiresAt = kind === "promise" && Number.isSafeInteger((r as E.PromiseRequest).ttl)
+      ? new Date(Math.min(Date.now() + (r as E.PromiseRequest).ttl * 1000, Date.parse(String(leaf.caps?.notAfter)) || Date.now())) : null;
     if (reasons.length) {
-      const [row] = await tx.insert(spends).values({ id: newId("sp"), ...base, status: "DENIED", reasons }).returning();
-      return { row: row!, fresh: true };
+      const [row] = await tx.insert(spends).values({ id: newId(kind === "promise" ? "pr" : "sp"), ...base, payeeAgent, payoutTo, promiseExpiresAt, status: "DENIED", reasons }).returning();
+      return { row: row!, fresh: true, lapsed };
     }
-    const [row] = await tx.insert(spends).values({ id: newId("sp"), ...base, status: "RESERVED" }).returning();
+    const [row] = await tx.insert(spends).values({ id: newId(kind === "promise" ? "pr" : "sp"), ...base, payeeAgent, payoutTo, promiseExpiresAt, status: kind === "promise" ? "PROMISED" : "RESERVED" }).returning();
     await tx.update(blocks).set({ reservedMinor: sql`${blocks.reservedMinor} + ${r.amount}` }).where(inArray(blocks.id, stateless.chain.ids));
-    return { row: row!, fresh: true };
+    return { row: row!, fresh: true, lapsed };
   });
+  await trailLapsed(root, outcome.lapsed);
 
+  if (kind === "promise") {
+    if (outcome.row.status === "DENIED" && outcome.fresh) await trail(root, "gateway", "promise.denied", "REJECTED", outcome.row.id, { agent: base.leafLabel, amount: base.amountMinor, payee: base.payee, purpose: base.purpose, reasons: outcome.row.reasons.map((x) => x.code) });
+    if (outcome.row.status === "PROMISED" && outcome.fresh) await trail(root, "agent", "promise.made", "OK", outcome.row.id, { agent: base.leafLabel, amount: base.amountMinor, payee: base.payee, purpose: base.purpose, until: outcome.row.promiseExpiresAt?.toISOString() ?? null });
+    return { status: outcome.row.status, spend: outcome.row, reasons: outcome.row.reasons, receipt: outcome.row.receipt, duplicate: !outcome.fresh };
+  }
   if (outcome.row.status === "DENIED") {
     if (outcome.fresh) await trail(root, "gateway", "spend.denied", "REJECTED", outcome.row.id, { agent: base.leafLabel, amount: base.amountMinor, payee: base.payee, purpose: base.purpose, reasons: outcome.row.reasons.map((x) => x.code) });
     return { status: "DENIED", spend: outcome.row, reasons: outcome.row.reasons, receipt: null, duplicate: !outcome.fresh };
@@ -248,7 +298,7 @@ export async function settle(spendId: string): Promise<Spend> {
 
   if (!s.payoutBatchId) {
     try {
-      const po = await payout(pp, { spendId: s.id, receiverEmail: s.payee, amountMinor: s.amountMinor, currency: s.currency, note: `${s.memo || s.purpose} · paid from an Envelope (${s.id})` });
+      const po = await payout(pp, { spendId: s.id, receiverEmail: s.payoutTo ?? s.payee, amountMinor: s.amountMinor, currency: s.currency, note: `${s.memo || s.purpose} · paid from an Envelope (${s.id})` });
       await db.update(spends).set({ payoutBatchId: po.batchId, payoutItemId: po.itemId, payoutTransactionId: po.transactionId, payoutStatus: po.itemStatus ?? po.batchStatus }).where(eq(spends.id, s.id));
       s = { ...s, payoutBatchId: po.batchId, payoutItemId: po.itemId, payoutTransactionId: po.transactionId, payoutStatus: po.itemStatus ?? po.batchStatus };
     } catch (e) {
@@ -268,8 +318,10 @@ export async function settle(spendId: string): Promise<Spend> {
   // Receipt: binds the PayPal transaction ids to the request and the whole authority chain.
   const gw = await gatewayKey();
   const chain = s.signed.chain;
+  const payeeAcct = s.payeeAgent ? await db.query.accounts.findFirst({ where: eq(accounts.agent, s.payeeAgent) }) : null;
   const receiptBody: Omit<Receipt, "sig"> = {
     v: RECEIPT_VERSION, spend: s.id, decision: "PAID", request: s.signed.request, requestSig: s.signed.sig,
+    ...(s.payeeAgent && s.payoutTo ? { paidTo: { account: E.accountNumber(s.payeeAgent), agent: s.payeeAgent, agentLabel: payeeAcct?.label ?? "agent", settledTo: s.payoutTo } } : {}),
     chain: await Promise.all(chain.map(async (b) => ({ id: b.body.id, hash: await E.blockHash(b), holder: b.body.holder, holderLabel: b.body.holderLabel }))),
     principal: root.principal,
     paypal: { mode: paypalMode(), authorizationId: root.authorizationId!, captureId: s.captureId!, payoutBatchId: s.payoutBatchId!, payoutItemId: s.payoutItemId },
@@ -283,7 +335,7 @@ export async function settle(spendId: string): Promise<Spend> {
     if (u) await tx.update(blocks).set({ reservedMinor: sql`${blocks.reservedMinor} - ${s.amountMinor}`, spentMinor: sql`${blocks.spentMinor} + ${s.amountMinor}` }).where(inArray(blocks.id, s.chainIds));
     return u ?? (await tx.query.spends.findFirst({ where: eq(spends.id, s.id) }))!;
   });
-  await trail(root, "paypal", "payout.sent", "OK", s.payoutBatchId, { spend: s.id, to: s.payee, amount: formatMoney(s.amountMinor, s.currency), item: s.payoutItemId, status: s.payoutStatus });
+  await trail(root, "paypal", "payout.sent", "OK", s.payoutBatchId, { spend: s.id, to: s.payoutTo ?? s.payee, ...(s.payeeAgent ? { account: s.payee } : {}), amount: formatMoney(s.amountMinor, s.currency), item: s.payoutItemId, status: s.payoutStatus });
   if (s.payoutStatus && PAYOUT_DEAD.includes(s.payoutStatus)) return undoDeadPayout(final, s.payoutStatus, null);
   return final;
 }
@@ -348,7 +400,16 @@ export async function revoke(signed: E.SignedRevoke): Promise<{ block: BlockRow;
   if (!allowed.has(signed.by)) throw new UserFacingError("Only the owner, or the holder of an envelope above this one, can revoke it.", 403);
 
   if (block.depth === 0) return { block, root: await closeRoot(root, signed.by === root.principal ? "closed by its owner" : "closed by its holder", signed.by) };
-  const [u] = await db.update(blocks).set({ revokedAt: new Date(), revokedBy: signed.by }).where(and(eq(blocks.id, block.id), sql`${blocks.revokedAt} is null`)).returning();
+  const { u, lapsed } = await db.transaction(async (tx) => {
+    await lockRoot(tx, root.id);
+    const [u] = await tx.update(blocks).set({ revokedAt: new Date(), revokedBy: signed.by }).where(and(eq(blocks.id, block.id), sql`${blocks.revokedAt} is null`)).returning();
+    // Money set aside under a revoked envelope goes back to the levels above it.
+    const open = await tx.select().from(spends).where(and(eq(spends.rootId, root.id), eq(spends.status, "PROMISED")));
+    const lapsed: Spend[] = [];
+    for (const p of open) if (p.chainIds.includes(block.id)) { const x = await lapse(tx, p, { code: "REVOKED", at: block.id, detail: `${block.holderLabel}'s envelope was revoked` }); if (x) lapsed.push(x); }
+    return { u, lapsed };
+  });
+  await trailLapsed(root, lapsed);
   if (u) await trail(root, signed.by === root.principal ? "principal" : "agent", "envelope.revoked", "OK", block.id, { holder: block.holderLabel, by: E.fingerprint(signed.by) });
   return { block: u ?? block, root };
 }
@@ -359,6 +420,8 @@ async function closeRoot(root: Root, reason: string, by: string): Promise<Root> 
     await lockRoot(tx, root.id);
     const live = (await tx.query.roots.findFirst({ where: eq(roots.id, root.id) }))!;
     if (live.status !== "ACTIVE") return null;
+    const open = await tx.select().from(spends).where(and(eq(spends.rootId, root.id), eq(spends.status, "PROMISED")));
+    for (const p of open) await lapse(tx, p, { code: "REVOKED", at: root.id, detail: "the envelope was closed by its owner" });
     const inflight = await tx.select({ n: sql<number>`count(*)::int` }).from(spends).where(and(eq(spends.rootId, root.id), inArray(spends.status, ["RESERVED", "CAPTURED"])));
     if ((inflight[0]?.n ?? 0) > 0) throw new UserFacingError("A payment from this envelope is still in flight; try again in a moment.", 409);
     const [u] = await tx.update(roots).set({ status: "CLOSED", closedAt: new Date(), closeReason: reason, releasedMinor: live.limitMinor - live.capturedMinor }).where(eq(roots.id, root.id)).returning();
@@ -379,6 +442,124 @@ async function closeRoot(root: Root, reason: string, by: string): Promise<Root> 
   }
   return closed;
 }
+
+// ---------------------------------------------------------------------------
+// Promises: money set aside for one payee, backed by the same hold
+// ---------------------------------------------------------------------------
+
+export type PromiseResult = SpendResult & { note: PromiseNote | null };
+
+/**
+ * An agent sets money aside for a payee before the work starts. The amount is reserved at every
+ * level exactly like a payment, so nothing else can spend it; the payee gets a note signed by the
+ * gateway, after PayPal has confirmed the hold. Later the agent pays it (`keep`) or releases it.
+ * The owner can still revoke: a promise is earmarked money, not escrow.
+ */
+export async function promise(signed: E.SignedPromise, agentNote?: string): Promise<PromiseResult> {
+  const res = await admit("promise", signed, agentNote);
+  const s = res.spend;
+  if (!s || s.status !== "PROMISED") return { ...res, note: s?.promiseNote ?? null };
+  if (s.promiseNote) return { ...res, note: s.promiseNote };
+  const db = getDb();
+  const root = (await db.query.roots.findFirst({ where: eq(roots.id, s.rootId) }))!;
+  // Ask PayPal itself before telling a payee the money is there.
+  let status: string | null = null;
+  try { status = (await getAuthorization(getPayPal(), root.authorizationId!)).status; } catch { status = null; }
+  if (status !== "CREATED" && status !== "PARTIALLY_CAPTURED") {
+    const reason: E.Violation = { code: "ROOT_NOT_FUNDED", at: root.id, detail: status ? `PayPal reports the hold as ${status}` : "PayPal could not confirm the hold" };
+    const u = await db.transaction(async (tx) => { await lockRoot(tx, root.id); return lapse(tx, s, reason); });
+    await trail(root, "paypal", "promise.unbacked", "FAILED", s.id, { status });
+    return { status: "LAPSED", spend: u ?? s, reasons: [reason], receipt: null, duplicate: false, note: null };
+  }
+  const key = await gatewayKey();
+  const chain = s.signed.chain;
+  const leaf = chain[chain.length - 1]!.body;
+  const body: Omit<PromiseNote, "sig"> = {
+    v: PROMISE_NOTE_VERSION, promise: s.id,
+    agent: leaf.holder, agentLabel: leaf.holderLabel, account: E.accountNumber(leaf.holder),
+    sponsors: [{ role: "owner", label: root.principalName, key: root.principal }, ...chain.slice(0, -1).map((b) => ({ role: "agent" as const, label: b.body.holderLabel, key: b.body.holder }))],
+    root: root.id, amount: s.amountMinor, currency: s.currency, payee: s.payee, purpose: s.purpose,
+    expiresAt: s.promiseExpiresAt!.toISOString(),
+    paypal: { mode: paypalMode(), authorizationId: root.authorizationId!, status },
+    issuedAt: new Date().toISOString(), gateway: key.publicKey,
+  };
+  const note: PromiseNote = { ...body, sig: await E.signDetached(key.privateKey, PROMISE_NOTE_VERSION, body) };
+  const [u] = await db.update(spends).set({ promiseNote: note }).where(eq(spends.id, s.id)).returning();
+  return { ...res, spend: u ?? s, note };
+}
+
+export async function verifyPromiseNote(n: PromiseNote, now = new Date()): Promise<boolean> {
+  if (!n || n.v !== PROMISE_NOTE_VERSION || Date.parse(n.expiresAt) < now.getTime()) return false;
+  const { sig, ...body } = n;
+  return E.verifyDetached(n.gateway, PROMISE_NOTE_VERSION, body, sig);
+}
+
+/** The agent that made a promise pays it (capture + payout from the money already set aside) or releases it. */
+export async function keep(signed: E.SignedKeep, agentNote?: string): Promise<SpendResult> {
+  if (!(await E.verifyKeepSignature(signed))) throw new UserFacingError("That isn't properly signed, or is too old.", 401);
+  const db = getDb();
+  const s0 = await db.query.spends.findFirst({ where: eq(spends.id, signed.request.promise) });
+  if (!s0 || !s0.promiseExpiresAt) throw new UserFacingError("No such promise.", 404);
+  if (signed.by !== s0.signed.chain[s0.signed.chain.length - 1]!.body.holder) throw new UserFacingError("Only the agent that made a promise can pay or release it.", 403);
+  const root = (await db.query.roots.findFirst({ where: eq(roots.id, s0.rootId) }))!;
+  const out = await db.transaction(async (tx) => {
+    await lockRoot(tx, root.id);
+    const lapsed = await sweep(tx, root.id);
+    const s = (await tx.query.spends.findFirst({ where: eq(spends.id, s0.id) }))!;
+    if (s.status !== "PROMISED") return { row: s, changed: false, lapsed };
+    if (signed.request.action === "release") {
+      const u = await lapse(tx, s, { code: "PROMISE_LAPSED", at: s.leafId, detail: "released by the agent that made it" });
+      return { row: u ?? s, changed: true, lapsed: u ? [...lapsed, u] : lapsed };
+    }
+    // Authority may have been withdrawn since the promise was made.
+    const live = (await tx.query.roots.findFirst({ where: eq(roots.id, root.id) }))!;
+    const rows = await tx.select().from(blocks).where(inArray(blocks.id, s.chainIds));
+    const dead = live.status !== "ACTIVE" ? "the root envelope was closed by its owner" : rows.find((x) => x.revokedAt) ? `${rows.find((x) => x.revokedAt)!.holderLabel}'s envelope was revoked` : null;
+    if (dead) {
+      const u = await lapse(tx, s, { code: "REVOKED", at: root.id, detail: dead });
+      return { row: u ?? s, changed: true, lapsed: u ? [...lapsed, u] : lapsed };
+    }
+    const [u] = await tx.update(spends).set({ status: "RESERVED", agentNote: agentNote?.trim().slice(0, 500) || s.agentNote }).where(and(eq(spends.id, s.id), eq(spends.status, "PROMISED"))).returning();
+    return { row: u ?? s, changed: Boolean(u), lapsed };
+  });
+  await trailLapsed(root, out.lapsed);
+  if (out.changed && out.row.status === "RESERVED") await trail(root, "agent", "promise.kept", "PENDING", out.row.id, { agent: out.row.leafLabel, amount: out.row.amountMinor, payee: out.row.payee });
+  // RESERVED (just now, or an earlier attempt that was interrupted) continues to PayPal.
+  const done = out.row.status === "RESERVED" || out.row.status === "CAPTURED" ? await settle(out.row.id) : out.row;
+  return { status: done.status, spend: done, reasons: done.reasons, receipt: done.receipt, duplicate: !out.changed };
+}
+
+// ---------------------------------------------------------------------------
+// Accounts that receive
+// ---------------------------------------------------------------------------
+
+/**
+ * Open (or update) an agent's account for receiving. The opening must be signed by the agent's own
+ * key, so an account number can never be pointed at someone else's PayPal address, and by the owner
+ * who answers for the agent. Payments to "acct:<number>" are then settled to `settleTo` by PayPal Payouts.
+ */
+export async function openAccount(signed: E.SignedAccount): Promise<Account> {
+  if (!(await E.verifyAccount(signed))) throw new UserFacingError("An account opening must be signed by both the agent's key and its owner's key.", 422);
+  const db = getDb();
+  const b = signed.body;
+  const account = E.accountNumber(b.agent);
+  const clash = await db.query.accounts.findFirst({ where: eq(accounts.account, account) });
+  if (clash && clash.agent !== b.agent) throw new UserFacingError("Another agent already holds that account number.", 409);
+  if (clash && Date.parse(clash.signed.body.at) >= Date.parse(b.at)) return clash;
+  const values = { account, label: b.label, owner: b.owner, ownerName: b.ownerName || "Owner", settleTo: b.settleTo, signed };
+  const [row] = await db.insert(accounts).values({ agent: b.agent, ...values }).onConflictDoUpdate({ target: accounts.agent, set: values }).returning();
+  await audit(db, { scopeId: b.owner, subjectId: `acct:${account}`, actor: "principal", action: clash ? "account.updated" : "account.opened", ref: account, outcome: "OK", detail: { agent: b.label, owner: b.ownerName } });
+  return row!;
+}
+
+/** Find an agent's key from its account number ("7K2Q-9M4X-T0PA", with or without "acct:"). */
+export async function accountByNumber(number: string): Promise<Account | null> {
+  const n = number.replace(/^acct:/i, "").toUpperCase();
+  return (await getDb().query.accounts.findFirst({ where: eq(accounts.account, n) })) ?? null;
+}
+
+/** Enough of an address to recognise, not enough to copy. */
+export const maskEmail = (e: string) => e.replace(/^(.)[^@]*(@.*)$/, "$1•••$2");
 
 // ---------------------------------------------------------------------------
 // Reads
@@ -429,8 +610,10 @@ export async function standing(hello: E.SignedHello): Promise<Standing> {
   const root = await db.query.roots.findFirst({ where: eq(roots.id, rootId) });
   if (!root) throw new UserFacingError("That agent's envelope was never sealed with this gateway.", 404);
 
+  await sweepExpired(root.id);
   const reasons: E.Violation[] = [...verdict.violations];
   if (root.status !== "ACTIVE") reasons.push({ code: "REVOKED", at: root.id, detail: "the root envelope was closed by its owner" });
+  if (typeof r.payee === "string" && E.isAccountPayee(r.payee) && !(await accountByNumber(r.payee))) reasons.push({ code: "PAYEE_ACCOUNT_UNKNOWN", at: null, detail: `no agent has opened account ${r.payee.slice(5).toUpperCase()}` });
   let available = 0;
   if (verdict.ok && verdict.chain.caps) {
     const rows = await db.select().from(blocks).where(inArray(blocks.id, verdict.chain.ids));
@@ -504,18 +687,25 @@ export type AgentAccount = {
 /** Everything the gateway knows about one agent key, across every envelope it holds. */
 export async function agentProfile(key: string) {
   const db = getDb();
-  const held = await db.select().from(blocks).where(eq(blocks.holder, key)).orderBy(desc(blocks.firstSeenAt)).limit(40);
-  if (held.length === 0) return null;
+  const [held0, acct] = await Promise.all([
+    db.select().from(blocks).where(eq(blocks.holder, key)).orderBy(desc(blocks.firstSeenAt)).limit(40),
+    db.query.accounts.findFirst({ where: eq(accounts.agent, key) }),
+  ]);
+  if (held0.length === 0 && !acct) return null;
+  for (const id of new Set(held0.map((b) => b.rootId))) await sweepExpired(id);
+  const held = held0.length ? await db.select().from(blocks).where(eq(blocks.holder, key)).orderBy(desc(blocks.firstSeenAt)).limit(40) : held0;
   const rootIds = [...new Set(held.map((b) => b.rootId))];
-  const [rootRows, all, mine] = await Promise.all([
-    db.select().from(roots).where(inArray(roots.id, rootIds)),
-    db.select().from(blocks).where(inArray(blocks.rootId, rootIds)),
-    db.select().from(spends).where(inArray(spends.leafId, held.map((b) => b.id))).orderBy(desc(spends.createdAt)).limit(300),
+  const none = Promise.resolve([] as never[]);
+  const [rootRows, all, mine, incoming] = await Promise.all([
+    rootIds.length ? db.select().from(roots).where(inArray(roots.id, rootIds)) : none,
+    rootIds.length ? db.select().from(blocks).where(inArray(blocks.rootId, rootIds)) : none,
+    held.length ? db.select().from(spends).where(inArray(spends.leafId, held.map((b) => b.id))).orderBy(desc(spends.createdAt)).limit(300) : none,
+    db.select().from(spends).where(eq(spends.payeeAgent, key)).orderBy(desc(spends.createdAt)).limit(300),
   ]);
   const rootById = new Map(rootRows.map((x) => [x.id, x]));
   const blockById = new Map(all.map((x) => [x.id, x]));
   const now = Date.now();
-  const accounts: AgentAccount[] = held.map((b) => {
+  const holdings: AgentAccount[] = held.map((b) => {
     const root = rootById.get(b.rootId)!;
     const up: BlockRow[] = [];
     for (let p = b.parentId ? blockById.get(b.parentId) : undefined; p; p = p.parentId ? blockById.get(p.parentId) : undefined) up.unshift(p);
@@ -532,38 +722,63 @@ export async function agentProfile(key: string) {
       openedAt: b.firstSeenAt.toISOString(),
     };
   });
-  const settled = mine.filter((x) => x.status === "PAID" || x.status === "UNCLAIMED" || x.status === "PAYOUT_PENDING");
+  const isSettled = (x: Spend) => x.status === "PAID" || x.status === "UNCLAIMED" || x.status === "PAYOUT_PENDING";
+  const settled = mine.filter(isSettled);
   const denied = mine.filter((x) => x.status === "DENIED");
+  const received = incoming.filter(isSettled);
+  const strip = ({ signed: _s, receipt: _r, promiseNote: _n, payoutTo: _p, ...x }: Spend) => ({ ...x, hasReceipt: Boolean(_r) });
+  const firstSeen = [held[held.length - 1]?.firstSeenAt, acct?.openedAt].filter((x): x is Date => Boolean(x)).sort((a, b) => a.getTime() - b.getTime())[0]!;
   return {
-    key, account: E.accountNumber(key), label: held[0]!.holderLabel,
-    firstSeenAt: held[held.length - 1]!.firstSeenAt.toISOString(),
-    accounts,
+    key, account: E.accountNumber(key), label: held[0]?.holderLabel ?? acct!.label,
+    firstSeenAt: firstSeen.toISOString(),
+    accounts: holdings,
+    /** Set when the agent has opened an account that can receive. */
+    receives: acct ? { payee: E.accountPayee(key), owner: { label: acct.ownerName, key: acct.owner }, settlesTo: maskEmail(acct.settleTo), openedAt: acct.openedAt.toISOString() } : null,
     record: {
       payments: settled.length, paidMinor: settled.reduce((n, x) => n + x.amountMinor, 0),
       refused: denied.length, refusedCodes: [...new Set(denied.flatMap((x) => x.reasons.map((y) => y.code)))],
-      revoked: accounts.filter((a) => a.state === "REVOKED").length,
-      availableMinor: accounts.reduce((n, a) => n + a.availableMinor, 0),
+      revoked: holdings.filter((a) => a.state === "REVOKED").length,
+      availableMinor: holdings.reduce((n, a) => n + a.availableMinor, 0),
+      promisesKept: settled.filter((x) => x.promiseExpiresAt).length,
+      promisesLapsed: mine.filter((x) => x.promiseExpiresAt && x.status === "LAPSED").length,
+      received: received.length, receivedMinor: received.reduce((n, x) => n + x.amountMinor, 0),
+      setAsideForItMinor: incoming.filter((x) => x.status === "PROMISED").reduce((n, x) => n + x.amountMinor, 0),
     },
-    statement: mine.slice(0, 60).map(({ signed: _s, receipt: _r, ...x }) => ({ ...x, hasReceipt: Boolean(_r) })),
+    statement: mine.slice(0, 60).map(strip),
+    incoming: incoming.filter((x) => x.status !== "DENIED").slice(0, 60).map(strip),
   };
 }
 
 /** Agents the gateway has seen most recently. */
 export async function recentAgents(limit = 24) {
-  const rows = await getDb().select({ key: blocks.holder, label: sql<string>`max(${blocks.holderLabel})`, envelopes: sql<number>`count(*)::int`, lastSeen: sql<Date>`max(${blocks.firstSeenAt})` })
-    .from(blocks).groupBy(blocks.holder).orderBy(desc(sql`max(${blocks.firstSeenAt})`)).limit(limit);
-  return rows.map((x) => ({ ...x, account: E.accountNumber(x.key) }));
+  const db = getDb();
+  const [rows, accts] = await Promise.all([
+    db.select({ key: blocks.holder, label: sql<string>`max(${blocks.holderLabel})`, envelopes: sql<number>`count(*)::int`, lastSeen: sql<Date>`max(${blocks.firstSeenAt})` })
+      .from(blocks).groupBy(blocks.holder).orderBy(desc(sql`max(${blocks.firstSeenAt})`)).limit(limit),
+    db.select().from(accounts).orderBy(desc(accounts.openedAt)).limit(limit),
+  ]);
+  const receiving = new Set(accts.map((a) => a.agent));
+  const seen = new Set(rows.map((x) => x.key));
+  return [
+    ...accts.filter((a) => !seen.has(a.agent)).map((a) => ({ key: a.agent, label: a.label, envelopes: 0, lastSeen: a.openedAt, account: a.account, receives: true })),
+    ...rows.map((x) => ({ ...x, account: E.accountNumber(x.key), receives: receiving.has(x.key) })),
+  ].slice(0, limit);
 }
 
 export async function tree(rootId: string) {
   const db = getDb();
   const root = await db.query.roots.findFirst({ where: eq(roots.id, rootId) });
   if (!root) return null;
+  await sweepExpired(rootId);
   const [bs, ss] = await Promise.all([
     db.select().from(blocks).where(eq(blocks.rootId, rootId)).orderBy(asc(blocks.depth), asc(blocks.firstSeenAt)),
     db.select().from(spends).where(eq(spends.rootId, rootId)).orderBy(desc(spends.createdAt)).limit(200),
   ]);
-  return { root, blocks: bs, spends: ss };
+  // Names for payees written as account numbers, so people see "translator-agent", not only a number.
+  const numbers = [...new Set([...bs.flatMap((b) => b.caps.payees ?? []), ...ss.map((x) => x.payee)].filter(E.isAccountPayee).map((p) => p.slice(5).toUpperCase()))];
+  const named = numbers.length ? await db.select().from(accounts).where(inArray(accounts.account, numbers)) : [];
+  const payees = Object.fromEntries(named.map((a) => [`acct:${a.account.toLowerCase()}`, { label: a.label, key: a.agent, owner: a.ownerName }]));
+  return { root, blocks: bs, spends: ss, payees };
 }
 
 /** Independent check of a receipt: its signature, and what PayPal itself says about the capture and the payout. */
@@ -585,7 +800,7 @@ export async function reconcile(spendId: string) {
     { name: "Authority chain verifies back to the principal's key", ok: chainVerdict.ok && chainVerdict.principal === root.principal },
     { name: "PayPal capture exists for exactly this amount", ok: Boolean(cap && cap.amountMinor === s.amountMinor && cap.currency === s.currency && ["COMPLETED", "PENDING", "PARTIALLY_REFUNDED"].includes(cap.status)), detail: cap ? `${cap.id} · ${cap.status} · ${formatMoney(cap.amountMinor, cap.currency)}` : "not found" },
     { name: "PayPal capture carries this spend's id", ok: Boolean(cap && (cap.invoiceId === s.id || cap.invoiceId === null)), detail: cap?.invoiceId ?? "invoice_id not returned" },
-    { name: "PayPal payout went to the payee the agent signed for", ok: Boolean(po && po.receiver?.toLowerCase() === s.payee), detail: po ? `${po.batchId} · ${po.itemStatus ?? po.batchStatus} · ${po.receiver}` : "not found" },
+    { name: "PayPal payout went to the payee the agent signed for", ok: Boolean(po && po.receiver?.toLowerCase() === (s.payoutTo ?? s.payee)), detail: po ? `${po.batchId} · ${po.itemStatus ?? po.batchStatus} · ${po.receiver}` : "not found" },
     { name: "The hold belongs to this envelope", ok: Boolean(auth && (auth.customId === root.id || auth.customId === null)), detail: auth ? `${auth.id} · ${auth.status}` : "not found" },
   ];
   return { spend: s, receipt: s.receipt, checks, ok: checks.every((c) => c.ok) };

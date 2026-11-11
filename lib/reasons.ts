@@ -23,6 +23,8 @@ export const REASON_TEXT: Record<Reason, string> = {
   PURPOSE_NOT_ALLOWED: "This purpose isn't on the envelope.",
   WRONG_CURRENCY: "Wrong currency for this envelope.",
   BAD_AMOUNT: "The amount isn't a positive whole number of cents.",
+  PAYEE_ACCOUNT_UNKNOWN: "No agent has opened an account with that number.",
+  PROMISE_LAPSED: "The money that was set aside has been released.",
   UNKNOWN_ROOT: "This envelope was never sealed with the gateway.",
   ROOT_NOT_FUNDED: "No PayPal hold backs this envelope.",
   REVOKED: "The envelope (or one above it) was revoked or closed.",

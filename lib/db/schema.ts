@@ -6,7 +6,7 @@
  */
 import { sql } from "drizzle-orm";
 import { bigserial, index, integer, jsonb, pgTable, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
-import type { Block, Caps, SignedSpend, Violation } from "../envelope/core";
+import type { Block, Caps, SignedAccount, SignedPromise, SignedSpend, Violation } from "../envelope/core";
 
 const ts = (name: string) => timestamp(name, { withTimezone: true, mode: "date" });
 
@@ -54,15 +54,17 @@ export const blocks = pgTable("blocks", {
   firstSeenAt: ts("first_seen_at").notNull().defaultNow(),
 }, (t) => [index("blocks_root").on(t.rootId, t.depth)]);
 
-export const SPEND_STATES = ["DENIED", "RESERVED", "CAPTURED", "PAID", "PAYOUT_PENDING", "UNCLAIMED", "FAILED"] as const;
+export const SPEND_STATES = ["DENIED", "PROMISED", "LAPSED", "RESERVED", "CAPTURED", "PAID", "PAYOUT_PENDING", "UNCLAIMED", "FAILED"] as const;
 export type SpendState = (typeof SPEND_STATES)[number];
 
 export type Receipt = {
   v: "envelope-receipt/1";
   spend: string;
   decision: "PAID";
-  request: SignedSpend["request"];
+  request: SignedSpend["request"] | SignedPromise["request"];
   requestSig: string;
+  /** Present when the payee is an agent's account: whose account it is and where PayPal sent the money. */
+  paidTo?: { account: string; agent: string; agentLabel: string; settledTo: string };
   /** The authority chain: block ids and hashes, root first. */
   chain: Array<{ id: string; hash: string; holder: string; holderLabel: string }>;
   principal: string;
@@ -80,7 +82,7 @@ export const spends = pgTable("spends", {
   chainIds: jsonb("chain_ids").$type<string[]>().notNull(),
   /** SHA-256 of the signed request: the same request can never be executed twice. */
   requestHash: text("request_hash").notNull().unique(),
-  signed: jsonb("signed").$type<SignedSpend>().notNull(),
+  signed: jsonb("signed").$type<SignedSpend | SignedPromise>().notNull(),
   amountMinor: integer("amount_minor").notNull(),
   currency: text("currency").notNull(),
   payee: text("payee").notNull(),
@@ -97,9 +99,41 @@ export const spends = pgTable("spends", {
   payoutStatus: text("payout_status"),
   refundId: text("refund_id"),
   receipt: jsonb("receipt").$type<Receipt>(),
+  /** When the payee is an agent's account: that agent's key, and the PayPal address fixed at admission. */
+  payeeAgent: text("payee_agent"),
+  payoutTo: text("payout_to"),
+  /** Set for promises: money set aside for the payee until this time. */
+  promiseExpiresAt: ts("promise_expires_at"),
+  promiseNote: jsonb("promise_note").$type<PromiseNote>(),
   createdAt: ts("created_at").notNull().defaultNow(),
   settledAt: ts("settled_at"),
-}, (t) => [index("spends_root").on(t.rootId, t.createdAt)]);
+}, (t) => [index("spends_root").on(t.rootId, t.createdAt), index("spends_payee_agent").on(t.payeeAgent, t.createdAt)]);
+
+/** What the gateway hands a payee when money has been set aside for it. */
+export type PromiseNote = {
+  v: "envelope-promise-note/1";
+  promise: string;
+  agent: string; agentLabel: string; account: string;
+  sponsors: Array<{ role: "owner" | "agent"; label: string; key: string }>;
+  root: string;
+  amount: number; currency: string; payee: string; purpose: string;
+  expiresAt: string;
+  paypal: { mode: string; authorizationId: string; status: string };
+  issuedAt: string; gateway: string; sig: string;
+};
+
+/** Accounts that can receive: an agent's key, the owner who answers for it, and where its income is settled. */
+export const accounts = pgTable("accounts", {
+  agent: text("agent").primaryKey(),
+  /** Readable account number derived from the key; unique so a number always means one agent. */
+  account: text("account").notNull().unique(),
+  label: text("label").notNull(),
+  owner: text("owner").notNull(),
+  ownerName: text("owner_name").notNull(),
+  settleTo: text("settle_to").notNull(),
+  signed: jsonb("signed").$type<SignedAccount>().notNull(),
+  openedAt: ts("opened_at").notNull().defaultNow(),
+});
 
 /** The gateway's own signing key for receipts (generated on first use). */
 export const gatewayKeys = pgTable("gateway_keys", {
@@ -151,3 +185,4 @@ export const rateLimits = pgTable("rate_limits", {
 export type Root = typeof roots.$inferSelect;
 export type BlockRow = typeof blocks.$inferSelect;
 export type Spend = typeof spends.$inferSelect;
+export type Account = typeof accounts.$inferSelect;

@@ -1,5 +1,5 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "nextjs",
-  "buildCommand": "npm run db:migrate && next build"
+  "buildCommand": "if [ -n \"$DATABASE_URL\" ]; then npm run db:migrate; else echo 'DATABASE_URL is not set: skipping migrations (the app will ask for a database at runtime)'; fi && next build"
 }
