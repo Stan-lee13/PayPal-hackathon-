@@ -96,6 +96,16 @@ d("review findings (simulated PayPal)", async () => {
     const own = await G.spend(await E.signSpend(chain, ops!, { amount: 100, payee: "attacker@evil.example", purpose: "design" }));
     expect(own.status).toBe("DENIED");
     expect(await count("spends")).toBe(before[0]! + 1);
+    // and so is a request under an envelope a real holder signed wider than its own: every signature is genuine, the rules are broken
+    const helper = await E.generateKeyPair();
+    const body: E.BlockBody = { v: E.BLOCK_VERSION, id: E.randomId("env"), root: root.id, parent: await E.blockHash(chain[0]!), issuer: ops!.publicKey, holder: helper.publicKey, holderLabel: "helper", caps: E.normalizeCaps({ currency: "USD", limit: 100000, perPayment: 100000, payees: null, purposes: null, notAfter: EXP, splits: 0 }), issuedAt: new Date().toISOString() };
+    const wider: E.Envelope = [...chain, { body, sig: await E.signDetached(ops!.privateKey, E.BLOCK_VERSION, body) }];
+    expect((await G.spend(await E.signSpend(wider, helper, { amount: 20000, payee: "attacker@evil.example", purpose: "anything" }))).status).toBe("DENIED");
+    expect(await count("spends")).toBe(before[0]! + 2);
+    // the same wider block with a signature the holder never made is forgotten
+    const unsigned: E.Envelope = [...chain, { body: { ...body, id: E.randomId("env") }, sig: await E.signDetached(rogue!.privateKey, E.BLOCK_VERSION, body) }];
+    expect((await G.spend(await E.signSpend(unsigned, helper, { amount: 20000, payee: "attacker@evil.example", purpose: "anything" }))).status).toBe("DENIED");
+    expect(await count("spends")).toBe(before[0]! + 2);
   });
 
   it("a refused withdrawal does not make room under the daily limit", async () => {

@@ -214,7 +214,12 @@ async function admit(kind: "spend" | "promise", signed: E.SignedSpend | E.Signed
   // the key the block on record was given to, or by the holder of a chain that verifies. Anything else is
   // refused and forgotten, so strangers cannot write into someone's record.
   const onRecord = typeof leaf.id === "string" ? await db.query.blocks.findFirst({ where: eq(blocks.id, leaf.id) }) : undefined;
-  const fromHolder = authentic && (onRecord ? onRecord.holder === leaf.holder && onRecord.rootId === root.id : stateless.chain.ok);
+  // "Anchored": every block is really signed by the holder above it, back to the root this gateway sealed.
+  // Such a chain may still break the rules (a child that widened itself); that refusal belongs on the record.
+  const FORGED = new Set<E.Reason>(["MALFORMED", "BAD_SIGNATURE", "BROKEN_LINK", "WRONG_ISSUER", "WRONG_ROOT"]);
+  const sealed = await db.query.blocks.findFirst({ where: eq(blocks.id, root.id) });
+  const anchored = !stateless.chain.violations.some((v) => FORGED.has(v.code)) && Boolean(sealed) && (await E.blockHash(chain[0]!).catch(() => "")) === sealed!.hash;
+  const fromHolder = authentic && (onRecord ? onRecord.holder === leaf.holder && onRecord.rootId === root.id : anchored);
   if (!fromHolder) {
     const why = stateless.violations.length ? stateless.violations : [{ code: "NOT_THE_HOLDER" as const, at: null, detail: "the request is not signed by the key this envelope was given to" }];
     return { status: "DENIED", spend: null, duplicate: false, receipt: null, reasons: why };

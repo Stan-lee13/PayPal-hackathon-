@@ -291,7 +291,7 @@ The gateway and PayPal cannot commit together, so each step is safe to repeat an
 - **A payout that cannot be made or delivered.** The capture is refunded to the owner and the budget returns. If PayPal refuses the refund, the payment becomes `REFUND_DUE`: the capture stays in the books and the budget stays used, and each later look tries the refund again.
 - **A refused payout request is not proof that no payout exists.** Before refunding, the gateway re-reads its own record; if another arrival of the same request has recorded a payout, or PayPal's refusal says the request is a duplicate, it does not refund.
 - **Revoked in between.** A payment that was admitted but not yet captured is checked again before the capture; if any envelope on its path was revoked or the root closed, it fails and nothing is captured.
-- **What is recorded.** A refusal is stored against an envelope, account or card only when the request was really signed by its holder (or, for a card, its merchant). Anything else is refused and forgotten.
+- **What is recorded.** A refusal is stored against an envelope only when the request is signed by the key that holds the envelope it presents, and every block of that chain is really signed by the holder above it, back to the root this gateway sealed. A chain that breaks the rules (a child wider than its parent) but is genuinely signed is recorded; a chain with a bad signature, a broken link or another root is refused and forgotten. For an account the signer must be the account's key, and for a card its merchant.
 
 ### Reading an owner's books
 

@@ -83,7 +83,9 @@ export function ProofView({ rootId, spendId }: { rootId: string; spendId?: strin
     setPaths(g.edges.flatMap((e) => {
       const a = els.current.get(e.from)?.getBoundingClientRect(), b = els.current.get(e.to)?.getBoundingClientRect();
       if (!a || !b) return [];
-      const x1 = a.left + a.width / 2 - box.left, y1 = a.bottom - box.top, x2 = b.left + b.width / 2 - box.left, y2 = b.top - box.top;
+      // Measured rectangles are in screen pixels; the drawing is in layout pixels. They differ when an ancestor is zoomed or scaled.
+      const k = wrap.current?.offsetWidth ? box.width / wrap.current.offsetWidth : 1;
+      const x1 = (a.left + a.width / 2 - box.left) / k, y1 = (a.bottom - box.top) / k, x2 = (b.left + b.width / 2 - box.left) / k, y2 = (b.top - box.top) / k;
       const mid = (y1 + y2) / 2;
       return [{ key: `${e.from}>${e.to}`, d: `M ${x1} ${y1} C ${x1} ${mid}, ${x2} ${mid}, ${x2} ${y2}`, on: trail.has(e.from) && trail.has(e.to), label: e.label, x: (x1 + x2) / 2, y: mid }];
     }));

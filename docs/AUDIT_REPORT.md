@@ -59,7 +59,7 @@ How real each part is. **Operational** means it ran on the real PayPal sandbox a
 | Receipts checked against PayPal and in the browser | Operational | receipt page; the browser test |
 | Treasury with reconciliation | Operational | sandbox run; shown in the video |
 | Signed reference | Operational | sandbox run |
-| Proof graph | Tested in a browser on the simulator in both gateway modes | `scripts/e2e.mjs`; not yet run against the sandbox |
+| Proof graph | Operational | shown in the video on the sandbox (`evidence/model-run.md`); `scripts/e2e.mjs` on the simulator in both gateway modes |
 | A model playing the agents inside the app | Operational | `evidence/model-run.md` |
 | MCP server and command line | Operational for split, pay and cards; the balance commands were run on the simulator | `evidence/agent-run.md`, `evidence/card-run.md` |
 | In-browser gateway (the hosted try-it copy) | Operational as a simulator | the browser test; production health check |
@@ -113,6 +113,7 @@ Found by using the app on a desktop and a phone-sized screen, as an owner, a pay
 | Pages are dense with small monospace text | Open. A deliberate look, at some cost to first-read comprehension |
 | No loading skeletons; pages show a one-line "looking" state | Open |
 | Phone layout was checked at one size on five pages, not tested by hand on a device | Open |
+| The proof graph's connecting lines were drawn out of place when the page was zoomed with CSS (found in the first video take) | Fixed |
 
 ## Verdict
 
