@@ -7,6 +7,10 @@
  *   Close   POST /v2/payments/authorizations/{id}/void         release whatever was never spent
  *   Undo    POST /v2/payments/captures/{id}/refund             if a payout can't be sent after a capture
  *   Recall  POST /v1/payments/payouts-item/{id}/cancel         take back a payout the payee never claimed
+ *   Books   GET  /v1/reporting/balances                        what PayPal says the gateway's account holds
+ *           GET  /v1/reporting/transactions                    PayPal's own statement, to compare with ours
+ *   Dispute GET  /v1/customer/disputes                         has the payer disputed this capture?
+ *           POST /v1/customer/disputes/{id}/provide-evidence   answer with the signed chain of authority
  *   Events  POST /v1/notifications/verify-webhook-signature    is this event really from PayPal?
  *           GET  /v1/notifications/webhooks-events             PayPal's own list of the events it reported
  *
@@ -144,4 +148,61 @@ export type PayPalEventBody = { id: string; event_type: string; create_time?: st
 export async function listEvents(pp: PayPalClient, since?: Date): Promise<PayPalEventBody[]> {
   const r = await pp.request<{ events?: PayPalEventBody[] }>("GET", "/v1/notifications/webhooks-events", { query: { page_size: "50", ...(since ? { start_time: since.toISOString().replace(/\.\d+Z$/, "Z") } : {}) } });
   return r.events ?? [];
+}
+
+export type BalanceFacts = { currency: string; totalMinor: number; availableMinor: number; withheldMinor: number; asOf: string | null; accountId: string | null };
+/** What PayPal itself reports the gateway's account holds (Reporting API). Null when PayPal reports no balance in that currency. */
+export async function getBalance(pp: PayPalClient, currency: string): Promise<BalanceFacts | null> {
+  const r = await pp.request<{ balances?: Array<{ currency: string; total_balance?: Money; available_balance?: Money; withheld_balance?: Money }>; as_of_time?: string; account_id?: string }>("GET", "/v1/reporting/balances", { query: { currency_code: currency } });
+  const b = r.balances?.find((x) => x.currency === currency);
+  if (!b) return null;
+  const minor = (m?: Money) => (m ? toMinor(m.value, m.currency_code) : 0);
+  return { currency, totalMinor: minor(b.total_balance), availableMinor: minor(b.available_balance), withheldMinor: minor(b.withheld_balance), asOf: r.as_of_time ?? null, accountId: r.account_id ?? null };
+}
+
+export type StatementLine = { id: string; code: string; at: string; amountMinor: number; currency: string; status: string | null; invoiceId: string | null; reference: string | null };
+/**
+ * PayPal's own statement of the gateway's account (Transaction Search). It is a second source, independent of the
+ * calls that made the transactions. PayPal says it can lag by up to three hours, and one query spans at most 31 days.
+ */
+export async function listTransactions(pp: PayPalClient, start: Date, end: Date): Promise<StatementLine[]> {
+  const iso = (d: Date) => d.toISOString().replace(/\.\d+Z$/, "Z");
+  const out: StatementLine[] = [];
+  for (let page = 1; page <= 4; page++) {
+    const r = await pp.request<{ transaction_details?: Array<{ transaction_info?: Record<string, any> }>; total_pages?: number }>( // eslint-disable-line @typescript-eslint/no-explicit-any
+      "GET", "/v1/reporting/transactions", { query: { start_date: iso(start), end_date: iso(end), fields: "transaction_info", page_size: "500", page: String(page) } });
+    for (const d of r.transaction_details ?? []) {
+      const t = d.transaction_info;
+      if (!t?.transaction_id || !t.transaction_amount?.value) continue;
+      out.push({ id: t.transaction_id, code: String(t.transaction_event_code ?? ""), at: String(t.transaction_initiation_date ?? ""), amountMinor: toMinor(String(t.transaction_amount.value).replace(/^-/, ""), t.transaction_amount.currency_code) * (String(t.transaction_amount.value).startsWith("-") ? -1 : 1), currency: t.transaction_amount.currency_code, status: t.transaction_status ?? null, invoiceId: t.invoice_id ?? null, reference: t.paypal_reference_id ?? null });
+    }
+    if (page >= (r.total_pages ?? 1)) break;
+  }
+  return out;
+}
+
+export type DisputeFacts = { id: string; status: string; reason: string | null; stage: string | null; amountMinor: number | null; currency: string | null; createdAt: string | null; transactionIds: string[] };
+type RawDispute = { dispute_id: string; status?: string; reason?: string; dispute_life_cycle_stage?: string; create_time?: string; dispute_amount?: Money; disputed_transactions?: Array<{ seller_transaction_id?: string; buyer_transaction_id?: string }> };
+const disputeFacts = (d: RawDispute): DisputeFacts => ({
+  id: d.dispute_id, status: d.status ?? "OPEN", reason: d.reason ?? null, stage: d.dispute_life_cycle_stage ?? null, createdAt: d.create_time ?? null,
+  amountMinor: d.dispute_amount ? toMinor(d.dispute_amount.value, d.dispute_amount.currency_code) : null, currency: d.dispute_amount?.currency_code ?? null,
+  transactionIds: (d.disputed_transactions ?? []).flatMap((t) => [t.seller_transaction_id, t.buyer_transaction_id]).filter((x): x is string => Boolean(x)),
+});
+/** Disputes PayPal holds against one transaction of ours (a capture). Empty when there is none. */
+export async function disputesFor(pp: PayPalClient, transactionId: string): Promise<DisputeFacts[]> {
+  const r = await pp.request<{ items?: RawDispute[] }>("GET", "/v1/customer/disputes", { query: { disputed_transaction_id: transactionId } });
+  return (r.items ?? []).map((d) => ({ ...disputeFacts(d), transactionIds: [transactionId] }));
+}
+/** Every dispute against the gateway's account, newest first, each read in full so the transaction it is about is known. */
+export async function listDisputes(pp: PayPalClient): Promise<DisputeFacts[]> {
+  const r = await pp.request<{ items?: RawDispute[] }>("GET", "/v1/customer/disputes", { query: { page_size: "20" } });
+  const out: DisputeFacts[] = [];
+  for (const d of r.items ?? []) out.push(disputeFacts(await pp.request<RawDispute>("GET", `/v1/customer/disputes/${encodeURIComponent(d.dispute_id)}`).catch(() => d)));
+  return out;
+}
+/** Answer a dispute with written evidence. PayPal takes it as multipart form data; notes are limited to 2,000 characters. */
+export async function provideEvidence(pp: PayPalClient, disputeId: string, notes: string): Promise<void> {
+  const form = new FormData();
+  form.append("input", new Blob([JSON.stringify({ evidences: [{ evidence_type: "OTHER", notes: notes.slice(0, 2000) }] })], { type: "application/json" }), "input.json");
+  await pp.request("POST", `/v1/customer/disputes/${encodeURIComponent(disputeId)}/provide-evidence`, { form });
 }

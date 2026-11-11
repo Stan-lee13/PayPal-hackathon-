@@ -275,7 +275,7 @@ d("@envelope/sdk against the gateway (simulated PayPal)", () => {
     expect(back).toMatchObject({ status: "FAILED", payoutStatus: "RETURNED" });
     expect(back.refundId).toBeTruthy();
     expect(back.reasons[0]!.code).toBe("RECALLED_BY_OWNER");
-    expect((await scout.authority()).availableMinor).toBe(1500);
+    expect((await scout.authority()).availableMinor).toBe(800); // the owner has the $7 back; PayPal does not return it to the hold
     const trail = await gateway.paypalTrail(root.id);
     expect(trail.summary).toMatchObject({ holds: 1, captures: 1, payouts: 1, cancels: 1, refunds: 1 });
     expect(trail.calls.every((c) => typeof c.path === "string" && !/\d{13,19}/.test(JSON.stringify(c)))).toBe(true);

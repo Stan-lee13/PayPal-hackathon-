@@ -20,7 +20,8 @@ import { UserFacingError } from "../errors";
 import { getPayPal, PayPalApiError, paypalMode } from "../paypal/client";
 import { callsFor, MOVES, OP_TEXT } from "../paypal/journal";
 import { cancelPayoutItem, listEvents, verifyWebhookSignature, type EventHeaders, type PayPalEventBody } from "../paypal/payments";
-import { syncTransfer } from "./bank";
+import { settleRefunds, syncTransfer } from "./bank";
+import { settleDisputes } from "./books";
 import { checkHold, sweepExpired, syncSpend, trail } from "./service";
 
 type Loose = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -208,5 +209,8 @@ export async function sweepUnfinished(limit = 40) {
   }
   const promised = await db.selectDistinct({ rootId: spends.rootId }).from(spends).where(eq(spends.status, "PROMISED")).limit(limit);
   for (const p of promised) await sweepExpired(p.rootId).catch(() => undefined);
-  return { mode: paypalMode(), events: { seen: feed.seen, applied: feed.applied.length, outcomes: feed.applied.map((e) => ({ type: e.type, subject: e.subject, outcome: e.outcome })) }, checked: openSpends.length + openTransfers.length, moved };
+  // Refunds PayPal has not confirmed yet, and whatever payers have disputed.
+  for (const r of await settleRefunds().catch(() => [])) if (r.status === "REFUNDED") moved.push({ id: r.spend, from: "PAID", to: "REFUNDED" });
+  const disputes = await settleDisputes().catch(() => ({ asked: false, disputes: 0, ours: [] }));
+  return { mode: paypalMode(), events: { seen: feed.seen, applied: feed.applied.length, outcomes: feed.applied.map((e) => ({ type: e.type, subject: e.subject, outcome: e.outcome })) }, checked: openSpends.length + openTransfers.length, moved, disputes: { asked: disputes.asked, atPayPal: disputes.disputes, aboutPaymentsHere: disputes.ours } };
 }

@@ -40,6 +40,7 @@ export const CARD_VERSION = "envelope-card/1" as const;
 /** A merchant charging a card. Signed by the merchant the card is locked to. */
 export const CHARGE_VERSION = "envelope-charge/1" as const;
 export const CARD_CANCEL_VERSION = "envelope-card-cancel/1" as const;
+export const REFUND_VERSION = "envelope-refund/1" as const;
 /** An owner asking to read their own books. A public key names an owner; only a signature proves who is asking. */
 export const READ_VERSION = "envelope-read/1" as const;
 
@@ -172,7 +173,7 @@ export type Reason =
   | "NO_BALANCE_ACCOUNT" | "INSUFFICIENT_BALANCE" | "ACCOUNT_FROZEN" | "OVER_ACCOUNT_LIMIT" | "OVER_DAILY_LIMIT"
   | "UNKNOWN_CARD" | "NOT_THE_MERCHANT" | "CARD_CANCELLED" | "CARD_EXPIRED" | "CARD_USED_UP" | "OVER_CARD_LIMIT" | "CHARGE_TOO_SOON"
   | "UNKNOWN_ROOT" | "ROOT_NOT_FUNDED" | "REVOKED" | "REPLAY" | "OVER_ENVELOPE_LIMIT" | "OVER_ANCESTOR_LIMIT" | "FORKED_BLOCK"
-  | "PAYPAL_CAPTURE_FAILED" | "PAYPAL_PAYOUT_FAILED" | "RECALLED_BY_OWNER";
+  | "PAYPAL_CAPTURE_FAILED" | "PAYPAL_PAYOUT_FAILED" | "RECALLED_BY_OWNER" | "REFUNDED_BY_PAYEE" | "NOT_REFUNDABLE" | "PAYPAL_REFUND_FAILED";
 
 export type Violation = { code: Reason; at: string | null; detail: string };
 
@@ -535,6 +536,22 @@ export async function verifyReadSignature(r: SignedRead, what: ReadRequest["what
   const q = r?.request;
   if (!q || q.v !== READ_VERSION || q.what !== what || q.subject !== subject || typeof r.by !== "string" || !fresh(q.at, now)) return false;
   return verify(r.by, READ_VERSION, q, r.sig);
+}
+
+/** An agent that was paid, and kept the money in its balance, gives one payment back in full. Only the key that was paid can sign it. */
+export type RefundRequest = { v: typeof REFUND_VERSION; from: string; spend: string; memo: string; nonce: string; at: string };
+export type SignedRefund = { request: RefundRequest; sig: string };
+export async function signRefund(agent: KeyPair, spend: string, memo = "", now = new Date()): Promise<SignedRefund> {
+  const request: RefundRequest = { v: REFUND_VERSION, from: agent.publicKey, spend, memo: memo.trim().slice(0, 140), nonce: randomId("n"), at: now.toISOString() };
+  return { request, sig: await sign(agent.privateKey, REFUND_VERSION, request) };
+}
+export async function verifyRefund(r: SignedRefund, now = new Date()): Promise<Violation[]> {
+  const q = r?.request;
+  if (!q || q.v !== REFUND_VERSION || typeof r.sig !== "string" || typeof q.from !== "string" || typeof q.spend !== "string" || typeof q.memo !== "string" || q.memo.length > 140 || typeof q.nonce !== "string" || typeof q.at !== "string") return [{ code: "MALFORMED", at: null, detail: "not a refund request" }];
+  const v: Violation[] = [];
+  if (!(await verify(q.from, REFUND_VERSION, q, r.sig))) v.push({ code: "NOT_THE_HOLDER", at: null, detail: "the refund is not signed by the key that was paid" });
+  if (!fresh(q.at, now)) v.push({ code: "STALE_REQUEST", at: null, detail: "the request is outside the 5-minute acceptance window" });
+  return v;
 }
 
 export async function signFreeze(owner: KeyPair, agent: string, frozen: boolean, now = new Date()): Promise<SignedFreeze> {

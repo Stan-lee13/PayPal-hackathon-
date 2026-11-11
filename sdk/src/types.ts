@@ -102,7 +102,7 @@ export type RootState = {
   id: string; principal: string; principalName: string; title: string; currency: string;
   limitMinor: number; status: "ACTIVE" | "CLOSED";
   paypalOrderId: string | null; authorizationId: string | null; authorizationExpiresAt: string | null;
-  capturedMinor: number; releasedMinor: number | null; closedAt: string | null; closeReason: string | null; createdAt: string;
+  capturedMinor: number; /** Captured and then refunded to the owner. PayPal does not return it to the hold. */ refundedMinor: number; releasedMinor: number | null; closedAt: string | null; closeReason: string | null; createdAt: string;
 };
 export type BlockState = {
   id: string; rootId: string; parentId: string | null; depth: number; hash: string;
@@ -208,5 +208,5 @@ export type PayPalTrail = {
 export type PaymentStatus = { id: string; status: SpendStatus; delivered: boolean; amountMinor: number; currency: string; payee: string; purpose: string; payoutStatus: string | null; captureId: string | null; refundId: string | null; hasReceipt: boolean; reasons: Array<{ code: string; detail: string; meaning?: string }> };
 export type Recalled = { status: SpendStatus; spendId: string; refundId: string | null; payoutStatus: string | null; reasons: Array<{ code: string; detail: string; meaning?: string }> };
 
-export type RevokeResult ={ block: { id: string; revokedAt: string | null }; root: { status: "ACTIVE" | "CLOSED"; capturedMinor: number; releasedMinor: number | null } };
+export type RevokeResult ={ block: { id: string; revokedAt: string | null }; root: { status: "ACTIVE" | "CLOSED"; capturedMinor: number; refundedMinor: number; releasedMinor: number | null } };
 export type GatewayKey = { publicKey: string; signs: string[] };

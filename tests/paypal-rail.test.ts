@@ -70,7 +70,7 @@ d("the PayPal rail (simulated PayPal)", async () => {
     expect((await S.paypalTrail(other.root.id))!.summary.refused).toBeGreaterThan(0);
   });
 
-  it("the owner recalls a payout nobody claimed: PayPal cancels it, the capture is refunded, the budget returns", async () => {
+  it("the owner recalls a payout nobody claimed: PayPal cancels it and the capture is refunded; that part of the hold stays used", async () => {
     const w = await world();
     const r = await G.spend(await E.signSpend(w.chain, w.ops, { amount: 6700, payee: w.payee, purpose: "design" }));
     expect(r.status).toBe("UNCLAIMED");
@@ -88,14 +88,15 @@ d("the PayPal rail (simulated PayPal)", async () => {
     expect(back.reasons[0]!.code).toBe("RECALLED_BY_OWNER");
     expect(await calls("/cancel")).toBe(1);
     expect(await calls("/refund")).toBe(1);
-    expect((await rootRow(w.root.id)).capturedMinor).toBe(0);
-    expect(await blockRow(w.leaf)).toMatchObject({ spentMinor: 0, reservedMinor: 0 });
+    // the owner is charged nothing and has the $67 back; PayPal does not return a refunded amount to the hold
+    expect(await rootRow(w.root.id)).toMatchObject({ capturedMinor: 0, refundedMinor: 6700 });
+    expect(await blockRow(w.leaf)).toMatchObject({ spentMinor: 6700, reservedMinor: 0 });
     // again: nothing more happens at PayPal
     const again = await S.recall(r.spend!.id, await E.signRead(w.ada, "recall", r.spend!.id));
     expect(again.status).toBe("FAILED");
     expect(await calls("/cancel")).toBe(1);
     expect(await calls("/refund")).toBe(1);
-    // the money is spendable again
+    // what was never captured is still spendable ($200 − $67 = $133)
     expect((await G.spend(await E.signSpend(w.chain, w.ops, { amount: 8000, payee: w.payee, purpose: "design" }))).status).toBe("UNCLAIMED");
     const t = (await S.paypalTrail(w.root.id))!;
     expect(t.summary).toMatchObject({ cancels: 1, refunds: 1 });

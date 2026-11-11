@@ -17,14 +17,14 @@
  */
 import { and, desc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import { getDb } from "../db";
-import { accounts, cards, ledger, transfers, type Account, type Card, type Transfer, type TransferReceipt } from "../db/schema";
+import { accounts, cards, ledger, spends, transfers, type Account, type Card, type Spend, type Transfer, type TransferReceipt } from "../db/schema";
 import { UserFacingError } from "../errors";
 import * as E from "../envelope/core";
 import { newId } from "../ids";
 import { getPayPal, PayPalApiError, paypalMode } from "../paypal/client";
-import { getPayout, payout } from "../paypal/payments";
+import { getPayout, payout, refundCapture } from "../paypal/payments";
 import { audit } from "../services/audit";
-import { gatewayKey, lockAccount } from "./service";
+import { gatewayKey, HELD, lockAccount, markRefundedByPayee } from "./service";
 
 type Tx = Parameters<Parameters<ReturnType<typeof getDb>["transaction"]>[0]>[0];
 /** What left an account in the last 24 hours through payments and card charges (withdrawals to the owner don't count; refused payouts are netted off). */
@@ -377,6 +377,102 @@ export async function freeze(signed: E.SignedFreeze): Promise<Account> {
  * The bank's own books. Every balance is a liability; it must equal what the ledger says, and the
  * ledger must equal money captured from PayPal holds into accounts minus money paid out of them.
  */
+// ---------------------------------------------------------------------------
+// Refund: an agent that kept a payment gives it back
+// ---------------------------------------------------------------------------
+
+export type RefundResult = { status: "REFUNDED" | "DENIED" | "PENDING" | "FAILED"; spendId: string | null; refundId: string | null; reasons: E.Violation[]; balanceMinor: number | null };
+
+/**
+ * An agent that was paid, and kept the money in its balance, returns one payment in full. Its balance is
+ * debited first, once (one ledger row per payment); then PayPal refunds the capture to the owner's
+ * funding source; then the owner's books follow. If PayPal refuses, the debit is undone, once. If PayPal
+ * cannot be reached, the debit stands and `settleRefunds` finishes the job later: the refund carries
+ * the payment's own idempotency key, so asking again can never refund twice.
+ *
+ * Only the key that was paid can do this. Money that already left the balance cannot be refunded from it.
+ */
+export async function refund(signed: E.SignedRefund): Promise<RefundResult> {
+  const db = getDb();
+  const why = await E.verifyRefund(signed);
+  if (why.length) return { status: "DENIED", spendId: null, refundId: null, reasons: why, balanceMinor: null };
+  const r = signed.request;
+  const s = await db.query.spends.findFirst({ where: eq(spends.id, r.spend) });
+  const acct = await db.query.accounts.findFirst({ where: eq(accounts.agent, r.from) });
+  const deny = (code: E.Reason, detail: string, balance: number | null = acct?.balanceMinor ?? null): RefundResult => ({ status: "DENIED", spendId: s?.id ?? null, refundId: null, reasons: [{ code, at: null, detail }], balanceMinor: balance });
+  // Anyone else's request says nothing about this account or this payment, and leaves no trace on them.
+  if (!s || !acct || s.payeeAgent !== r.from) return deny("NOT_THE_HOLDER", "only the agent that was paid can refund a payment", null);
+  if (s.status === "FAILED" && s.refundId) return { status: "REFUNDED", spendId: s.id, refundId: s.refundId, reasons: s.reasons, balanceMinor: acct.balanceMinor };
+  if (s.status !== "PAID" || s.payoutStatus !== HELD || !s.captureId) return deny("NOT_REFUNDABLE", "only a payment that was credited to this agent's balance can be refunded by it");
+
+  const debit = await db.transaction(async (tx) => {
+    await lockAccount(tx, acct.agent);
+    const live = (await tx.query.accounts.findFirst({ where: eq(accounts.agent, acct.agent) }))!;
+    const already = await tx.query.ledger.findFirst({ where: and(eq(ledger.agent, live.agent), eq(ledger.kind, "refund"), eq(ledger.ref, s.id)) });
+    if (already) {
+      // Debited before. Unless that debit was undone (PayPal refused), the refund is in progress and can simply continue.
+      const undone = await tx.query.ledger.findFirst({ where: and(eq(ledger.agent, live.agent), eq(ledger.kind, "refund_reversal"), eq(ledger.ref, s.id)) });
+      return undone ? { refused: [{ code: "PAYPAL_REFUND_FAILED", at: null, detail: "PayPal refused this refund earlier; the money is in the balance" }] as E.Violation[], balance: live.balanceMinor } : { refused: null, balance: live.balanceMinor };
+    }
+    const no: E.Violation[] = [];
+    if (live.frozenAt) no.push({ code: "ACCOUNT_FROZEN", at: null, detail: `${live.label}'s account was frozen by ${live.ownerName}` });
+    if (s.amountMinor > live.balanceMinor) no.push({ code: "INSUFFICIENT_BALANCE", at: null, detail: `the balance is ${E.money(live.balanceMinor)}; this payment was ${E.money(s.amountMinor)}` });
+    if (no.length) return { refused: no, balance: live.balanceMinor };
+    const after = live.balanceMinor - s.amountMinor;
+    await tx.insert(ledger).values({ agent: live.agent, kind: "refund", ref: s.id, deltaMinor: -s.amountMinor, balanceAfterMinor: after, counterparty: s.leafLabel, memo: r.memo || "refund" });
+    await tx.update(accounts).set({ balanceMinor: after }).where(eq(accounts.agent, live.agent));
+    return { refused: null, balance: after };
+  });
+  if (debit.refused) return { status: "DENIED", spendId: s.id, refundId: null, reasons: debit.refused, balanceMinor: debit.balance };
+  await note(acct, "balance.refund_requested", "PENDING", s.id, { amount: s.amountMinor, to: s.leafLabel, memo: r.memo });
+  return finishRefund(s, acct, r.memo);
+}
+
+/** The PayPal half of a refund whose debit is already on the ledger. Safe to call any number of times. */
+async function finishRefund(s: Spend, acct: Account, memo: string): Promise<RefundResult> {
+  const db = getDb();
+  let refundId: string | null = null;
+  try {
+    refundId = (await refundCapture(getPayPal(), s.captureId!, s.id, memo || "Refunded by the payee")).id;
+  } catch (e) {
+    if (e instanceof PayPalApiError && e.issue === "CAPTURE_FULLY_REFUNDED") refundId = "already-refunded";
+    else if (e instanceof PayPalApiError && !e.retryable) {
+      // PayPal said no. Put the money back in the balance, once, and say so.
+      const balance = await db.transaction(async (tx) => {
+        await lockAccount(tx, acct.agent);
+        const live = (await tx.query.accounts.findFirst({ where: eq(accounts.agent, acct.agent) }))!;
+        const [row] = await tx.insert(ledger).values({ agent: live.agent, kind: "refund_reversal", ref: s.id, deltaMinor: s.amountMinor, balanceAfterMinor: live.balanceMinor + s.amountMinor, counterparty: s.leafLabel, memo: "PayPal refused the refund" }).onConflictDoNothing().returning();
+        if (row) await tx.update(accounts).set({ balanceMinor: live.balanceMinor + s.amountMinor }).where(eq(accounts.agent, live.agent));
+        return live.balanceMinor + (row ? s.amountMinor : 0);
+      });
+      await note(acct, "balance.refund_refused", "FAILED", s.id, { issue: e.issue ?? e.paypalName });
+      return { status: "FAILED", spendId: s.id, refundId: null, reasons: [{ code: "PAYPAL_REFUND_FAILED", at: null, detail: `PayPal refused the refund (${e.issue ?? e.paypalName}); the money is back in the balance` }], balanceMinor: balance };
+    } else {
+      // PayPal could not be reached. The debit stands; settleRefunds asks again.
+      return { status: "PENDING", spendId: s.id, refundId: null, reasons: [], balanceMinor: (await db.query.accounts.findFirst({ where: eq(accounts.agent, acct.agent) }))?.balanceMinor ?? null };
+    }
+  }
+  const u = await markRefundedByPayee(s.id, refundId, acct.label, memo);
+  await note(acct, "balance.refunded", "OK", s.id, { amount: s.amountMinor, refund: refundId, capture: s.captureId });
+  return { status: "REFUNDED", spendId: s.id, refundId: u.refundId, reasons: u.reasons, balanceMinor: (await db.query.accounts.findFirst({ where: eq(accounts.agent, acct.agent) }))?.balanceMinor ?? null };
+}
+
+/** Refunds whose debit is on the ledger but which PayPal has not confirmed (it was unreachable): ask again. */
+export async function settleRefunds(limit = 20): Promise<Array<{ spend: string; status: RefundResult["status"] }>> {
+  const db = getDb();
+  const open = await db.select({ agent: ledger.agent, ref: ledger.ref, memo: ledger.memo }).from(ledger).innerJoin(spends, eq(spends.id, ledger.ref))
+    .where(and(eq(ledger.kind, "refund"), eq(spends.status, "PAID"), isNull(spends.refundId))).limit(limit);
+  const out: Array<{ spend: string; status: RefundResult["status"] }> = [];
+  for (const o of open) {
+    const undone = await db.query.ledger.findFirst({ where: and(eq(ledger.agent, o.agent), eq(ledger.kind, "refund_reversal"), eq(ledger.ref, o.ref)) });
+    if (undone) continue;
+    const s = (await db.query.spends.findFirst({ where: eq(spends.id, o.ref) }))!;
+    const acct = (await db.query.accounts.findFirst({ where: eq(accounts.agent, o.agent) }))!;
+    out.push({ spend: s.id, status: (await finishRefund(s, acct, o.memo ?? "")).status });
+  }
+  return out;
+}
+
 export async function position() {
   const db = getDb();
   const [accts, sums] = await Promise.all([
@@ -388,15 +484,16 @@ export async function position() {
   const ledgerTotal = sums.reduce((n, x) => n + x.total, 0);
   const capturedIn = by.income?.total ?? 0;
   const paidOut = -((by.payout?.total ?? 0) + (by.withdrawal?.total ?? 0)) - (by.reversal?.total ?? 0);
+  const refunded = -((by.refund?.total ?? 0) + (by.refund_reversal?.total ?? 0));
   const bookTransfers = by.transfer_out?.n ?? 0;
   return {
     mode: paypalMode(),
     accounts: accts.map((a) => ({ agent: a.agent, account: a.account, label: a.label, owner: a.ownerName, mode: a.mode, balanceMinor: a.balanceMinor, frozen: Boolean(a.frozenAt), perPaymentMinor: a.perPaymentMinor })),
-    totals: { accounts: accts.length, holding: accts.filter((a) => a.mode === "hold").length, balancesMinor: balances, capturedInMinor: capturedIn, paidOutMinor: paidOut, bookTransfers, bookTransferredMinor: by.transfer_in?.total ?? 0 },
+    totals: { accounts: accts.length, holding: accts.filter((a) => a.mode === "hold").length, balancesMinor: balances, capturedInMinor: capturedIn, paidOutMinor: paidOut, refundedMinor: refunded, bookTransfers, bookTransferredMinor: by.transfer_in?.total ?? 0 },
     // balances == ledger, and ledger == captured in − paid out (book transfers net to zero)
     checks: [
       { name: "Every balance equals the sum of its ledger entries", ok: balances === ledgerTotal },
-      { name: "Balances equal money captured from PayPal holds into accounts, minus money paid out", ok: balances === capturedIn - paidOut },
+      { name: "Balances equal money captured from PayPal holds into accounts, minus money paid out or refunded", ok: balances === capturedIn - paidOut - refunded },
       { name: "Transfers between accounts net to zero", ok: (by.transfer_in?.total ?? 0) + (by.transfer_out?.total ?? 0) === 0 },
     ],
   };

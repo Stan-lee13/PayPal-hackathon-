@@ -48,5 +48,8 @@ export const REASON_TEXT: Record<Reason, string> = {
   FORKED_BLOCK: "A different block with the same id is already on record.",
   PAYPAL_CAPTURE_FAILED: "PayPal refused to capture from the hold.",
   PAYPAL_PAYOUT_FAILED: "PayPal couldn't deliver the payout; the money went back.",
+  REFUNDED_BY_PAYEE: "The agent that was paid gave the money back; PayPal refunded the capture to the owner.",
+  NOT_REFUNDABLE: "Only a payment an agent kept in its balance, and still has, can be refunded by that agent.",
+  PAYPAL_REFUND_FAILED: "PayPal would not make the refund; the money stayed where it was.",
   RECALLED_BY_OWNER: "The owner took this payout back before anyone claimed it; PayPal cancelled it and refunded the capture.",
 };

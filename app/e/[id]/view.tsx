@@ -13,7 +13,7 @@ type BlockT = { id: string; parentId: string | null; depth: number; holder: stri
 type SpendT = { id: string; leafLabel: string; amountMinor: number; payee: string; purpose: string; memo: string; agentNote: string | null; status: string; reasons: Array<{ code: string; detail: string }>; captureId: string | null; payoutBatchId: string | null; payoutStatus: string | null; createdAt: string; hasReceipt: boolean; promiseExpiresAt: string | null; delivery: { by: string; work: string; note: string } | null; releaseBy: string | null; signed?: never };
 type Data = {
   mode: string; demoAgents: boolean;
-  root: { id: string; principal: string; principalName: string; title: string; limitMinor: number; capturedMinor: number; releasedMinor: number | null; status: string; authorizationId: string | null; paypalOrderId: string | null; authorizationExpiresAt: string | null; closeReason: string | null; createdAt: string };
+  root: { id: string; principal: string; principalName: string; title: string; limitMinor: number; capturedMinor: number; refundedMinor: number; releasedMinor: number | null; status: string; authorizationId: string | null; paypalOrderId: string | null; authorizationExpiresAt: string | null; closeReason: string | null; createdAt: string };
   blocks: BlockT[]; spends: SpendT[];
   /** Payees that are agents' accounts: who they are. */
   payees: Record<string, { label: string; key: string; owner: string }>;
@@ -109,7 +109,7 @@ export function EnvelopeView({ id }: { id: string }) {
   }
   const recalled = (s: SpendT) => s.reasons[0]?.code === "RECALLED_BY_OWNER";
   const waiting = spends.filter((s) => s.status === "PROMISED" && s.releaseBy === root.principal);
-  const held = open ? root.limitMinor - root.capturedMinor : 0;
+  const held = open ? root.limitMinor - root.capturedMinor - root.refundedMinor : 0;
   /** A payee as people should read it: an agent's name when it is an account, the address otherwise. */
   const Payee = ({ p, tag }: { p: string; tag?: boolean }) => {
     const a = d.payees?.[p];
@@ -180,7 +180,8 @@ export function EnvelopeView({ id }: { id: string }) {
             <div><Figure minor={held} className="text-[clamp(1.7rem,3.6vw,2.5rem)] text-blue" /><p className="mt-1.5 text-xs leading-snug text-ink-2">still held, not charged</p></div>
             <div><Figure minor={root.releasedMinor ?? 0} className="text-[clamp(1.7rem,3.6vw,2.5rem)] text-ink-3" /><p className="mt-1.5 text-xs leading-snug text-ink-2">released back by PayPal</p></div>
           </div>
-          <div className="mt-4 text-ink"><Meter spent={root.capturedMinor} freed={root.releasedMinor ?? 0} of={root.limitMinor} label={`${usd(root.capturedMinor)} captured of ${usd(root.limitMinor)}`} /></div>
+          <div className="mt-4 text-ink"><Meter spent={root.capturedMinor + root.refundedMinor} freed={root.releasedMinor ?? 0} of={root.limitMinor} label={`${usd(root.capturedMinor)} captured of ${usd(root.limitMinor)}`} /></div>
+          {root.refundedMinor > 0 && <p className="mt-3 text-xs text-ink-2" data-testid="refunded"><span className="money text-ink">{usd(root.refundedMinor)}</span> was captured and then refunded to {isOwner ? "you" : "the owner"}. PayPal does not return a refunded amount to the hold, so it is not spendable again from this envelope.</p>}
           <p className="mt-3 text-xs text-ink-2">Each spend is a partial capture of this one authorization; PayPal itself refuses to capture beyond it. Closing the envelope voids the rest. {d.mode === "sandbox" ? "Sandbox: the hold is on PayPal's test card." : ""}</p>
         </section>
 
