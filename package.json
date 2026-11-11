@@ -16,7 +16,10 @@
     "sandbox:run": "tsx scripts/sandbox-run.ts",
     "e2e": "node scripts/e2e.mjs",
     "agent": "tsx scripts/agent.ts",
-    "mcp": "tsx scripts/mcp.ts"
+    "mcp": "tsx scripts/mcp.ts",
+    "sdk:build": "node sdk/build.mjs",
+    "sdk:pack": "npm pack ./sdk --pack-destination ./sdk",
+    "example": "node sdk/build.mjs && node examples/hire-an-agent/index.mjs"
   },
   "engines": {
     "node": ">=20.11"
