@@ -163,4 +163,59 @@ d("gateway (simulated PayPal)", async () => {
     await G.registerRoot({ chain, principalName: "Ada", title: "t" });
     expect((await G.spend(await E.signSpend(chain, ops, { amount: 100, payee: "nobody-unclaimed@example.com", purpose: "design" }))).status).toBe("UNCLAIMED");
   });
+  it("standing: a counterparty gets a signed answer to 'is this agent good for the money?'", async () => {
+    const w = await world();
+    await G.announce(w.locChain);
+    const hello = await E.signHello(w.locChain, w.loc, { amount: 4500, payee: "translator@example.com", purpose: "translation" });
+    const s = await G.standing(hello);
+    expect(s).toMatchObject({ good: true, agentLabel: "localization-agent", account: E.accountNumber(w.loc.publicKey), availableMinor: 5000, ask: { amount: 4500, payee: "translator@example.com" }, paypal: { status: "CREATED", unusedMinor: 20000 } });
+    expect(s.sponsors.map((x) => `${x.role}:${x.label}`)).toEqual(["owner:Ada", "agent:ops-agent"]);
+    expect(await G.verifyStanding(s)).toBe(true);
+    expect(await G.verifyStanding({ ...s, availableMinor: 999999 })).toBe(false); // tampered
+    expect(await G.verifyStanding(s, new Date(Date.now() + G.STANDING_TTL_MS + 1000))).toBe(false); // expired
+    // asking moves nothing and reserves nothing
+    expect((await blockRow(w.locChain[1]!.body.id))).toMatchObject({ spentMinor: 0, reservedMinor: 0 });
+    expect((await sim.simCalls()).some((c) => c.includes("/capture") || c.includes("/payouts"))).toBe(false);
+
+    // an introduction can never be replayed as a payment: different signature domain
+    const asSpend = await G.spend({ request: { ...hello.request, v: E.SPEND_VERSION, memo: "" } as E.SpendRequest, sig: hello.sig, chain: hello.chain });
+    expect(asSpend.status).toBe("DENIED");
+    expect(codes(asSpend.reasons)).toContain("NOT_THE_HOLDER");
+  });
+
+  it("standing is refused for a wrong payee, a spent budget, an impostor and a revoked agent", async () => {
+    const w = await world();
+    const ask = (chain: E.Envelope, key: E.KeyPair, p: { amount: number; payee: string; purpose: string }) => E.signHello(chain, key, p).then(G.standing);
+    const wrongPayee = await ask(w.artChain, w.art, { amount: 2000, payee: "attacker@evil.example", purpose: "design" });
+    expect(wrongPayee).toMatchObject({ good: false, availableMinor: 0 });
+    expect(wrongPayee.reasons.map((x) => x.code)).toEqual(["PAYEE_NOT_ALLOWED"]);
+
+    await G.spend(await E.signSpend(w.artChain, w.art, { amount: 7000, payee: "designer@example.com", purpose: "design" }));
+    const after = await ask(w.artChain, w.art, { amount: 1500, payee: "designer@example.com", purpose: "design" });
+    expect(after).toMatchObject({ good: true, availableMinor: 2000, paypal: { status: "PARTIALLY_CAPTURED", unusedMinor: 13000 } });
+    expect((await ask(w.artChain, w.art, { amount: 2500, payee: "designer@example.com", purpose: "design" })).reasons.map((x) => x.code)).toEqual(["OVER_ENVELOPE_LIMIT"]);
+
+    // someone who copied the envelope but lacks the key
+    expect((await ask(w.artChain, w.rogue, { amount: 1000, payee: "designer@example.com", purpose: "design" })).reasons.map((x) => x.code)).toContain("NOT_THE_HOLDER");
+
+    await G.revoke(await E.signRevoke(w.ada, w.artChain[1]!.body.id));
+    const revoked = await ask(w.artChain, w.art, { amount: 1000, payee: "designer@example.com", purpose: "design" });
+    expect(revoked.good).toBe(false);
+    expect(revoked.reasons.map((x) => x.code)).toContain("REVOKED");
+  });
+
+  it("agent profile: who stands behind it, what it holds, and its record", async () => {
+    const w = await world();
+    await G.spend(await E.signSpend(w.artChain, w.art, { amount: 7000, payee: "designer@example.com", purpose: "design" }));
+    await G.spend(await E.signSpend(w.artChain, w.art, { amount: 2000, payee: "attacker@evil.example", purpose: "design" }));
+    const p = (await G.agentProfile(w.art.publicKey))!;
+    expect(p).toMatchObject({ label: "creative-agent", account: E.accountNumber(w.art.publicKey), record: { payments: 1, paidMinor: 7000, refused: 1, refusedCodes: ["PAYEE_NOT_ALLOWED"], availableMinor: 2000 } });
+    expect(p.accounts[0]).toMatchObject({ state: "LIVE", availableMinor: 2000, openedBy: { role: "agent", label: "ops-agent" } });
+    expect(p.accounts[0]!.sponsors.map((x) => x.label)).toEqual(["Ada", "ops-agent"]);
+    expect(p.statement).toHaveLength(2);
+    const ops = (await G.agentProfile(w.ops.publicKey))!;
+    expect(ops.accounts[0]!.issued.map((x) => x.label)).toEqual(["creative-agent"]); // only splits the gateway has seen
+    expect(await G.agentProfile(w.rogue.publicKey)).toBeNull();
+    expect(E.accountNumber(w.art.publicKey)).toMatch(/^[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}$/);
+  });
 });

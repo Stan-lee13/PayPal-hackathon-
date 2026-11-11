@@ -114,3 +114,14 @@ export async function act(rootId: string, action: DemoAction): Promise<{ action:
     }
   }
 }
+
+/** DEMO: a built-in agent introduces itself to a payee (signs a hello with the key this server holds for it). */
+export async function demoHello(agentKey: string, p: { amountMinor: number; payee: string; purpose: string }): Promise<E.SignedHello> {
+  const row = await getDb().query.demoKeys.findFirst({ where: eq(demoKeys.publicKey, agentKey) });
+  if (!row?.chain) throw new UserFacingError("This agent keeps its own key, so only it can introduce itself. Use: npx tsx scripts/agent.ts hello", 409);
+  return E.signHello(row.chain as E.Envelope, await E.importPrivateJwk(row.privateJwk), { amount: p.amountMinor, payee: p.payee, purpose: p.purpose });
+}
+export async function isDemoAgent(agentKey: string): Promise<boolean> {
+  const row = await getDb().query.demoKeys.findFirst({ where: eq(demoKeys.publicKey, agentKey) });
+  return Boolean(row?.chain);
+}

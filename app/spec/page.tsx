@@ -31,14 +31,15 @@ export default function Spec() {
     <>
       <ModeBanner />
       <SiteHeader />
-      <main id="main" className="mx-auto max-w-3xl space-y-3 px-4 pb-16">
+      <main id="main" className="mx-auto max-w-3xl space-y-3.5 px-5 pb-20 pt-4">
+        <p className="label">The protocol</p>
         {blocks(md).map((b, i) =>
-          b.kind === "h1" ? <h1 key={i} className="pt-2 text-3xl font-semibold">{b.text}</h1>
-          : b.kind === "h2" ? <h2 key={i} className="pt-6 text-xl font-semibold">{b.text}</h2>
-          : b.kind === "h3" ? <h3 key={i} className="pt-3 font-semibold">{b.text}</h3>
+          b.kind === "h1" ? <h1 key={i} className="display pb-2 text-[clamp(2.2rem,5vw,3.2rem)]">{b.text}</h1>
+          : b.kind === "h2" ? <h2 key={i} className="title !mt-9 border-t-[1.5px] border-ink pt-5 text-2xl">{b.text}</h2>
+          : b.kind === "h3" ? <h3 key={i} className="title pt-3 text-lg">{b.text}</h3>
           : b.kind === "code" ? <pre key={i} className="code overflow-x-auto p-4 text-xs">{b.text}</pre>
-          : b.kind === "li" ? <p key={i} className="pl-4 text-[15px] before:mr-2 before:content-['•']">{inline(b.text)}</p>
-          : <p key={i} className="text-[15px] leading-relaxed">{inline(b.text)}</p>)}
+          : b.kind === "li" ? <p key={i} className="pl-6 text-[.98rem] leading-relaxed"><span className="-ml-5 mr-2 text-ink-3">—</span>{inline(b.text)}</p>
+          : <p key={i} className="text-[.98rem] leading-relaxed">{inline(b.text)}</p>)}
       </main>
     </>
   );

@@ -9,7 +9,7 @@ How the project was chosen. Sources are linked where a claim depends on them; an
 - **Agent-payment standards scope one hop**: AP2 mandates (user → agent), Agentic Commerce Protocol shared payment tokens (agent → one seller, amount, expiry), card-network agent tokens. None describes an agent handing part of its authority to another agent with budgets that add up.
 - **Naming**: *Agent Client Protocol* is Zed's editor ↔ coding-agent protocol; *Agentic Commerce Protocol* is the OpenAI + Stripe checkout protocol. They share three letters and nothing else. `zcode-acp-server` is a community bridge from Z.ai's ZCode to the Agent Client Protocol, unrelated to commerce. UCP is a commerce standard co-developed by Google, Shopify and others; PayPal is listed as an endorser ([ucp.dev](https://ucp.dev/)).
 - **The problem is real, and thinly measured.** Documented cases exist of web-enabled agents being prompt-injected into making payments ([Zscaler, July 2026](https://www.zscaler.com/blogs/security-research/indirect-prompt-injection-web-content-targets-ai-agents)); an AI-controlled wallet lost roughly $150k–$200k to a prompt injection in May 2026 (secondary sources). For scale by analogy only: business email compromise, the human version of "pay this new account", cost $3.05 billion in the FBI's 2025 report ([IC3](https://www.ic3.gov/AnnualReport/Reports/2025_IC3Report.pdf)). No reliable figure exists for losses from agent mis-spending.
-- **This hackathon is crowded where the obvious ideas are.** Public repos show at least 8 entries building an agent mandate, firewall or guardrail on PayPal, and at least 3 building "PayPal holds the money, AI/CI verifies, then capture". None found has multi-hop delegation. The gallery is not published, so this is a partial view.
+- **This hackathon is crowded where the obvious ideas are.** The first scan found at least 8 entries building an agent mandate, firewall or guardrail on PayPal, at least 3 building "PayPal holds the money, AI/CI verifies, then capture", and none with multi-hop delegation. **That last finding was wrong**; a wider second scan (below) found two. The gallery is not published, so every scan is a partial view.
 
 ## Theses considered
 
@@ -42,6 +42,29 @@ Scores are 1–10 on our own weights: novelty 20%, severity 20%, PayPal relevanc
 **2. Outcome-conditional payment.** Strong problem and fully built here earlier, but three entries already do it and one is live with a deeper implementation. Entering as the fourth is a weak position.
 
 **3. Invoice-to-merge.** Unique among entries found and already built, but a narrow developer tool with a quieter demo.
+
+## Second scan (11 November, after the build)
+
+Before adding agent identity we looked again, more widely: GitHub repository and README searches across about 70 query terms, and about 75 READMEs read. `paypal agent created:>2026-09-01` alone returns over 1,000 repositories. READMEs were read; code and live demos were not opened, and the Devpost gallery returned 403.
+
+What it changed:
+
+| Idea | Already in the hackathon | Closest entries |
+|---|---|---|
+| "A bank account for AI agents" as a pitch | Yes, with a polished build | AgentPal uses that exact tagline (per-agent keys, allowance wallets, human co-signer; no delegation, no holds) |
+| Agent passport, "know your agent", reputation | Yes, at least six | Courier, Doorman, Carte Blanche (signed track-record statement), bit-settled, Vouch (credit score), SentinelX |
+| Multi-hop delegation that only narrows | Yes, two | IntentChain (live demo; HMAC-signed grants, so not checkable by third parties; no ancestor debiting stated; immediate capture, no hold), Agent-Pass (hierarchy with reserve/commit; no signature chain stated) |
+| One PayPal hold with partial captures | Yes, three, all flat | Cosign, Allowance, AgentLedger |
+| Proof of funds for an agent, tied to a live PayPal hold | Not found | Courier and Doorman answer "may it spend this?" from their own ledger |
+| All of the above together | Not found | — |
+
+Outside the hackathon, agent identity and wallets are saturated (Skyfire, Catena Labs, Payman, Crossmint, Coinbase, Visa, Mastercard; PayPal has named "Know Your Agent" as a concept). One commercial product, SpendVeto, states ancestor-debited delegation and signed spend attestations; it does not use PayPal holds.
+
+Consequences for this project:
+
+- The headline is not "a bank account for agents". That pitch is taken and would invite a direct comparison on someone else's ground.
+- Identity is built (passport, account number, record) but presented as a supporting feature.
+- The lead is the part nobody else was found doing: one real PayPal hold behind a whole tree of agents, budgets debited at every level, a chain anyone can verify, and a payee's proof of funds that asks PayPal itself.
 
 ## Decision
 

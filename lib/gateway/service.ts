@@ -384,6 +384,177 @@ async function closeRoot(root: Root, reason: string, by: string): Promise<Root> 
 // Reads
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Agent identity: standing ("is this agent good for the money?") and profile
+// ---------------------------------------------------------------------------
+
+export const STANDING_VERSION = "envelope-standing/1" as const;
+/** How long a statement of standing may be relied on. Budgets move, so it is short. */
+export const STANDING_TTL_MS = 5 * 60_000;
+
+export type Standing = {
+  v: typeof STANDING_VERSION;
+  agent: string;
+  agentLabel: string;
+  account: string;
+  /** Who stands behind the agent: the owner first, then every agent above it. */
+  sponsors: Array<{ role: "owner" | "agent"; label: string; key: string }>;
+  root: string;
+  ask: { amount: number; currency: string; payee: string; purpose: string };
+  /** True only if this exact payment would be accepted right now. */
+  good: boolean;
+  reasons: Array<{ code: E.Reason; detail: string }>;
+  /** The most the agent could pay this payee for this purpose in one payment right now. */
+  availableMinor: number;
+  paypal: { mode: string; authorizationId: string | null; status: string | null; unusedMinor: number | null };
+  issuedAt: string;
+  validUntil: string;
+  gateway: string;
+  sig: string;
+};
+
+/**
+ * Answer a counterparty's question before it does any work: does the agent in front of me control
+ * the key it claims, who stands behind it, and would a payment of this size to me go through?
+ * Read-only: nothing is reserved, so the answer can go stale; it expires after five minutes.
+ */
+export async function standing(hello: E.SignedHello): Promise<Standing> {
+  const db = getDb();
+  const verdict = await E.verifyHello(hello);
+  const chain = Array.isArray(hello?.chain) ? hello.chain : [];
+  const leaf = chain[chain.length - 1]?.body;
+  const r = hello?.request;
+  const rootId = chain[0]?.body?.id;
+  if (!leaf || !r || typeof rootId !== "string") throw new UserFacingError("That introduction is malformed.", 400);
+  const root = await db.query.roots.findFirst({ where: eq(roots.id, rootId) });
+  if (!root) throw new UserFacingError("That agent's envelope was never sealed with this gateway.", 404);
+
+  const reasons: E.Violation[] = [...verdict.violations];
+  if (root.status !== "ACTIVE") reasons.push({ code: "REVOKED", at: root.id, detail: "the root envelope was closed by its owner" });
+  let available = 0;
+  if (verdict.ok && verdict.chain.caps) {
+    const rows = await db.select().from(blocks).where(inArray(blocks.id, verdict.chain.ids));
+    const byId = new Map(rows.map((x) => [x.id, x]));
+    available = verdict.chain.caps.perPayment;
+    for (let i = 0; i < chain.length; i++) {
+      const b = chain[i]!;
+      const row = byId.get(b.body.id); // a split the gateway has not seen yet has spent nothing
+      if (row && row.hash !== (await E.blockHash(b))) reasons.push({ code: "FORKED_BLOCK", at: b.body.id, detail: "a different block with this id is already on record" });
+      if (row?.revokedAt) reasons.push({ code: "REVOKED", at: row.id, detail: `${row.holderLabel}'s envelope was revoked` });
+      const left = b.body.caps.limit - (row ? row.spentMinor + row.reservedMinor : 0);
+      available = Math.min(available, left);
+      if (r.amount > left) {
+        reasons.push(i === chain.length - 1
+          ? { code: "OVER_ENVELOPE_LIMIT", at: b.body.id, detail: `${b.body.holderLabel} has ${E.money(left, b.body.caps.currency)} left of ${E.money(b.body.caps.limit, b.body.caps.currency)}` }
+          : { code: "OVER_ANCESTOR_LIMIT", at: b.body.id, detail: `${b.body.holderLabel}'s envelope, above this one, has ${E.money(left, b.body.caps.currency)} left of ${E.money(b.body.caps.limit, b.body.caps.currency)}` });
+      }
+    }
+  }
+
+  // Ask PayPal itself whether the hold is still there.
+  const paypal: Standing["paypal"] = { mode: paypalMode(), authorizationId: root.authorizationId, status: null, unusedMinor: null };
+  if (root.authorizationId && root.status === "ACTIVE") {
+    try {
+      const auth = await getAuthorization(getPayPal(), root.authorizationId);
+      paypal.status = auth.status;
+      paypal.unusedMinor = Math.max(0, auth.amountMinor - root.capturedMinor);
+      if (auth.status !== "CREATED" && auth.status !== "PARTIALLY_CAPTURED") reasons.push({ code: "ROOT_NOT_FUNDED", at: root.id, detail: `PayPal reports the hold as ${auth.status}` });
+      else available = Math.min(available, paypal.unusedMinor);
+    } catch (e) {
+      reasons.push({ code: "ROOT_NOT_FUNDED", at: root.id, detail: `PayPal could not confirm the hold (${e instanceof PayPalApiError ? e.status : "unreachable"})` });
+    }
+  } else if (root.status === "ACTIVE") reasons.push({ code: "ROOT_NOT_FUNDED", at: root.id, detail: "no PayPal authorization backs this envelope" });
+
+  const good = reasons.length === 0;
+  const key = await gatewayKey();
+  const now = new Date();
+  const body: Omit<Standing, "sig"> = {
+    v: STANDING_VERSION,
+    agent: String(leaf.holder), agentLabel: String(leaf.holderLabel ?? "").slice(0, 80), account: E.accountNumber(String(leaf.holder)),
+    sponsors: [{ role: "owner", label: root.principalName, key: root.principal }, ...chain.slice(0, -1).map((b) => ({ role: "agent" as const, label: String(b.body.holderLabel).slice(0, 80), key: String(b.body.holder) }))],
+    root: root.id,
+    ask: { amount: Number.isSafeInteger(r.amount) ? r.amount : 0, currency: String(r.currency ?? ""), payee: String(r.payee ?? "").slice(0, 127), purpose: String(r.purpose ?? "").slice(0, 60) },
+    good, reasons: reasons.map((x) => ({ code: x.code, detail: x.detail })),
+    availableMinor: good ? Math.max(0, available) : 0,
+    paypal,
+    issuedAt: now.toISOString(), validUntil: new Date(now.getTime() + STANDING_TTL_MS).toISOString(), gateway: key.publicKey,
+  };
+  const out: Standing = { ...body, sig: await E.signDetached(key.privateKey, STANDING_VERSION, body) };
+  await trail(root, "gateway", "standing.issued", good ? "OK" : "REJECTED", body.account, { agent: body.agentLabel, payee: body.ask.payee, amount: body.ask.amount, good, reasons: body.reasons.map((x) => x.code) });
+  return out;
+}
+
+export async function verifyStanding(s: Standing, now = new Date()): Promise<boolean> {
+  if (!s || s.v !== STANDING_VERSION || Date.parse(s.validUntil) < now.getTime()) return false;
+  const { sig, ...body } = s;
+  return E.verifyDetached(s.gateway, STANDING_VERSION, body, sig);
+}
+
+export type AgentAccount = {
+  blockId: string; rootId: string; rootTitle: string; depth: number; label: string;
+  openedBy: { role: "owner" | "agent"; label: string; key: string };
+  /** Owner first, then every holder down to the one above this agent. */
+  sponsors: Array<{ role: "owner" | "agent"; label: string; key: string }>;
+  caps: E.Caps; spentMinor: number; reservedMinor: number; availableMinor: number;
+  state: "LIVE" | "REVOKED" | "CLOSED" | "EXPIRED";
+  issued: Array<{ blockId: string; label: string; key: string; limitMinor: number; revoked: boolean }>;
+  openedAt: string;
+};
+
+/** Everything the gateway knows about one agent key, across every envelope it holds. */
+export async function agentProfile(key: string) {
+  const db = getDb();
+  const held = await db.select().from(blocks).where(eq(blocks.holder, key)).orderBy(desc(blocks.firstSeenAt)).limit(40);
+  if (held.length === 0) return null;
+  const rootIds = [...new Set(held.map((b) => b.rootId))];
+  const [rootRows, all, mine] = await Promise.all([
+    db.select().from(roots).where(inArray(roots.id, rootIds)),
+    db.select().from(blocks).where(inArray(blocks.rootId, rootIds)),
+    db.select().from(spends).where(inArray(spends.leafId, held.map((b) => b.id))).orderBy(desc(spends.createdAt)).limit(300),
+  ]);
+  const rootById = new Map(rootRows.map((x) => [x.id, x]));
+  const blockById = new Map(all.map((x) => [x.id, x]));
+  const now = Date.now();
+  const accounts: AgentAccount[] = held.map((b) => {
+    const root = rootById.get(b.rootId)!;
+    const up: BlockRow[] = [];
+    for (let p = b.parentId ? blockById.get(b.parentId) : undefined; p; p = p.parentId ? blockById.get(p.parentId) : undefined) up.unshift(p);
+    const line = [...up, b];
+    const owner = { role: "owner" as const, label: root.principalName, key: root.principal };
+    const sponsors = [owner, ...up.map((x) => ({ role: "agent" as const, label: x.holderLabel, key: x.holder }))];
+    const state: AgentAccount["state"] = root.status !== "ACTIVE" ? "CLOSED" : line.some((x) => x.revokedAt) ? "REVOKED" : Date.parse(b.caps.notAfter) < now ? "EXPIRED" : "LIVE";
+    const left = Math.min(...line.map((x) => x.caps.limit - x.spentMinor - x.reservedMinor));
+    return {
+      blockId: b.id, rootId: b.rootId, rootTitle: root.title, depth: b.depth, label: b.holderLabel,
+      openedBy: sponsors[sponsors.length - 1]!, sponsors,
+      caps: b.caps, spentMinor: b.spentMinor, reservedMinor: b.reservedMinor, availableMinor: state === "LIVE" ? Math.max(0, left) : 0, state,
+      issued: all.filter((x) => x.parentId === b.id).map((x) => ({ blockId: x.id, label: x.holderLabel, key: x.holder, limitMinor: x.caps.limit, revoked: Boolean(x.revokedAt) })),
+      openedAt: b.firstSeenAt.toISOString(),
+    };
+  });
+  const settled = mine.filter((x) => x.status === "PAID" || x.status === "UNCLAIMED" || x.status === "PAYOUT_PENDING");
+  const denied = mine.filter((x) => x.status === "DENIED");
+  return {
+    key, account: E.accountNumber(key), label: held[0]!.holderLabel,
+    firstSeenAt: held[held.length - 1]!.firstSeenAt.toISOString(),
+    accounts,
+    record: {
+      payments: settled.length, paidMinor: settled.reduce((n, x) => n + x.amountMinor, 0),
+      refused: denied.length, refusedCodes: [...new Set(denied.flatMap((x) => x.reasons.map((y) => y.code)))],
+      revoked: accounts.filter((a) => a.state === "REVOKED").length,
+      availableMinor: accounts.reduce((n, a) => n + a.availableMinor, 0),
+    },
+    statement: mine.slice(0, 60).map(({ signed: _s, receipt: _r, ...x }) => ({ ...x, hasReceipt: Boolean(_r) })),
+  };
+}
+
+/** Agents the gateway has seen most recently. */
+export async function recentAgents(limit = 24) {
+  const rows = await getDb().select({ key: blocks.holder, label: sql<string>`max(${blocks.holderLabel})`, envelopes: sql<number>`count(*)::int`, lastSeen: sql<Date>`max(${blocks.firstSeenAt})` })
+    .from(blocks).groupBy(blocks.holder).orderBy(desc(sql`max(${blocks.firstSeenAt})`)).limit(limit);
+  return rows.map((x) => ({ ...x, account: E.accountNumber(x.key) }));
+}
+
 export async function tree(rootId: string) {
   const db = getDb();
   const root = await db.query.roots.findFirst({ where: eq(roots.id, rootId) });

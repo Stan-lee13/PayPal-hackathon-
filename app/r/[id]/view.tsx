@@ -3,9 +3,21 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { fingerprint, verifyChain, verifyDetached, verifySpend, type Envelope } from "@/lib/envelope/core";
+import { Figure, Stamp, usd } from "@/components/stationery";
 
 type ReceiptT = { v: string; spend: string; request: { amount: number; currency: string; payee: string; purpose: string; memo: string; at: string; leaf: string; nonce: string; v: string }; requestSig: string; chain: Array<{ id: string; hash: string; holder: string; holderLabel: string }>; principal: string; paypal: { mode: string; authorizationId: string; captureId: string; payoutBatchId: string; payoutItemId: string | null }; issuedAt: string; gateway: string; sig: string };
 type Data = { ok: boolean; checks: Array<{ name: string; ok: boolean; detail?: string }>; receipt: ReceiptT; chain: Envelope; spend: { id: string; status: string; payoutStatus: string | null; payoutTransactionId: string | null; agentNote: string | null } };
+
+/** A barcode drawn from the spend id: decoration, but the same id always draws the same bars. */
+function Bars({ id }: { id: string }) {
+  const bars = [...id].flatMap((c) => { const n = c.charCodeAt(0); return [1 + (n & 3), 1 + ((n >> 2) & 1), 1 + ((n >> 3) & 3), 1 + ((n >> 5) & 1)]; });
+  let x = 0;
+  return (
+    <svg viewBox={`0 0 ${bars.reduce((a, b) => a + b, 0)} 20`} preserveAspectRatio="none" className="h-9 w-full" aria-hidden="true">
+      {bars.map((w, i) => { const r = i % 2 === 0 ? <rect key={i} x={x} y="0" width={w} height="20" fill="var(--ink)" /> : null; x += w; return r; })}
+    </svg>
+  );
+}
 
 export function ReceiptView({ id }: { id: string }) {
   const [d, setD] = useState<Data | null>(null);
@@ -36,55 +48,64 @@ export function ReceiptView({ id }: { id: string }) {
     })();
   }, [id]);
 
-  if (err) return <p className="card p-6 text-sm">{err}</p>;
-  if (!d) return <p className="card p-6 text-sm text-ink-soft">Fetching the receipt and checking it against PayPal…</p>;
+  if (err) return <p className="sheet p-6 text-sm">{err}</p>;
+  if (!d) return <p className="label py-10">Fetching the receipt and checking it against PayPal…</p>;
   const r = d.receipt;
-  const usd = `$${(r.request.amount / 100).toFixed(2)}`;
   const Check = ({ ok, name, detail }: { ok: boolean; name: string; detail?: string }) => (
-    <li className="flex gap-2"><span className={`mono w-5 shrink-0 font-semibold ${ok ? "text-paid" : "text-danger"}`}>{ok ? "✓" : "✕"}</span><span>{name}{detail ? <span className="mono block text-xs text-ink-soft">{detail}</span> : null}</span></li>
+    <li className="flex gap-2.5 border-t border-rule py-2.5 first:border-t-0"><span className={`mono w-4 shrink-0 font-semibold ${ok ? "text-green" : "text-red"}`}>{ok ? "✓" : "✕"}</span><span>{name}{detail ? <span className="mono mt-0.5 block text-[.7rem] text-ink-2">{detail}</span> : null}</span></li>
   );
+  const localOk = local?.every((c) => c.ok);
   return (
-    <div className="space-y-5">
+    <div className="grid items-start gap-x-12 gap-y-10 lg:grid-cols-[minmax(0,430px)_minmax(0,1fr)]">
       <div>
         <Link className="link text-sm" href={`/e/${d.chain[0]!.body.id}`}>← Envelope</Link>
-        <h1 className="mt-2 text-2xl font-semibold">Receipt: {usd} to <span className="mono text-xl">{r.request.payee}</span></h1>
-        <p className="text-sm text-ink-soft">{r.request.purpose}{r.request.memo ? ` · ${r.request.memo}` : ""} · {new Date(r.request.at).toISOString().replace("T", " ").slice(0, 19)} UTC</p>
+        <article className="receipt relative mt-4 px-6 pt-7 text-[.8rem] leading-relaxed sm:px-8" aria-label="Receipt">
+          <p className="text-center text-[.68rem] tracking-[.34em]">ENVELOPE · RECEIPT</p>
+          <h1 className="mt-5 text-center font-sans"><span className="sr-only">Receipt: </span><Figure minor={r.request.amount} className="text-[3.4rem]" /></h1>
+          <p className="mt-2 text-center">to <b className="break-all">{r.request.payee}</b></p>
+          <p className="text-center text-ink-2">{r.request.purpose}{r.request.memo ? ` · ${r.request.memo}` : ""}</p>
+          <p className="text-center text-ink-2">{new Date(r.request.at).toISOString().replace("T", " ").slice(0, 19)} UTC</p>
+          <Stamp tone="green" size="lg" land className="absolute right-4 top-[5.2rem]">Paid</Stamp>
+
+          <h2 className="mt-6 border-t border-dashed border-ink pt-4 text-[.68rem] tracking-[.2em]">WHO AUTHORIZED THIS DOLLAR</h2>
+          <ol className="chain mt-3">
+            <li><p><b>Owner</b> <span className="text-ink-2">{fingerprint(r.principal)}</span></p><p className="text-ink-2">sealed the root envelope: {usd(d.chain[0]!.body.caps.limit)} in total</p></li>
+            {d.chain.map((b, i) => (
+              <li key={b.body.id}>
+                <p><Link href={`/a/${b.body.holder}`} className="link !text-ink"><b>{b.body.holderLabel}</b></Link> <span className="text-ink-2">{fingerprint(b.body.holder)}</span></p>
+                <p className="text-ink-2">{i === 0 ? "received the root envelope" : `was given a narrower envelope by ${d.chain[i - 1]!.body.holderLabel}`}: up to {usd(b.body.caps.limit)}, {b.body.caps.payees ? `only to ${b.body.caps.payees.join(", ")}` : "any payee"}, {b.body.caps.purposes ? `only for ${b.body.caps.purposes.join(", ")}` : "any purpose"}</p>
+              </li>
+            ))}
+            <li className="is-end"><p><b>{r.request.payee}</b> received {usd(r.request.amount)}</p>{d.spend.agentNote && <p className="text-ink-2">Agent's stated reason: “{d.spend.agentNote}”</p>}</li>
+          </ol>
+
+          <h2 className="mt-3 border-t border-dashed border-ink pt-4 text-[.68rem] tracking-[.2em]">PAYPAL</h2>
+          <dl className="mt-2 space-y-1">
+            <div className="leader"><dt className="text-ink-2">Hold</dt><i /><dd>{r.paypal.authorizationId}</dd></div>
+            <div className="leader"><dt className="text-ink-2">Capture</dt><i /><dd>{r.paypal.captureId}</dd></div>
+            <div className="leader"><dt className="text-ink-2">Payout batch</dt><i /><dd>{r.paypal.payoutBatchId}{d.spend.payoutStatus ? ` · ${d.spend.payoutStatus}` : ""}</dd></div>
+            {d.spend.payoutTransactionId && <div className="leader"><dt className="text-ink-2">Payout txn</dt><i /><dd>{d.spend.payoutTransactionId}</dd></div>}
+            <div className="leader"><dt className="text-ink-2">Environment</dt><i /><dd>{r.paypal.mode === "sandbox" ? "sandbox (real API, test money)" : r.paypal.mode}</dd></div>
+          </dl>
+          <div className="mt-6"><Bars id={r.spend} /></div>
+          <p className="mt-1.5 text-center text-[.68rem] tracking-[.14em] text-ink-2">{r.spend}</p>
+        </article>
       </div>
 
-      <section className="card p-5">
-        <h2 className="font-semibold">Who authorized this dollar</h2>
-        <ol className="mt-4 space-y-4">
-          <li className="step"><span className="dot dot-done" /><p className="text-sm font-medium">Owner <span className="mono text-xs font-normal text-ink-soft">{fingerprint(r.principal)}</span></p><p className="text-xs text-ink-soft">sealed the root envelope: {`$${(d.chain[0]!.body.caps.limit / 100).toFixed(2)}`} in total</p></li>
-          {d.chain.map((b, i) => (
-            <li key={b.body.id} className="step"><span className="dot dot-done" /><p className="text-sm font-medium">{b.body.holderLabel} <span className="mono text-xs font-normal text-ink-soft">{fingerprint(b.body.holder)}</span></p>
-              <p className="text-xs text-ink-soft">{i === 0 ? "received the root envelope" : `was given a narrower envelope by ${d.chain[i - 1]!.body.holderLabel}`}: up to {`$${(b.body.caps.limit / 100).toFixed(2)}`}, {b.body.caps.payees ? `only to ${b.body.caps.payees.join(", ")}` : "any payee"}, {b.body.caps.purposes ? `only for ${b.body.caps.purposes.join(", ")}` : "any purpose"}</p></li>
-          ))}
-          <li className="step"><span className="dot dot-done" /><p className="text-sm font-medium">{r.request.payee} received {usd}</p>{d.spend.agentNote && <p className="text-xs italic text-ink-soft">Agent's stated reason: “{d.spend.agentNote}”</p>}</li>
-        </ol>
-      </section>
+      <div className="space-y-8 lg:pt-10">
+        <section>
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b-[1.5px] border-ink pb-3"><h2 className="title text-2xl">Checked against PayPal just now</h2><Stamp tone={d.ok ? "green" : "red"} land>{d.ok ? "All checks pass" : "Mismatch"}</Stamp></div>
+          <p className="mt-3 text-sm text-ink-2">The gateway asked PayPal for the capture and the payout by id and compared them with this receipt.</p>
+          <ul className="mt-2 text-[.92rem]">{d.checks.map((c, i) => <Check key={i} {...c} />)}</ul>
+        </section>
 
-      <section className="card p-5">
-        <h2 className="font-semibold">PayPal</h2>
-        <dl className="mt-3 grid gap-x-6 gap-y-1.5 text-sm sm:grid-cols-[auto_1fr]">
-          <dt className="text-ink-soft">Hold (authorization)</dt><dd className="mono">{r.paypal.authorizationId}</dd>
-          <dt className="text-ink-soft">Capture</dt><dd className="mono">{r.paypal.captureId}</dd>
-          <dt className="text-ink-soft">Payout batch</dt><dd className="mono">{r.paypal.payoutBatchId}{d.spend.payoutStatus ? ` · ${d.spend.payoutStatus}` : ""}</dd>
-          {d.spend.payoutTransactionId && <><dt className="text-ink-soft">Payout transaction</dt><dd className="mono">{d.spend.payoutTransactionId}</dd></>}
-          <dt className="text-ink-soft">Environment</dt><dd>{r.paypal.mode === "sandbox" ? "PayPal sandbox (real API, test money)" : r.paypal.mode}</dd>
-        </dl>
-      </section>
-
-      <section className="card p-5">
-        <div className="flex items-center justify-between gap-2"><h2 className="font-semibold">Checked against PayPal just now</h2><span className={`chip ${d.ok ? "chip-PAID" : "chip-DENIED"}`}>{d.ok ? "All checks pass" : "Mismatch"}</span></div>
-        <ul className="mt-3 space-y-2 text-sm">{d.checks.map((c, i) => <Check key={i} {...c} />)}</ul>
-      </section>
-
-      <section className="card p-5">
-        <div className="flex items-center justify-between gap-2"><h2 className="font-semibold">Verified in your browser</h2>{local && <span className={`chip ${local.every((c) => c.ok) ? "chip-PAID" : "chip-DENIED"}`}>{local.every((c) => c.ok) ? "Signatures valid" : "Invalid"}</span>}</div>
-        <p className="mt-1 text-xs text-ink-soft">Your browser re-ran the Ed25519 checks on the raw chain. This doesn't rely on the gateway being honest.</p>
-        <ul className="mt-3 space-y-2 text-sm">{(local ?? []).map((c, i) => <Check key={i} {...c} />)}</ul>
-        <details className="mt-3 text-xs"><summary className="cursor-pointer text-ink-soft">Raw receipt</summary><pre className="code mt-2 max-h-80 overflow-auto p-3 text-[11px]">{JSON.stringify(r, null, 2)}</pre></details>
-      </section>
+        <section>
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b-[1.5px] border-ink pb-3"><h2 className="title text-2xl">Verified in your browser</h2>{local && <Stamp tone={localOk ? "green" : "red"} land>{localOk ? "Signatures valid" : "Invalid"}</Stamp>}</div>
+          <p className="mt-3 text-sm text-ink-2">Your browser re-ran the Ed25519 checks on the raw chain. This doesn't rely on the gateway being honest.</p>
+          <ul className="mt-2 text-[.92rem]">{(local ?? []).map((c, i) => <Check key={i} {...c} />)}</ul>
+          <details className="mt-4 text-xs"><summary className="label cursor-pointer">Raw receipt</summary><pre className="code mt-2 max-h-80 overflow-auto p-3 text-[11px]">{JSON.stringify(r, null, 2)}</pre></details>
+        </section>
+      </div>
     </div>
   );
 }

@@ -21,6 +21,8 @@
 export const BLOCK_VERSION = "envelope/1" as const;
 export const SPEND_VERSION = "envelope-spend/1" as const;
 export const REVOKE_VERSION = "envelope-revoke/1" as const;
+/** A request for a statement of standing ("can this agent pay me?"). Same shape as a spend, different signature domain, so it can never be replayed as a payment. */
+export const HELLO_VERSION = "envelope-hello/1" as const;
 
 export type Caps = {
   currency: string;
@@ -70,6 +72,9 @@ export type SpendRequest = {
   at: string;
 };
 export type SignedSpend = { request: SpendRequest; sig: string; chain: Envelope };
+/** An agent introducing itself to a counterparty: "I hold this envelope and intend to pay you this much for this". Moves no money. */
+export type HelloRequest = Omit<SpendRequest, "v" | "memo"> & { v: typeof HELLO_VERSION };
+export type SignedHello = { request: HelloRequest; sig: string; chain: Envelope };
 
 export type RevokeRequest = { v: typeof REVOKE_VERSION; block: string; nonce: string; at: string };
 export type SignedRevoke = { request: RevokeRequest; sig: string; by: string };
@@ -260,17 +265,20 @@ export async function signSpend(chain: Envelope, holderKey: KeyPair, p: { amount
 /** Requests older or newer than this are refused, which bounds how long a replay cache must be kept. */
 export const SPEND_WINDOW_MS = 5 * 60_000;
 
-/** Everything about a spend that can be decided without state: chain, possession, caps. */
-export async function verifySpend(s: SignedSpend, now = new Date()): Promise<{ ok: boolean; violations: Violation[]; chain: ChainVerdict }> {
+type Intent = { v: string; leaf: string; amount: number; currency: string; payee: string; purpose: string; nonce: string; at: string };
+type IntentVerdict = { ok: boolean; violations: Violation[]; chain: ChainVerdict };
+
+/** Shared by spends and hellos: chain, possession of the leaf key, freshness, and the leaf's caps. */
+async function verifyIntent(version: string, s: { request: Intent; sig: string; chain: Envelope }, now: Date): Promise<IntentVerdict> {
   const chain = await verifyChain(s?.chain, now);
   const violations = [...chain.violations];
   const r = s?.request;
   const add = (code: Reason, detail: string) => violations.push({ code, at: r?.leaf ?? null, detail });
-  if (!r || r.v !== SPEND_VERSION || typeof s.sig !== "string" || typeof r.payee !== "string" || typeof r.purpose !== "string" || typeof r.nonce !== "string") { add("MALFORMED", "malformed spend request"); return { ok: false, violations, chain }; }
+  if (!r || r.v !== version || typeof s.sig !== "string" || typeof r.payee !== "string" || typeof r.purpose !== "string" || typeof r.nonce !== "string") { add("MALFORMED", "malformed request"); return { ok: false, violations, chain }; }
   if (!chain.caps) return { ok: false, violations, chain };
   const leaf = s.chain[s.chain.length - 1]!.body;
   if (r.leaf !== leaf.id) add("WRONG_LEAF", "the request names a different envelope than the chain presented");
-  if (!(await verify(leaf.holder, SPEND_VERSION, r, s.sig))) add("NOT_THE_HOLDER", "the request is not signed by the key this envelope was given to");
+  if (!(await verify(leaf.holder, version, r, s.sig))) add("NOT_THE_HOLDER", "the request is not signed by the key this envelope was given to");
   if (Math.abs(now.getTime() - Date.parse(r.at)) > SPEND_WINDOW_MS) add("STALE_REQUEST", "the request is outside the 5-minute acceptance window");
   if (!Number.isSafeInteger(r.amount) || r.amount <= 0) add("BAD_AMOUNT", "amount must be a positive whole number of minor units");
   const c = chain.caps;
@@ -280,6 +288,16 @@ export async function verifySpend(s: SignedSpend, now = new Date()): Promise<{ o
   if (c.purposes !== null && !c.purposes.includes(r.purpose)) add("PURPOSE_NOT_ALLOWED", `"${r.purpose}" is not a purpose this envelope allows`);
   return { ok: violations.length === 0, violations, chain };
 }
+
+/** Everything about a spend that can be decided without state: chain, possession, caps. */
+export const verifySpend = (s: SignedSpend, now = new Date()): Promise<IntentVerdict> => verifyIntent(SPEND_VERSION, s, now);
+
+export async function signHello(chain: Envelope, holderKey: KeyPair, p: { amount: number; payee: string; purpose: string }, now = new Date()): Promise<SignedHello> {
+  const leaf = chain[chain.length - 1]!.body;
+  const request: HelloRequest = { v: HELLO_VERSION, leaf: leaf.id, amount: p.amount, currency: leaf.caps.currency, payee: p.payee.trim().toLowerCase(), purpose: p.purpose.trim().toLowerCase(), nonce: randomId("n"), at: now.toISOString() };
+  return { request, sig: await sign(holderKey.privateKey, HELLO_VERSION, request), chain };
+}
+export const verifyHello = (s: SignedHello, now = new Date()): Promise<IntentVerdict> => verifyIntent(HELLO_VERSION, s, now);
 
 export async function signRevoke(by: KeyPair, block: string, now = new Date()): Promise<SignedRevoke> {
   const request: RevokeRequest = { v: REVOKE_VERSION, block, nonce: randomId("n"), at: now.toISOString() };
@@ -292,3 +310,16 @@ export async function verifyRevokeSignature(r: SignedRevoke, now = new Date()): 
 
 /** Short fingerprint of a public key for display. */
 export const fingerprint = (publicKey: string) => `${publicKey.slice(0, 6)}…${publicKey.slice(-4)}`;
+
+const B32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"; // Crockford: no I, L, O, U
+/** A readable account number for an agent, derived from its public key (first 60 bits, base32): "7K2Q-9M4X-T0PA". */
+export function accountNumber(publicKey: string): string {
+  let bytes: Uint8Array;
+  try { bytes = unb64u(publicKey); } catch { return "????-????-????"; }
+  let bits = 0, acc = 0, out = "";
+  for (let i = 0; i < bytes.length && out.length < 12; i++) {
+    acc = (acc << 8) | bytes[i]!; bits += 8;
+    while (bits >= 5 && out.length < 12) { out += B32[(acc >> (bits - 5)) & 31]; bits -= 5; }
+  }
+  return `${out.slice(0, 4)}-${out.slice(4, 8)}-${out.slice(8, 12)}`.padEnd(14, "0");
+}

@@ -10,6 +10,11 @@
  *   npx tsx scripts/agent.ts revoke --as <name> --agent <other>      (owner or a holder above)
  *   npx tsx scripts/agent.ts close  --as <principal> --agent <root holder>
  *
+ * Identity ("know your agent"):
+ *   npx tsx scripts/agent.ts hello  --as <agent> --payee a@x --amount 45 --purpose translation   → prints an introduction token
+ *   npx tsx scripts/agent.ts check  <token>      (run by the payee: is this agent good for the money? signed by the gateway)
+ *   npx tsx scripts/agent.ts whois  <agent name or public key>
+ *
  * GATEWAY=http://localhost:3000 by default.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -116,6 +121,43 @@ switch (cmd) {
     console.log(cmd === "close" ? `Closed. PayPal released ${usd(r.json.root.releasedMinor ?? 0)}; ${usd(r.json.root.capturedMinor)} was charged.` : `Revoked ${args.agent}'s envelope and everything split from it.`);
     break;
   }
+  case "hello": {
+    const me = await key(need("as"));
+    const hello = await E.signHello(envelope(args.as!), me, { amount: cents(need("amount")), payee: need("payee"), purpose: need("purpose") });
+    console.log(E.b64u(new TextEncoder().encode(JSON.stringify(hello))));
+    break;
+  }
+  case "check": {
+    let hello: unknown;
+    try { hello = JSON.parse(new TextDecoder().decode(E.unb64u(positional[0] ?? need("token")))); } catch { console.error("That is not an introduction token."); process.exit(2); }
+    const r = await post("/api/gateway/standing", { hello });
+    const s = r.json.standing;
+    if (!s) { console.error(`Gateway: ${r.json.error ?? r.status}`); process.exit(1); }
+    const { sig, ...body } = s;
+    const pinned = await fetch(`${GATEWAY}/api/gateway/key`).then((x) => x.json()).catch(() => null) as { publicKey?: string } | null;
+    const signed = (await E.verifyDetached(s.gateway, "envelope-standing/1", body, sig)) && pinned?.publicKey === s.gateway;
+    console.log(`${s.agentLabel} · account ${s.account}`);
+    console.log(`  Stands behind it: ${s.sponsors.map((x: { role: string; label: string; key: string }) => `${x.label} (${x.role}, ${E.fingerprint(x.key)})`).join(" → ")}`);
+    console.log(`  PayPal hold ${s.paypal.authorizationId ?? "none"}: ${s.paypal.status ?? "not confirmed"}${s.paypal.unusedMinor !== null ? `, ${usd(s.paypal.unusedMinor)} unused` : ""} (${s.paypal.mode})`);
+    console.log(`  Asked: ${usd(s.ask.amount)} to ${s.ask.payee} for ${s.ask.purpose}`);
+    console.log(s.good ? `  GOOD. It can pay you up to ${usd(s.availableMinor)} in one payment right now.` : `  NOT GOOD. This payment would be refused:`);
+    for (const x of s.reasons) console.log(`    ${x.code}: ${x.detail}`);
+    console.log(`  Statement signed by the gateway (${E.fingerprint(s.gateway)}): ${signed ? "signature valid" : "SIGNATURE INVALID"}. Valid until ${s.validUntil}.`);
+    if (!s.good || !signed) process.exit(3);
+    break;
+  }
+  case "whois": {
+    const who = positional[0] ?? need("agent");
+    const pk = /^[A-Za-z0-9_-]{43}$/.test(who) ? who : (await key(who)).publicKey;
+    const r = await fetch(`${GATEWAY}/api/agents/${pk}`).then(async (x) => ({ status: x.status, json: await x.json() as Record<string, any> })); // eslint-disable-line @typescript-eslint/no-explicit-any
+    if (r.status !== 200) { console.error(r.json.error ?? r.status); process.exit(1); }
+    const p = r.json;
+    console.log(`${p.label} · account ${p.account} · first seen ${p.firstSeenAt}`);
+    console.log(`  Record: ${p.record.payments} payment(s), ${usd(p.record.paidMinor)} paid, ${p.record.refused} refused, ${usd(p.record.availableMinor)} available now`);
+    for (const a of p.accounts) console.log(`  ${a.state} · "${a.rootTitle}" · ${usd(a.availableMinor)} available of ${usd(a.caps.limit)} · behind it: ${a.sponsors.map((x: { label: string }) => x.label).join(" → ")}`);
+    console.log(`  ${GATEWAY}/a/${pk}`);
+    break;
+  }
   default:
-    console.log("Commands: keygen, seal, split, pay, show, revoke, close. See the header of scripts/agent.ts.");
+    console.log("Commands: keygen, seal, split, pay, show, revoke, close, hello, check, whois. See the header of scripts/agent.ts.");
 }

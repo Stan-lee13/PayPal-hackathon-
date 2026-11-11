@@ -2,22 +2,25 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { fingerprint, signRevoke, type Caps, type KeyPair } from "@/lib/envelope/core";
+import { accountNumber, fingerprint, signRevoke, type Caps, type KeyPair } from "@/lib/envelope/core";
 import { principalKey } from "@/lib/principal-key";
+import { Figure, Flap, Meter, Postmark, Sigil, SpendStamp, Stamp, usd } from "@/components/stationery";
 
 type BlockT = { id: string; parentId: string | null; depth: number; holder: string; holderLabel: string; caps: Caps; spentMinor: number; reservedMinor: number; revokedAt: string | null };
 type SpendT = { id: string; leafLabel: string; amountMinor: number; payee: string; purpose: string; memo: string; agentNote: string | null; status: string; reasons: Array<{ code: string; detail: string }>; captureId: string | null; payoutBatchId: string | null; payoutStatus: string | null; createdAt: string; hasReceipt: boolean };
 type Data = {
   mode: string; demoAgents: boolean;
-  root: { id: string; principal: string; principalName: string; title: string; limitMinor: number; capturedMinor: number; releasedMinor: number | null; status: string; authorizationId: string | null; paypalOrderId: string | null; authorizationExpiresAt: string | null; closeReason: string | null };
+  root: { id: string; principal: string; principalName: string; title: string; limitMinor: number; capturedMinor: number; releasedMinor: number | null; status: string; authorizationId: string | null; paypalOrderId: string | null; authorizationExpiresAt: string | null; closeReason: string | null; createdAt: string };
   blocks: BlockT[]; spends: SpendT[];
   audit: { ok: boolean; length: number; entries: Array<{ seq: number; at: string; actor: string; action: string; ref: string | null; outcome: string }> };
 };
 
-const usd = (minor: number) => `$${(minor / 100).toFixed(2)}`;
 const SPEND_LABEL: Record<string, string> = { PAID: "Paid", DENIED: "Denied", PAYOUT_PENDING: "Paid · PayPal processing", UNCLAIMED: "Paid · payee hasn't claimed", RESERVED: "In flight", CAPTURED: "In flight", FAILED: "Failed · refunded" };
 const RUN = ["split-localization", "split-creative", "pay-translator", "pay-designer"] as const;
 const ATTACK = ["attack-payee", "attack-overspend", "attack-forge"] as const;
+const hhmm = (iso: string) => new Date(iso).toISOString().slice(11, 16);
+/** "11 Nov 14:17 UTC" with non-breaking spaces, so a date never wraps in the middle. */
+const when = (iso: string) => `${new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" })} ${hhmm(iso)} UTC`.replace(/ /g, "\u00A0");
 
 export function EnvelopeView({ id }: { id: string }) {
   const [d, setD] = useState<Data | null>(null);
@@ -39,8 +42,8 @@ export function EnvelopeView({ id }: { id: string }) {
     return () => { if (timer.current) clearInterval(timer.current); };
   }, [load]);
 
-  if (missing) return <p className="card p-6 text-sm">No such envelope. <Link className="link" href="/console">Seal one</Link>.</p>;
-  if (!d) return <p className="card p-6 text-sm text-ink-soft">Loading…</p>;
+  if (missing) return <p className="sheet p-6 text-sm">No such envelope. <Link className="link" href="/console">Seal one</Link>.</p>;
+  if (!d) return <p className="label py-10">Fetching the envelope…</p>;
   const { root, blocks, spends } = d;
   const isOwner = me?.publicKey === root.principal;
   const open = root.status === "ACTIVE";
@@ -82,97 +85,116 @@ export function EnvelopeView({ id }: { id: string }) {
     const kids = children(b.id);
     const used = b.spentMinor + b.reservedMinor;
     return (
-      <div className="space-y-3">
-        <div className={`env p-4 ${dead ? "env-dead" : ""}`}>
-          <div className="flex flex-wrap items-start justify-between gap-2">
-            <div>
-              <p className="font-semibold">{b.holderLabel} <span className="mono text-xs font-normal text-ink-soft">{fingerprint(b.holder)}</span></p>
-              <p className="text-xs text-ink-soft">{b.depth === 0 ? `sealed by ${root.principalName}` : "split off by the envelope above, offline"} · expires {new Date(b.caps.notAfter).toISOString().slice(5, 16).replace("T", " ")} UTC · {b.caps.splits > 0 ? `can split ${b.caps.splits}×` : "cannot split"}</p>
-            </div>
+      <div className="space-y-4" data-testid={`node-${b.holderLabel}`}>
+        <div className={`envl px-4 pb-4 pt-11 sm:px-5 ${dead ? "envl-dead" : ""}`}>
+          <Flap />
+          <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-2">
+            <Link href={`/a/${b.holder}`} className="envl-label flex items-center gap-2.5 py-1.5 pl-1.5 pr-3 transition-transform duration-150 ease-out active:scale-[.98]" title="Open this agent's passport">
+              <span className="text-blue"><Sigil k={b.holder} size={38} /></span>
+              <span>
+                <span className="title block text-[1.08rem] leading-tight">{b.holderLabel}</span>
+                <span className="mono block text-[.68rem] tracking-[.06em] text-ink-2">{accountNumber(b.holder)}</span>
+              </span>
+            </Link>
+            <p className="text-right leading-none">
+              <Figure minor={b.spentMinor} className="text-[1.9rem]" />
+              <span className="mono ml-1.5 text-[.74rem]">of {usd(b.caps.limit)}</span>
+            </p>
+          </div>
+          <div className="mt-3"><Meter spent={b.spentMinor} held={b.reservedMinor} of={b.caps.limit} label={`${usd(used)} of ${usd(b.caps.limit)} used`} /></div>
+          <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2">
+            <p className="flex flex-wrap gap-1.5">
+              {(b.caps.payees ?? ["any payee"]).map((p) => <span key={p} className="tag">{p}</span>)}
+              {(b.caps.purposes ?? ["any purpose"]).map((p) => <span key={p} className="tag">{p}</span>)}
+            </p>
             <div className="flex items-center gap-2">
-              {b.revokedAt && b.depth > 0 ? <span className="chip chip-REVOKED">Revoked</span> : null}
-              {isOwner && open && !b.revokedAt && b.depth > 0 ? <button type="button" className="btn btn-sm btn-danger" disabled={Boolean(busy)} onClick={() => revoke(b.id, b.holderLabel)}>Revoke</button> : null}
+              {b.revokedAt && b.depth > 0 ? <Stamp tone="red" land>Revoked</Stamp> : null}
+              {isOwner && open && !b.revokedAt && b.depth > 0 ? <button type="button" className="btn btn-sm btn-red" disabled={Boolean(busy)} onClick={() => revoke(b.id, b.holderLabel)}>Revoke</button> : null}
             </div>
           </div>
-          <div className="mt-3 flex items-baseline justify-between text-sm"><span className="money font-semibold">{usd(b.spentMinor)} <span className="font-normal text-ink-soft">spent of {usd(b.caps.limit)}</span></span><span className="text-xs text-ink-soft">max {usd(b.caps.perPayment)} per payment</span></div>
-          <div className="bar mt-1.5" role="img" aria-label={`${usd(used)} of ${usd(b.caps.limit)} used`}><i className="bar-spent" style={{ width: `${(b.spentMinor / b.caps.limit) * 100}%` }} /><i className="bar-reserved" style={{ width: `${(b.reservedMinor / b.caps.limit) * 100}%` }} /></div>
-          <p className="mt-2 flex flex-wrap gap-1.5 text-xs">
-            {(b.caps.payees ?? ["any payee"]).map((p) => <span key={p} className="kbd">{p}</span>)}
-            {(b.caps.purposes ?? ["any purpose"]).map((p) => <span key={p} className="kbd">{p}</span>)}
+          <p className="mono mt-2.5 text-[.66rem] leading-relaxed opacity-80">
+            {b.depth === 0 ? `sealed by ${root.principalName}` : "split off by the envelope above, offline"} · max {usd(b.caps.perPayment)} per payment · expires {when(b.caps.notAfter)} · {b.caps.splits > 0 ? `can split ${b.caps.splits}×` : "cannot split"}
           </p>
         </div>
-        {kids.length > 0 && <div className="env-children space-y-3">{kids.map((k) => <Node key={k.id} b={k} />)}</div>}
+        {kids.length > 0 && <div className="envl-kids space-y-4">{kids.map((k) => <Node key={k.id} b={k} />)}</div>}
       </div>
     );
   };
 
   return (
-    <div className="grid gap-6 lg:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)]">
-      <div className="space-y-5">
-        <div>
-          <p className="text-sm text-ink-soft">Envelope · owner {root.principalName} <span className="mono text-xs">{fingerprint(root.principal)}</span>{isOwner ? " (you)" : ""}</p>
-          <h1 className="mt-1 flex flex-wrap items-center gap-3 text-2xl font-semibold">{root.title} <span className={`chip chip-${root.status}`}>{open ? "Open" : "Closed"}</span></h1>
-        </div>
+    <div className="grid gap-x-10 gap-y-8 lg:grid-cols-[minmax(0,1.22fr)_minmax(0,1fr)]">
+      <div className="space-y-8">
+        <header>
+          <p className="label">Envelope · owner {root.principalName} <span className="normal-case tracking-normal">{fingerprint(root.principal)}</span>{isOwner ? " (you)" : ""}</p>
+          <h1 className="display mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-[clamp(2rem,4.4vw,3rem)]">{root.title} <Stamp tone={open ? "green" : "grey"}>{open ? "Open" : "Closed"}</Stamp></h1>
+        </header>
 
-        <section className="card p-5" aria-label="PayPal hold">
-          <div className="flex flex-wrap items-baseline justify-between gap-2">
-            <p className="eyebrow">PayPal hold backing this envelope</p>
-            <p className="mono text-xs text-ink-soft">authorization {root.authorizationId}</p>
+        <section className="sheet overflow-hidden p-5 sm:p-6" aria-label="PayPal hold">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="label">PayPal hold backing this envelope</p>
+              <p className="mono mt-1 text-[.72rem] text-ink-2">authorization {root.authorizationId}</p>
+            </div>
+            <Postmark className="-mr-4 -mt-4 shrink-0 rotate-[7deg]" size={104} tone={open ? "blue" : "grey"} top="PAYPAL · HOLD" bottom={open ? "AUTHORIZED" : "VOIDED"} line1={usd(root.limitMinor)} line2={d.mode === "sandbox" ? "SANDBOX" : d.mode.toUpperCase()} />
           </div>
-          <div className="mt-3 grid grid-cols-3 gap-3 text-sm">
-            <div><p className="money text-xl font-semibold">{usd(root.capturedMinor)}</p><p className="text-xs text-ink-soft">captured: what agents actually spent</p></div>
-            <div><p className="money text-xl font-semibold">{usd(held)}</p><p className="text-xs text-ink-soft">still held, not charged</p></div>
-            <div><p className="money text-xl font-semibold">{usd(root.releasedMinor ?? 0)}</p><p className="text-xs text-ink-soft">released back by PayPal</p></div>
+          <div className="mt-2 grid grid-cols-3 gap-4">
+            <div><Figure minor={root.capturedMinor} className="text-[clamp(1.7rem,3.6vw,2.5rem)]" /><p className="mt-1.5 text-xs leading-snug text-ink-2">captured: what agents actually spent</p></div>
+            <div><Figure minor={held} className="text-[clamp(1.7rem,3.6vw,2.5rem)] text-blue" /><p className="mt-1.5 text-xs leading-snug text-ink-2">still held, not charged</p></div>
+            <div><Figure minor={root.releasedMinor ?? 0} className="text-[clamp(1.7rem,3.6vw,2.5rem)] text-ink-3" /><p className="mt-1.5 text-xs leading-snug text-ink-2">released back by PayPal</p></div>
           </div>
-          <div className="bar mt-3"><i className="bar-spent" style={{ width: `${(root.capturedMinor / root.limitMinor) * 100}%` }} /><i className="bar-released" style={{ width: `${((root.releasedMinor ?? 0) / root.limitMinor) * 100}%` }} /></div>
-          <p className="mt-2 text-xs text-ink-soft">Each spend is a partial capture of this one authorization; PayPal itself refuses to capture beyond it. Closing the envelope voids the rest. {d.mode === "sandbox" ? "Sandbox: the hold is on PayPal's test card." : ""}</p>
+          <div className="mt-4 text-ink"><Meter spent={root.capturedMinor} freed={root.releasedMinor ?? 0} of={root.limitMinor} label={`${usd(root.capturedMinor)} captured of ${usd(root.limitMinor)}`} /></div>
+          <p className="mt-3 text-xs text-ink-2">Each spend is a partial capture of this one authorization; PayPal itself refuses to capture beyond it. Closing the envelope voids the rest. {d.mode === "sandbox" ? "Sandbox: the hold is on PayPal's test card." : ""}</p>
         </section>
 
-        <section aria-label="Envelopes" className="space-y-3">
-          <h2 className="font-semibold">Who holds what</h2>
+        <section aria-label="Envelopes" className="space-y-4">
+          <h2 className="label">Who holds what</h2>
           {children(null).map((b) => <Node key={b.id} b={b} />)}
         </section>
 
         {(d.demoAgents || isOwner) && (
-          <section className="card space-y-3 p-5">
-            <h2 className="font-semibold">Controls</h2>
-            <div className="flex flex-wrap gap-2">
-              {d.demoAgents && <button type="button" className="btn btn-primary" disabled={Boolean(busy) || !open} onClick={() => script(RUN, "run")}>{busy === "run" ? "Agents working…" : "Run the launch (agents split & pay)"}</button>}
+          <section className="space-y-4 border-t-[1.5px] border-ink pt-5" data-testid="controls">
+            <h2 className="label">Controls</h2>
+            <div className="flex flex-wrap gap-x-4 gap-y-4">
+              {d.demoAgents && <button type="button" className="btn btn-ink" disabled={Boolean(busy) || !open} onClick={() => script(RUN, "run")}>{busy === "run" ? "Agents working…" : "Run the launch (agents split & pay)"}</button>}
               {d.demoAgents && <button type="button" className="btn" disabled={Boolean(busy) || !open} onClick={() => script(ATTACK, "attack")}>{busy === "attack" ? "Attacking…" : "Compromise the creative agent"}</button>}
-              {isOwner && <button type="button" className="btn btn-danger" disabled={Boolean(busy) || !open} onClick={() => revoke(id, "the root")}>Close envelope & release the hold</button>}
+              {isOwner && <button type="button" className="btn btn-red" disabled={Boolean(busy) || !open} onClick={() => revoke(id, "the root")}>Close envelope & release the hold</button>}
             </div>
-            {d.demoAgents && <p className="text-xs text-ink-soft">The built-in agents are scripted and their keys live on this demo server. External agents (see the README) hold their own keys and call the same gateway.</p>}
-            {!isOwner && <p className="text-xs text-ink-soft">Only the owner's browser holds the key that can revoke or close this envelope.</p>}
-            {err && <p role="alert" className="text-sm text-danger">{err}</p>}
-            {lines.length > 0 && <ol className="space-y-1.5 rounded-lg bg-sunken p-3 text-sm" aria-live="polite">{lines.map((l, i) => <li key={i} className={`enter ${l.tone === "bad" ? "text-danger" : l.tone === "good" ? "text-paid" : ""}`}>{l.text}</li>)}</ol>}
+            {d.demoAgents && <p className="text-xs text-ink-2">The built-in agents are scripted and their keys live on this demo server. External agents (see the README) hold their own keys and call the same gateway.</p>}
+            {!isOwner && <p className="text-xs text-ink-2">Only the owner's browser holds the key that can revoke or close this envelope.</p>}
+            {err && <p role="alert" className="text-sm text-red">{err}</p>}
+            {lines.length > 0 && (
+              <ol className="mono space-y-1.5 border-l-[1.5px] border-ink pl-4 text-[.8rem] leading-relaxed" aria-live="polite">
+                {lines.map((l, i) => <li key={i} className={`enter ${l.tone === "bad" ? "text-red" : l.tone === "good" ? "text-green" : "text-ink-2"}`}>{l.text}</li>)}
+              </ol>
+            )}
           </section>
         )}
       </div>
 
-      <aside className="space-y-5">
-        <section>
-          <h2 className="font-semibold">Activity</h2>
-          {spends.length === 0 ? <p className="mt-2 text-sm text-ink-soft">No spend requests yet.</p> : (
-            <ul className="mt-3 space-y-2">
+      <aside className="space-y-8">
+        <section data-testid="statement">
+          <h2 className="label">Statement</h2>
+          {spends.length === 0 ? <p className="mt-3 border-t-[1.5px] border-ink pt-4 text-sm text-ink-2">No spend requests yet.</p> : (
+            <ul className="ledger mt-3 border-t-[1.5px] border-ink">
               {spends.map((s) => (
-                <li key={s.id} className="card enter p-3.5 text-sm">
-                  <div className="flex items-start justify-between gap-2">
-                    <p><span className="font-semibold">{s.leafLabel}</span> → <span className="mono text-xs">{s.payee}</span></p>
-                    <span className="money shrink-0 font-semibold">{usd(s.amountMinor)}</span>
+                <li key={s.id} className="enter py-3.5">
+                  <div className="flex items-baseline justify-between gap-3">
+                    <p className="min-w-0 text-[.95rem]"><span className="mono mr-2 text-[.7rem] text-ink-3">{hhmm(s.createdAt)}</span><span className="title">{s.leafLabel}</span> <span className="text-ink-3">→</span> <span className="mono text-[.78rem] break-all">{s.payee}</span></p>
+                    <Figure minor={s.amountMinor} className={`shrink-0 text-[1.35rem] ${s.status === "DENIED" ? "text-ink-3 line-through decoration-red decoration-2" : ""}`} />
                   </div>
-                  <p className="mt-1 flex flex-wrap items-center gap-2"><span className={`chip chip-${s.status}`}>{SPEND_LABEL[s.status] ?? s.status}</span><span className="text-xs text-ink-soft">{s.purpose}{s.memo ? ` · ${s.memo}` : ""}</span></p>
-                  {s.agentNote && <p className="mt-1.5 text-xs italic text-ink-soft">Agent: “{s.agentNote}”</p>}
-                  {s.reasons.length > 0 && <ul className="mt-1.5 space-y-0.5 text-xs text-danger">{s.reasons.map((r, i) => <li key={i}><span className="mono">{r.code}</span> · {r.detail}</li>)}</ul>}
-                  {s.captureId && <p className="mono mt-1.5 text-[11px] text-ink-soft">capture {s.captureId} · payout {s.payoutBatchId}{s.payoutStatus ? ` (${s.payoutStatus})` : ""}</p>}
-                  {s.hasReceipt && <Link className="link mt-1 inline-block text-xs" href={`/r/${s.id}`}>Receipt & authority chain →</Link>}
+                  <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1"><SpendStamp status={s.status} land /><span className="text-xs text-ink-2">{s.purpose}{s.memo ? ` · ${s.memo}` : ""}</span></p>
+                  {s.agentNote && <p className="mt-2 font-serif text-[.9rem] italic leading-snug text-ink-2">Agent: “{s.agentNote}”</p>}
+                  {s.reasons.length > 0 && <ul className="mono mt-2 space-y-0.5 text-[.72rem] leading-snug text-red">{s.reasons.map((r, i) => <li key={i}><b>{r.code}</b> · {r.detail}</li>)}</ul>}
+                  {s.captureId && <p className="mono mt-2 text-[.68rem] text-ink-2">capture {s.captureId} · payout {s.payoutBatchId}{s.payoutStatus ? ` (${s.payoutStatus})` : ""}</p>}
+                  {s.hasReceipt && <Link className="link mt-1.5 inline-block text-[.8rem]" href={`/r/${s.id}`}>Receipt & authority chain →</Link>}
                 </li>
               ))}
             </ul>
           )}
         </section>
-        <section className="card p-4">
-          <div className="flex items-center justify-between"><h2 className="font-semibold">Audit trail</h2><span className={`chip ${d.audit.ok ? "chip-PAID" : "chip-DENIED"}`}>{d.audit.ok ? `Hash chain intact · ${d.audit.length}` : "Chain broken"}</span></div>
-          <ol className="mt-3 space-y-1 text-xs">{d.audit.entries.map((e) => <li key={e.seq}><span className="mono text-ink-soft">#{e.seq}</span> {e.action.replace(/\./g, " › ")} <span className="text-ink-soft">· {e.actor}{e.ref ? ` · ${e.ref.slice(0, 22)}` : ""}</span></li>)}</ol>
+        <section className="sheet p-4">
+          <div className="flex items-center justify-between gap-2"><h2 className="label">Audit trail</h2><Stamp tone={d.audit.ok ? "green" : "red"} flat>{d.audit.ok ? `Hash chain intact · ${d.audit.length}` : "Chain broken"}</Stamp></div>
+          <ol className="mono mt-3 space-y-1 text-[.7rem] leading-relaxed">{d.audit.entries.map((e) => <li key={e.seq} className="leader"><span><span className="text-ink-3">#{String(e.seq).padStart(2, "0")}</span> {e.action.replace(/\./g, " › ")}</span><i /><span className="text-ink-2">{e.actor}{e.ref ? ` · ${e.ref.slice(0, 17)}` : ""}</span></li>)}</ol>
         </section>
       </aside>
     </div>

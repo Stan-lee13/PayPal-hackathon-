@@ -70,6 +70,33 @@ An **envelope** is an array of 1 to 8 blocks, root first. Block 0 is signed by t
   "issuedAt": "…", "gateway": "<gateway public key>", "sig": "<gateway signature>" }
 ```
 
+### Introduction and statement of standing
+
+An agent introduces itself to a payee with a **hello**: the same fields as a spend request without the memo, signed under a different domain so it can never be replayed as a payment.
+
+```
+{ "request": { "v": "envelope-hello/1", "leaf": "…", "amount": 7000, "currency": "USD",
+               "payee": "designer@example.com", "purpose": "design", "nonce": "n_…", "at": "…" },
+  "sig": "<signature by the last block's holder, domain envelope-hello/1>",
+  "chain": [ …the envelope… ] }
+```
+
+The payee hands it to the gateway and receives a **statement of standing**:
+
+```
+{ "v": "envelope-standing/1",
+  "agent": "<public key>", "agentLabel": "creative-agent", "account": "QDF0-810H-KB39",
+  "sponsors": [ { "role": "owner", "label": "Ada", "key": "…" }, { "role": "agent", "label": "ops-agent", "key": "…" } ],
+  "root": "env_…",
+  "ask": { "amount": 7000, "currency": "USD", "payee": "designer@example.com", "purpose": "design" },
+  "good": true, "reasons": [],
+  "availableMinor": 8000,
+  "paypal": { "mode": "sandbox", "authorizationId": "…", "status": "PARTIALLY_CAPTURED", "unusedMinor": 15500 },
+  "issuedAt": "…", "validUntil": "<issuedAt + 5 minutes>", "gateway": "<gateway public key>", "sig": "…" }
+```
+
+`account` is a readable account number derived from the agent's public key (its first 60 bits in Crockford base32).
+
 ## Rules
 
 ### Splitting (offline)
@@ -109,6 +136,17 @@ Failures: a definite refusal by PayPal releases the reservation (and refunds the
 
 A revocation is `{ request: { v: "envelope-revoke/1", block, nonce, at }, sig, by }`. It is accepted from the principal, from the holder of any block above the target, or from the target's own holder. Revoking a block kills its subtree (rule 5). Revoking the root closes the envelope: the gateway voids the PayPal authorization and the unspent remainder is released.
 
+### Checking an agent before working for it
+
+Anyone holding a hello may ask `POST /api/gateway/standing`. The gateway:
+
+1. verifies the hello exactly as it would a spend (rules 1 to 3), which proves the agent controls the key it claims;
+2. reads, without locking or reserving, the same state a spend would be admitted against (rules 4, 5 and 7);
+3. asks PayPal for the authorization (`GET /v2/payments/authorizations/{id}`) and requires it to be `CREATED` or `PARTIALLY_CAPTURED`;
+4. signs the answer: who stands behind the agent back to the owner, whether this exact payment would be accepted now, and the most the agent could pay this payee in one payment.
+
+Nothing is reserved, so the answer can go stale; it is valid for five minutes. It is evidence that the money exists and is reachable by this agent for this payee, not a promise to pay.
+
 ## How it maps to PayPal
 
 | Envelope | PayPal | Why it matters |
@@ -116,6 +154,7 @@ A revocation is `{ request: { v: "envelope-revoke/1", block, nonce, at }, sig, b
 | Seal | Orders v2, `intent: AUTHORIZE` | The money is guaranteed before any agent starts, and never charged up front. |
 | Spend | Partial capture of the authorization, then Payouts | The owner is charged exactly what agents spent. PayPal refuses captures beyond the hold. |
 | Close / expire | Void authorization | The remainder goes back automatically. |
+| Check | Show authorization details | A payee learns from PayPal, through the gateway, that the hold is live before doing any work. |
 | Receipt | capture id, payout batch and item ids | Any PayPal transaction can be traced to its chain of authority, and re-checked with PayPal's own GET endpoints. |
 
 Verified in the PayPal sandbox on 2026-11-11: 12 partial captures of one authorization all completed; an over-capture was refused (`MAX_CAPTURE_AMOUNT_EXCEEDED`); void after partial captures returned `VOIDED`. See `docs/evidence/sandbox-run.json`.
@@ -135,11 +174,13 @@ An authorization is a hold placed by PayPal on the payer's funding source. It is
 
 Attenuating capability chains are well established: macaroons (2014), Biscuit, UCAN, L402 (macaroons with Lightning payments), ERC-7710 on-chain redelegation, and 2026 IETF drafts on attenuating agent tokens and delegation chains. Agent-payment standards such as AP2 mandates and Agentic Commerce Protocol shared payment tokens scope a payment from a user to an agent or a seller.
 
-Envelope's contribution is the combination on a mainstream fiat rail: multi-hop attenuation with money-denominated budgets debited at every ancestor, a root backed by a PayPal authorization the network itself enforces, and receipts binding PayPal transaction ids to the full chain.
+Agent identity, "know your agent" and agent wallets are also crowded: Skyfire, Catena Labs, Payman, Crossmint, Coinbase, Visa and Mastercard all have products or specifications, and PayPal has named the concept. One commercial product (SpendVeto) states that a grandchild's spend counts against every ancestor's cap. Several entries to this hackathon ship agent passports, delegation chains or hold-and-capture budgets; see `docs/DISCOVERY.md`.
+
+Envelope's contribution is the combination, on a mainstream fiat rail: a chain any third party can verify with public keys, money budgets debited at every ancestor, one PayPal authorization behind the whole tree that the network itself enforces, a statement of standing tied to that live hold, and receipts binding PayPal transaction ids to the full chain. We found no project that has all of these together.
 
 ## Roadmap
 
 - Principal consent through PayPal's own checkout or a vaulted wallet instead of the sandbox test card.
-- Payee-side verification: a payee checks the receipt before delivering.
+- A statement of standing that also reserves the amount for a short time, so a payee's check becomes a guarantee.
 - Envelopes as AP2 / UCP payment-mandate attachments, so merchants can accept them directly.
 - Keys in hardware or passkeys; gateway state in an append-only public log.

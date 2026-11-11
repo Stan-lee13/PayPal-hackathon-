@@ -34,6 +34,12 @@ const artChain = await E.split(rootChain, ops!, { publicKey: art!.publicKey, lab
 await G.announce(locChain); await G.announce(artChain);
 log("split offline into two sub-envelopes", { localization: "$60 · translator only", creative: "$90 · designer only" });
 
+// Know your agent: before doing any work, the designer asks whether creative-agent is good for $70.
+const good = await G.standing(await E.signHello(artChain, art!, { amount: 7000, payee: designer, purpose: "design" }));
+log("proof of funds: the designer checked creative-agent before working", { good: good.good, account: good.account, standsBehindIt: good.sponsors.map((x) => x.label).join(" → "), paypalHold: good.paypal.status, unusedOnHold: `$${((good.paypal.unusedMinor ?? 0) / 100).toFixed(2)}`, canPayUpTo: `$${(good.availableMinor / 100).toFixed(2)}`, gatewaySignatureValid: await G.verifyStanding(good) });
+const bad = await G.standing(await E.signHello(artChain, art!, { amount: 2000, payee: "attacker@evil.example", purpose: "design" }));
+log("proof of funds refused for a payee that is not on the envelope", { good: bad.good, reasons: bad.reasons.map((x) => x.code) });
+
 const pay1 = await G.spend(await E.signSpend(locChain, loc!, { amount: 4500, payee: translator, purpose: "translation", memo: "FR + YO store strings" }));
 log("localization-agent paid $45", { status: pay1.status, capture: pay1.spend?.captureId, payoutBatch: pay1.spend?.payoutBatchId, payoutItem: pay1.spend?.payoutItemId, reasons: pay1.reasons });
 const pay2 = await G.spend(await E.signSpend(artChain, art!, { amount: 7000, payee: designer, purpose: "design", memo: "Launch banner set" }));

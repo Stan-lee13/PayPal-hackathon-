@@ -12,7 +12,7 @@ export default async function ReceiptPage({ params }: { params: Promise<{ id: st
     <>
       <ModeBanner />
       <SiteHeader />
-      <main id="main" className="mx-auto max-w-3xl px-4 pb-16"><ReceiptView id={id} /></main>
+      <main id="main" className="mx-auto max-w-6xl px-5 pb-20 pt-4"><ReceiptView id={id} /></main>
     </>
   );
 }

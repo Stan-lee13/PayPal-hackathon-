@@ -5,12 +5,10 @@ export function ModeBanner() {
   const pp = paypalMode();
   const sim = pp === "simulated";
   return (
-    <div className={`border-b text-xs ${sim ? "bg-blocked-wash text-ink border-rule" : "bg-sunken text-ink-soft border-rule"}`} role="note">
-      <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-x-4 gap-y-1 px-4 py-1.5">
-        <span className={sim ? "font-semibold" : ""}>
-          {sim ? "PayPal: SIMULATED (built-in simulator, no PayPal involved, no money moves)" : pp === "sandbox" ? "PayPal: SANDBOX — real PayPal API calls, test money only" : "PayPal: LIVE"}
-        </span>
-        <span>Agents never hold PayPal credentials: only signed envelopes.</span>
+    <div className={`border-b border-ink ${sim ? "bg-red text-sheet" : "bg-ink text-sheet"}`} role="note">
+      <div className="micro mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-x-6 gap-y-0.5 px-5 py-1.5 !text-[.6rem] !text-sheet">
+        <span>{sim ? "PayPal simulated · built-in simulator · no money moves" : pp === "sandbox" ? "PayPal sandbox · real API calls · test money only" : "PayPal live"}</span>
+        <span className="opacity-70">Agents hold signed envelopes, never PayPal credentials</span>
       </div>
     </div>
   );

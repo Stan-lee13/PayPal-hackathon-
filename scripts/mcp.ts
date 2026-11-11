@@ -131,6 +131,47 @@ const TOOLS: Array<{ name: string; description: string; inputSchema: object; run
       return lines.join("\n");
     },
   },
+  {
+    name: "envelope_introduce",
+    description: "Introduce this agent to a payee before any work is done. Returns a token the payee (or its agent) can check to learn who stands behind this agent and whether a payment of this size to them would go through. Moves no money and cannot be reused as a payment.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        payee: { type: "string", description: "The payee's PayPal email" },
+        amount: { type: "number", description: "The amount you expect to pay, in dollars" },
+        purpose: { type: "string", description: "One of the envelope's allowed purposes" },
+      },
+      required: ["payee", "amount", "purpose"],
+      additionalProperties: false,
+    },
+    async run(a) {
+      const hello = await E.signHello(envelope(), await key(AGENT, false), { amount: cents(a.amount, "amount"), payee: text(a.payee, "payee", 254), purpose: text(a.purpose, "purpose", 60) });
+      return E.b64u(new TextEncoder().encode(JSON.stringify(hello)));
+    },
+  },
+  {
+    name: "envelope_check_agent",
+    description: "Check an introduction token another agent gave you before you do work for it. The gateway confirms the agent controls its key, names who stands behind it back to a person, asks PayPal whether the hold is still there, and says whether the payment it proposed would be accepted right now. The answer is signed and expires after five minutes.",
+    inputSchema: { type: "object", properties: { token: { type: "string", description: "The introduction token" } }, required: ["token"], additionalProperties: false },
+    async run(a) {
+      let hello: unknown;
+      try { hello = JSON.parse(new TextDecoder().decode(E.unb64u(text(a.token, "token", 20000)))); } catch { throw new ToolError("That is not an introduction token."); }
+      const r = await post("/api/gateway/standing", { hello });
+      const s = r.json.standing;
+      if (!s) throw new ToolError(`Gateway: ${r.json.error ?? r.status}`);
+      const { sig, ...body } = s;
+      const pinned = (await fetch(`${GATEWAY}/api/gateway/key`).then((x) => x.json()).catch(() => null)) as { publicKey?: string } | null;
+      const signed = (await E.verifyDetached(s.gateway, "envelope-standing/1", body, sig)) && pinned?.publicKey === s.gateway;
+      return [
+        `${s.agentLabel}, account ${s.account}`,
+        `Stands behind it: ${s.sponsors.map((x: { role: string; label: string }) => `${x.label} (${x.role})`).join(" → ")}`,
+        `PayPal hold ${s.paypal.authorizationId ?? "none"}: ${s.paypal.status ?? "not confirmed"}${s.paypal.unusedMinor !== null ? `, ${usd(s.paypal.unusedMinor)} unused` : ""} (${s.paypal.mode})`,
+        `Asked: ${usd(s.ask.amount)} to ${s.ask.payee} for ${s.ask.purpose}`,
+        s.good ? `GOOD: it can pay up to ${usd(s.availableMinor)} in one payment right now.` : `NOT GOOD: this payment would be refused. ${s.reasons.map((x: { code: string; detail: string }) => `${x.code} (${x.detail})`).join("; ")}`,
+        `Gateway signature: ${signed ? "valid" : "INVALID, do not rely on this"}. Valid until ${s.validUntil}.`,
+      ].join("\n");
+    },
+  },
 ];
 
 const send = (msg: object) => process.stdout.write(JSON.stringify(msg) + "\n");

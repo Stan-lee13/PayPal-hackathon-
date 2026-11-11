@@ -12,7 +12,7 @@ export default async function EnvelopePage({ params }: { params: Promise<{ id: s
     <>
       <ModeBanner />
       <SiteHeader />
-      <main id="main" className="mx-auto max-w-6xl px-4 pb-16"><EnvelopeView id={id} /></main>
+      <main id="main" className="mx-auto max-w-6xl px-5 pb-20 pt-4"><EnvelopeView id={id} /></main>
     </>
   );
 }

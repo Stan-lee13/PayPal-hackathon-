@@ -41,36 +41,42 @@ export function SealForm({ defaultPayees }: { defaultPayees: string[] }) {
     } catch (e) { setErr(e instanceof Error ? e.message : "Something went wrong."); setBusy(null); }
   }
 
-  const L = "block text-sm font-medium";
+  const L = "label block";
   return (
-    <form onSubmit={submit} className="card mt-6 space-y-4 p-5">
-      <div className="grid gap-4 sm:grid-cols-2">
+    <form onSubmit={submit} className="sheet sheet-lift mt-8 space-y-6 p-6 sm:p-8">
+      <div className="grid gap-x-8 gap-y-6 sm:grid-cols-2">
         <label className={L}>Your name<input className="field mt-1" value={f.name} onChange={set("name")} required /></label>
         <label className={L}>What it's for<input className="field mt-1" value={f.title} onChange={set("title")} required /></label>
       </div>
-      <div className="grid gap-4 sm:grid-cols-4">
-        <label className={L}>Total (USD)<input className="field mt-1 money" value={f.limit} onChange={set("limit")} inputMode="decimal" required /></label>
-        <label className={L}>Max per payment<input className="field mt-1 money" value={f.per} onChange={set("per")} inputMode="decimal" required /></label>
-        <label className={L}>Valid for (hours)<input className="field mt-1" value={f.hours} onChange={set("hours")} inputMode="numeric" required /></label>
-        <label className={L}>Splits allowed<input className="field mt-1" value={f.splits} onChange={set("splits")} inputMode="numeric" required /></label>
+      <div className="grid grid-cols-2 gap-x-8 gap-y-6 sm:grid-cols-4">
+        <label className={L}>Total (USD)<input className="field figure mt-1 !text-[1.7rem]" value={f.limit} onChange={set("limit")} inputMode="decimal" required /></label>
+        <label className={L}>Per payment<input className="field figure mt-1 !text-[1.7rem]" value={f.per} onChange={set("per")} inputMode="decimal" required /></label>
+        <label className={L}>Hours valid<input className="field figure mt-1 !text-[1.7rem]" value={f.hours} onChange={set("hours")} inputMode="numeric" required /></label>
+        <label className={L}>Splits<input className="field figure mt-1 !text-[1.7rem]" value={f.splits} onChange={set("splits")} inputMode="numeric" required /></label>
       </div>
-      <label className={L}>Only these payees <span className="font-normal text-ink-soft">(PayPal emails, comma-separated; empty = any)</span><input className="field mt-1 mono text-sm" value={f.payees} onChange={set("payees")} /></label>
-      <label className={L}>Only these purposes <span className="font-normal text-ink-soft">(empty = any)</span><input className="field mt-1" value={f.purposes} onChange={set("purposes")} /></label>
+      <label className={L}>Only these payees <span className="normal-case tracking-normal text-ink-3">(PayPal emails, comma-separated; empty = any)</span><input className="field mono mt-1 !text-[.9rem]" value={f.payees} onChange={set("payees")} /></label>
+      <label className={L}>Only these purposes <span className="normal-case tracking-normal text-ink-3">(empty = any)</span><input className="field mt-1" value={f.purposes} onChange={set("purposes")} /></label>
       <label className={L}>Give it to
         <select className="field mt-1" value={f.holder} onChange={set("holder")}>
-          <option value="demo">Built-in demo agents (scripted, keys held by this demo server)</option>
-          <option value="own">My own agent (I'll paste its public key)</option>
+          <option value="demo">Built-in demo agents (scripted)</option>
+          <option value="own">My own agent (paste its public key)</option>
         </select>
       </label>
+      {f.holder === "demo" && <p className="-mt-3 text-xs text-ink-3">The demo agents follow a fixed script and their keys are held by this demo server. Real agents keep their own keys.</p>}
       {f.holder === "own" && (
-        <div className="grid gap-4 sm:grid-cols-[2fr_1fr]">
-          <label className={L}>Agent public key<input className="field mt-1 mono text-xs" value={f.agentKey} onChange={set("agentKey")} placeholder="from: npx tsx scripts/agent.ts keygen ops" /></label>
+        <div className="grid gap-x-8 gap-y-6 sm:grid-cols-[2fr_1fr]">
+          <label className={L}>Agent public key<input className="field mono mt-1 !text-[.78rem]" value={f.agentKey} onChange={set("agentKey")} placeholder="from: npx tsx scripts/agent.ts keygen ops" /></label>
           <label className={L}>Agent name<input className="field mt-1" value={f.agentLabel} onChange={set("agentLabel")} /></label>
         </div>
       )}
-      <p className="rounded-lg bg-sunken px-3 py-2 text-xs text-ink-soft">Signed with your key <span className="mono text-ink">{key ? fingerprint(key.publicKey) : "…"}</span>, which stays in this browser. The gateway can enforce your envelope but can't forge one.</p>
-      {err && <p role="alert" className="text-sm text-danger">{err}</p>}
-      <button className="btn btn-primary" disabled={!key || Boolean(busy)}>{busy ?? `Seal & hold $${Number(f.limit || 0).toFixed(2)} on PayPal`}</button>
+      <div className="perforated flex flex-wrap items-end justify-between gap-x-8 gap-y-5 pt-6">
+        <div className="min-w-0 flex-1 basis-64">
+          <p className="border-b-[1.5px] border-ink pb-1 font-serif text-[1.6rem] italic leading-none text-blue" aria-hidden="true">{f.name || "—"}</p>
+          <p className="mt-1.5 text-xs text-ink-2">Signed with your key <span className="mono text-ink">{key ? fingerprint(key.publicKey) : "…"}</span>, which stays in this browser. The gateway can enforce your envelope but can't forge one.</p>
+        </div>
+        <button className="btn btn-ink shrink-0" disabled={!key || Boolean(busy)}>{busy ?? `Seal & hold $${Number(f.limit || 0).toFixed(2)} on PayPal`}</button>
+      </div>
+      {err && <p role="alert" className="text-sm text-red">{err}</p>}
     </form>
   );
 }
