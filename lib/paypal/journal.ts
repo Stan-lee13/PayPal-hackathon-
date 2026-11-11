@@ -72,9 +72,17 @@ function describe(c: CallRecord): Omit<PayPalCall, "id" | "at"> | null {
 }
 
 const pending = new Set<Promise<unknown>>();
+/** A read that gets the same answer as a minute ago is not news: an open page asks often, and the record should stay readable. */
+const lastRead = new Map<string, number>();
 setPayPalObserver((c) => {
   const row = describe(c);
   if (!row) return;
+  if (!MOVES.includes(row.op) && row.error === null) {
+    const k = `${row.op}|${row.resourceId}|${row.paypalStatus}`, now = Date.now();
+    if (now - (lastRead.get(k) ?? 0) < 60_000) return;
+    lastRead.set(k, now);
+    if (lastRead.size > 5000) lastRead.clear();
+  }
   const p = Promise.resolve().then(() => getDb().insert(paypalCalls).values(row)).catch(() => undefined);
   pending.add(p);
   void p.finally(() => pending.delete(p));

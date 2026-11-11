@@ -10,7 +10,8 @@
  * that waits for the owner's signature, the earning agent's passport and balance (transfer to another
  * agent, a refused drain, an owner freeze, a withdrawal), its card (a subscription charged by the
  * merchant, three declined charges, cancellation), the books, a receipt checked against PayPal and in
- * the browser, proof of funds, three attacks denied, close, and a second tab seeing the same data.
+ * the browser, proof of funds, three attacks denied, close, a second tab seeing the same data, the
+ * record of PayPal calls on an envelope's page, and (on the simulator) the owner's recall of an unclaimed payout.
  */
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
@@ -175,6 +176,29 @@ try {
   await p2.getByText("can be paid").first().waitFor(T);
   if (OUT) await p2.screenshot({ path: `${OUT}/local-5-console.png`, fullPage: true }).catch(() => {});
   console.log("second tab: console lists the envelope and the receiving agent");
+  // What PayPal did, and a recall. The recall runs on the simulator only: PayPal's sandbox does not complete a cancel (see the README).
+  const health = await (await fetch(`${BASE}/api/health`)).json().catch(() => ({}));
+  if (health.paypalMode === "simulated") {
+    await page.goto(`${BASE}/console`);
+    await page.getByText(/is translator-agent, an agent owned by Bea/).waitFor(T);
+    let payees = null;
+    for (const box of await page.getByRole("textbox").all()) if ((await box.inputValue()).includes("designer@example.com")) payees = box;
+    if (!payees) throw new Error("no payees field");
+    await payees.fill((await payees.inputValue()).replace("designer@example.com", "unclaimed.designer@example.com"));
+    await page.getByRole("button", { name: /^Seal & hold/ }).click();
+    await page.getByText("PayPal hold backing this envelope").waitFor(T);
+    await page.getByRole("button", { name: /Run the launch/ }).click();
+    await page.getByText(/creative-agent asked to pay/).waitFor(T);
+    const rail = page.getByTestId("paypal-rail");
+    await rail.getByText("Placed the hold").waitFor(T);
+    await rail.getByText("Sent a payout").waitFor(T);
+    await page.getByTestId("recall").click();
+    await page.getByTestId("statement").getByText("Recalled · refunded").waitFor(T);
+    await rail.getByText("Cancelled an unclaimed payout").waitFor(T);
+    await rail.getByText("Refunded a capture").waitFor(T);
+    if (OUT) await page.screenshot({ path: `${OUT}/local-9-recall.png`, fullPage: true }).catch(() => {});
+    console.log("paypal record: hold, captures and payout listed; an unclaimed payout recalled by the owner: cancelled at PayPal, capture refunded");
+  }
 } catch (e) {
   failed = true;
   console.log("FAILED:", String(e).slice(0, 500));

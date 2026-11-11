@@ -36,7 +36,7 @@ An audit of the repository as it stood on 11 November 2026, done by reading the 
         └── lib/paypal/              client (sandbox) and a built-in simulator
 ```
 
-Tables: `roots`, `blocks`, `spends`, `accounts`, `ledger`, `transfers`, `cards`, `audit_log` (hash-chained), `gateway_keys`, `demo_keys`, `rate_limits`, `emulator_state`. Six migrations.
+Tables: `roots`, `blocks`, `spends`, `accounts`, `ledger`, `transfers`, `cards`, `audit_log` (hash-chained), `paypal_calls`, `paypal_events`, `gateway_keys`, `demo_keys`, `rate_limits`, `emulator_state`. Seven migrations. This inventory was written before the SDK, the record of PayPal calls, recall and events were added; those are in the rows marked below and in [`IMPLEMENTATION_REPORT.md`](IMPLEMENTATION_REPORT.md).
 
 ## Feature inventory
 
@@ -63,11 +63,16 @@ How real each part is. **Operational** means it ran on the real PayPal sandbox a
 | A model playing the agents inside the app | Operational | `evidence/model-run.md` |
 | MCP server and command line | Operational for split, pay and cards; the balance commands were run on the simulator | `evidence/agent-run.md`, `evidence/card-run.md` |
 | In-browser gateway (the hosted try-it copy) | Operational as a simulator | the browser test; production health check |
+| Record of every PayPal call, shown per envelope | Operational | `evidence/sandbox-run.json`, `evidence/sdk-run.md`; `tests/paypal-rail.test.ts` |
+| SDK (`sdk/`), with the MCP server and command line built on it | Operational for the SDK; the rebuilt MCP server is tested over real MCP on the simulator | `evidence/sdk-run.md`; `tests/sdk.test.ts`, `tests/mcp.test.ts` |
+| Sweep of unfinished payments | Operational (ran on the sandbox, nothing to move) | `evidence/sandbox-run.json` |
+| PayPal events: verified, applied once | Simulated only; the sandbox rejected a forged event | `tests/paypal-rail.test.ts` |
+| Recall of an unclaimed payout | Simulated only; PayPal's sandbox would not cancel | `tests/paypal-rail.test.ts`; `evidence/sandbox-run.json` records the refusals |
 | Pending capture handling | Simulated only | the sandbox never returned a pending capture |
 | Refund-due handling | Simulated only | the sandbox never refused a refund |
 | Returned or failed payout handling | Simulated only | no sandbox payout failed |
 | Keys sealed at rest | Tested | `tests/settlement.test.ts` |
-| Hold reauthorization, webhooks, payer-present funding, disputes | Not built | — |
+| Hold reauthorization, payer-present funding, disputes, Vault, Transaction Search | Not built | — |
 | Lending, interest, insurance, network cards | Not built, and not to be built without licensed partners | — |
 
 ## Findings
@@ -79,7 +84,7 @@ Severity is about what could go wrong with money or private data. Faults that we
 | Finding | Severity | State |
 |---|---|---|
 | The database and PayPal cannot commit together; correctness depends on a fixed order of steps, idempotency keys and guarded status changes | — | By design. Described in the architecture document. Every step is retryable; four concurrency and failure cases have tests |
-| Nothing advances unfinished payments on a timer | Medium | Open. They advance when the envelope is opened or the status is asked for |
+| Nothing advances unfinished payments on a timer | Medium | Partly closed: a sweep endpoint and a webhook receiver exist; neither is scheduled or registered on a deployment |
 | A hold that lapses at PayPal is not reauthorized | Medium | Open. An envelope can live at most 28 days for this reason |
 | Captured funds rest in the gateway's PayPal account between capture and payout, and for as long as an agent keeps a balance | High for real money | Open. This is the main reason the system is sandbox-only |
 | A payout accepted by PayPal and held `UNCLAIMED` stays debited until PayPal returns it | Low | Open; shown as unclaimed, never as paid |

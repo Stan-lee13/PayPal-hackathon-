@@ -189,7 +189,7 @@ export default function Home() {
               <div>
                 <p className="label">What PayPal does here</p>
                 <h2 id="rail" className="title mt-3 text-[2.2rem]">Without PayPal, an envelope is a signed promise. With it, it is money.</h2>
-                <p className="mt-4 text-ink-2">Envelope decides who may ask, for how much and for whom. PayPal does everything that touches money: it holds it, takes exactly what was approved, delivers it, and gives back the rest. The gateway keeps a record of every call it makes to PayPal, and each envelope&rsquo;s page shows its own.</p>
+                <p className="mt-4 text-ink-2">Envelope decides who may ask, for how much and for whom. PayPal does everything that touches money: it holds it, takes exactly what was approved, delivers it, and gives back the rest. The gateway keeps a record of its calls to PayPal, and each envelope&rsquo;s page shows its own.</p>
                 <p className="mt-7"><span className="figure text-[3.2rem] leading-none text-blue">{sum("total")}</span></p>
                 <p className="mt-2 text-sm text-ink-2">calls to the PayPal sandbox behind {rails.length} envelopes in the last recorded run: {sum("holds")} holds, {sum("captures")} partial captures, {sum("payouts")} payouts, {sum("voids")} releases, and {sum("asked")} times PayPal was simply asked. {sum("refused")} were refused by PayPal, and none of those moved money.</p>
               </div>

@@ -48,6 +48,9 @@ async function ownerAsks(body: unknown, principal: string): Promise<boolean> {
 }
 const spendStatus = (s: string) => (s === "DENIED" ? 403 : s === "FAILED" ? 502 : s === "LAPSED" ? 409 : 200);
 
+/** When each unfinished payment was last put to PayPal because somebody looked at its envelope. */
+const lastAsked = new Map<string, number>();
+
 export const handlers: Record<string, Handler> = {
   /** The envelopes one owner has sealed. Shown to that owner only: the request is signed with the owner's key. */
   "POST /api/envelopes/mine": async ({ body }) => {
@@ -69,7 +72,13 @@ export const handlers: Record<string, Handler> = {
     if (!t) return { status: 404, body: { error: "No such envelope." } };
     // Anything unfinished is moved along when the page is looked at: a payout PayPal has not delivered yet or is
     // holding unclaimed, a capture it was still reviewing, a refund it refused earlier, a payment interrupted mid-way.
-    const pending = t.spends.filter((s) => ["PAYOUT_PENDING", "UNCLAIMED", "CAPTURED", "RESERVED", "REFUND_DUE"].includes(s.status)).slice(-4);
+    // A page that stays open asks every few seconds. PayPal is asked at most that often for a payment in flight, and at most
+    // twice a minute for one that is only waiting to be claimed or refunded; the sweep and PayPal's events cover the rest.
+    const now = Date.now();
+    const pending = t.spends.filter((s) => ["PAYOUT_PENDING", "UNCLAIMED", "CAPTURED", "RESERVED", "REFUND_DUE"].includes(s.status)).slice(-4)
+      .filter((s) => now - (lastAsked.get(s.id) ?? 0) >= (s.status === "UNCLAIMED" || s.status === "REFUND_DUE" ? 30_000 : 2_500));
+    for (const s of pending) lastAsked.set(s.id, now);
+    if (lastAsked.size > 5000) lastAsked.clear();
     if (pending.length) { await Promise.all(pending.map((s) => G.syncSpend(s.id).catch(() => null))); t = (await G.tree(id))!; }
     const trail = await getDb().select().from(auditLog).where(eq(auditLog.subjectId, id)).orderBy(asc(auditLog.seq));
     const audit = verifyChain(t.root.principal, id, trail.map((x) => ({ ...x, createdAt: x.createdAt.toISOString() })) as never);

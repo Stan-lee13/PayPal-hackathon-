@@ -5,9 +5,10 @@ Everything needed to fill in the Devpost form and check the entry before submitt
 ## Before you submit (only you can do these)
 
 1. **Make the GitHub repository public.** Stage One requires a public repository with a visible licence (MIT is in the repo).
-2. **Merge the open pull request into `main`** (pull requests #5 and #6 are already merged; the open one carries the proof graph and the security fixes). Vercel then builds the production site. With no settings at all it is the try-it copy: the whole gateway runs in the visitor's browser on a PayPal simulator. Put that URL in the Devpost "Try it out" field.
-3. **Upload `docs/demo/envelope-demo.mp4` to YouTube as Public** and paste the link into Devpost. It is 2:49 and already narrated (a synthetic voice; the first card says so). Record your own voice over it if you prefer; the script is `scripts/demo-narration.json`.
+2. **Merge the open pull request (#8) into `main`.** It carries the SDK, the record of PayPal calls, recall, PayPal events and the Developers page. Vercel then builds the production site. With no settings at all it is the try-it copy: the whole gateway runs in the visitor's browser on a PayPal simulator. Put that URL in the Devpost "Try it out" field, and open it once in a private window to check it loads without a Vercel login.
+3. **Decide on the video, then upload it to YouTube as Public** and paste the link into Devpost. `docs/demo/envelope-demo.mp4` (2:49, synthetic narration) was recorded before the last round: it is accurate, but it does not show the PayPal panel, the SDK or the Developers page. A script for a new take is in `docs/DEMO_RUNBOOK.md`, section D. Do not touch the repository after the deadline: the rules say no commits and no README edits.
 4. *Optional, for a hosted copy on the real sandbox:* in Vercel → Settings → Environment Variables add `DATABASE_URL` (any Postgres), `PAYPAL_CLIENT_ID` and `PAYPAL_CLIENT_SECRET` (sandbox app), then redeploy.
+4b. *Optional, so PayPal's own events finish settlements on that hosted copy:* register a webhook for the sandbox app pointing at `https://<your site>/api/paypal/webhook` and add its id as `PAYPAL_WEBHOOK_ID`. Nobody has done this yet, so no genuine PayPal event has been received.
 5. *Optional, for a live model on the hosted copy:* add `AI_BASE_URL`, `AI_API_KEY` and `AI_MODEL` for any OpenAI-compatible endpoint. Without them the hosted copy offers the scripted agents and says no model is connected.
 
 ## Title
@@ -44,6 +45,10 @@ Envelope gives an agent something that behaves like an account of its own, built
 - **Transfer.** The agent signs a transfer out of its balance. To another agent's account it moves at once, with no PayPal call. To a PayPal address, or home to its owner, it leaves as a payout. The gateway refuses it when the balance is too low, over the owner's cap, or frozen.
 - **Card.** An agent issues a Xenoncard on its balance for one merchant: a cap per charge, a number of charges, a billing period, an expiry. The merchant charges it with its own key. A thief with the card's details gets nothing, an overcharge is declined, and after the last charge the card has ended. The agent, or its owner, can cancel it sooner.
 - **Trace.** The proof graph shows every record behind an envelope and checks every signature in your browser. Pick any payment and follow it back to the person who allowed it; a second page shows one payment only, which is what a payee can be given.
+- **See what PayPal did.** Every envelope's page lists each call the gateway made to PayPal for it: the hold, each capture, each payout, each release, with PayPal's own id for the call. Envelope decides who may ask; PayPal moves the money, and you can read exactly how.
+- **Recall.** A payout nobody claimed can be taken back by the owner: PayPal cancels it, the capture is refunded and the budget returns.
+- **Settle on PayPal's word.** PayPal's events are verified with PayPal and applied once, and even a genuine event only makes the gateway read the record from PayPal before anything changes.
+- **Build on it.** A TypeScript SDK, an MCP server with fourteen tools and a command line, all on the same code. An agent using them holds its own key and never a PayPal credential.
 - **Freeze.** The owner of an agent's account can freeze it with a signature. The agent cannot lift it and cannot swap in another owner.
 - **Accept.** Money set aside can name an agent whose signed acceptance of the work releases it. The fingerprint of the delivered work goes on the receipt.
 - **Approve.** The owner can require their own signature above an amount. Over it an agent can only ask; the money waits in the owner's inbox until they sign or decline.
@@ -72,7 +77,7 @@ Agents outside the app use the same gateway through a command line and an MCP se
 - **PayPal** (sandbox): Orders v2 with `intent: AUTHORIZE` for the hold, partial captures with `final_capture: false`, Payouts for the payee, void on close, refund if a payout cannot be delivered, and GET lookups for proof of funds and for reconciling receipts.
 - **One codebase, two places to run.** Every endpoint is a plain function (`lib/api/handlers.ts`). On a server it runs against Postgres. When the site has no database, the same functions run in the visitor's browser against Postgres compiled to WebAssembly (PGlite) and a PayPal simulator, so a deployment with no configuration is a working demo.
 - **App**: Next.js 15, React 19, TypeScript, Tailwind v4, Drizzle. The interface is drawn as bank stationery: kraft envelopes, rubber stamps, till receipts, passports.
-- **Tests**: 63 automated tests on the simulator, including a corpus of 171 attacks in eleven categories. All 171 are refused and none causes a capture or a payout.
+- **Tests**: 101 automated tests on the simulator, including a corpus of 171 attacks in eleven categories. All 171 are refused and none causes a capture or a payout.
 
 ### Challenges we ran into
 
@@ -93,6 +98,9 @@ Agents outside the app use the same gateway through a command line and an MCP se
 - A real model, told it needed a service for two months and that its owner would not share a bank card, issued itself a card for exactly that, and cancelled it when told the work was off. On the real sandbox; the merchant's later charge was declined.
 - A proof graph where any payment can be followed back to the owner's signature, with every signature checked by the reader's own browser.
 - Fifteen real faults found and fixed before submitting, by our own tests and by an independent reviewer told to break the money code, and written up with what is still open.
+- 83 real PayPal API calls behind three envelopes in one recorded run, every one on record with PayPal's debug id, and shown on the envelope's own page.
+- An SDK that reached a first payment on the real sandbox from a twenty-line program, with the receipt verified on the caller's machine.
+- An MCP server tested by speaking real MCP to it, with read tools and money-moving tools marked apart.
 - 171 of 171 attacks refused, with no money moved.
 - The whole thing can be tried in a browser with nothing to install or configure.
 
@@ -128,6 +136,7 @@ Claude Code (Anthropic) wrote the code, tests and documents under the author's d
 5. Open a **Receipt & authority chain**: checked against PayPal (simulated here) and re-verified in your browser.
 6. Press **Agent asks for a bigger payment**: it is over the $75 you asked to sign for, so it waits. **Sign & pay** or **Decline**.
 7. At the top of the envelope's page, open **Proof graph**. Every box is a record; ticks are signatures your browser checked. Click a **PayPal capture** and read "Back to the person" on the right; press **Ask PayPal now**.
+7a. Back on the envelope, read **What PayPal did for this envelope**: the hold, each capture and payout, each with PayPal's id. Open **Developers** in the top bar for the SDK, the MCP tools and the command line.
 7b. Open **Treasury** (top right): every agent under your signature with its budget, where the money went, and **Reconcile with PayPal**.
 8. On an agent's passport, **Get a signed reference**: its record, signed and checked in your browser.
 9. **Close envelope & release the hold.**
@@ -176,7 +185,7 @@ A special award (Best Use of Agentic Commerce, Most Creative, Best Use of PayPal
 
 | Criterion | Strengths | Weaknesses a judge may raise |
 |---|---|---|
-| Technological implementation | Real sandbox: authorize, partial capture, payout, void, refund path, reconciliation. Ed25519 chains verified in three places. 63 tests and a 171-attack corpus. Gateway runs on a server or in a browser from the same code. | Xenoncard only works at merchants on this gateway, and network cards for agents already exist; fifteen faults were found in the last two days, which shows care and also how young the code is; no outside review; balances are stored value and need a licence in real life; a replay bug was found and fixed on the last day and there has been no outside security review; custodial gateway; test-card funding; no hold reauthorization; no webhooks; fewer tests than the largest entries. |
+| Technological implementation | Real sandbox: authorize, partial capture, payout, void, refund path, reconciliation. Ed25519 chains verified in three places. 101 tests and a 171-attack corpus. Gateway runs on a server or in a browser from the same code. | Xenoncard only works at merchants on this gateway, and network cards for agents already exist; fifteen faults were found in the last two days, which shows care and also how young the code is; no outside review; balances are stored value and need a licence in real life; a replay bug was found and fixed on the last day and there has been no outside security review; custodial gateway; test-card funding; no hold reauthorization; no webhooks; fewer tests than the largest entries. |
 | Design | A distinctive stationery system applied to every page; passports and receipts that carry real data. | Dense pages; phone layout only spot-checked. |
 | Potential impact | Addresses multi-agent delegation, payee trust and agent-to-agent payment with rails that exist today. | Needs PayPal platform products and compliance work before real money. |
 | Innovation | The combination listed above was not found in 36 rival codebases or in the prior art we read. | Each ingredient has prior art; the entry says so. |

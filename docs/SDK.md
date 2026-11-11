@@ -42,6 +42,8 @@ PayPal hold SIMAUTH66DE8E0A7DDC4DC6; capture SIMCAPA2C90DE061EC4C9C; payout SIMB
 Receipt verified on this machine.
 ```
 
+The fuller example has been run against the real PayPal sandbox: [`evidence/sdk-run.md`](evidence/sdk-run.md).
+
 On the PayPal sandbox the same code prints real PayPal ids, and a payout to an address with no
 sandbox account ends as `UNCLAIMED`, with `payment.delivered === false`.
 
@@ -75,7 +77,7 @@ Amounts are dollars as a string (`"45.00"`, `"45"`, `"45.5"`) or minor units sta
 | `receipt(spendId)` | A receipt, its chain, and the gateway's comparison with PayPal made now |
 | `proof(rootId, spendId?)` | The proof graph of an envelope, or of one payment |
 | `card(id)`, `transfer(id)`, `books()` | A card, a transfer out of a balance, every balance and whether the books add up |
-| `paypalTrail(rootId)` | The gateway's record of its calls to PayPal for one envelope (needs a gateway that serves `/api/envelopes/:id/paypal`; not exercised by this SDK's tests) |
+| `paypalTrail(rootId)` | The gateway's record of its calls to PayPal for one envelope |
 | `request(method, path, body?)` | The raw call, if you need an endpoint not wrapped here |
 
 The signed submissions (`spend`, `promise`, `keep`, `accept`, `revoke`, `seal`, `openAccount`,
@@ -112,7 +114,7 @@ The signed submissions (`spend`, `promise`, `keep`, `accept`, `revoke`, `seal`, 
 | `cancelCard(cardId)` | Cancel a card (its holder, or the owner of its account) |
 | `charge({ card, amount, memo? })` | As the merchant a card is locked to: take a charge |
 | `receipt(spendId)` | The receipt, PayPal's word on it, and `verify()` to re-check every signature locally |
-| `status(spendId)` | Where a payment stands now |
+| `status(spendId)` | Where a payment stands now, in any state: refused, set aside, in flight, unclaimed, paid, refunded |
 | `checkIntroduction(token)` / `checkPromiseNote(token)` | As a payee: check what another agent handed you |
 | `exportKey()` | The private key as a JWK, for saving on this machine |
 
@@ -125,7 +127,7 @@ The signed submissions (`spend`, `promise`, `keep`, `accept`, `revoke`, `seal`, 
 | `close(rootId)` | Close an envelope. PayPal voids what was not spent. |
 | `freeze(agent, frozen?)` | Freeze or reopen an agent's account |
 | `treasury()`, `reconcile()`, `envelopes()` | The owner's books, checked against PayPal. Each read is signed, so only the owner gets them. |
-| `recall(spendId)` | Call back a payout PayPal is holding unclaimed (needs a gateway that serves `/api/spends/:id/recall`; not exercised by this SDK's tests) |
+| `recall(spendId)` | Call back a payout PayPal is holding unclaimed. PayPal cancels the item and the capture is refunded. PayPal's sandbox has not completed a cancel; see the main README |
 
 ### Functions
 
@@ -236,9 +238,9 @@ reason codes in the text. The transport is stdio; there is no HTTP transport.
 npx vitest run tests/sdk.test.ts tests/mcp.test.ts
 ```
 
-- `tests/sdk.test.ts` (16 tests): the SDK against the gateway's real handlers on the PayPal simulator.
+- `tests/sdk.test.ts` (17 tests): the SDK against the gateway's real handlers on the PayPal simulator.
 - `tests/mcp.test.ts` (13 tests): the MCP server as a separate process over stdio, speaking JSON-RPC
   to a local HTTP gateway, and 34 command-line invocations with their output checked.
 
-These run on the simulator. Against the PayPal sandbox, the SDK itself has not been run; the
-gateway endpoints it calls are the same ones the sandbox evidence in the main README exercised.
+These run on the simulator. The example program has also been run against the real PayPal sandbox:
+[`evidence/sdk-run.md`](evidence/sdk-run.md).

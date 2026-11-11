@@ -115,8 +115,13 @@ What is not automatic: nothing polls. Pending payouts, pending captures and refu
 | Close | Authorization void | Unspent money would stay held |
 | Failure | Capture refund | A failed payout would leave the owner charged |
 | Balance out, card charge | Payouts | Balances would be a closed loop |
+| Recall | Payout item cancel, then capture refund | A payout nobody claimed would stay out of the owner's hands for up to thirty days |
+| Settle without being asked | Webhook signature verification; event feed | Unfinished payments would wait for somebody to open a page |
+| Account for it | every call above, recorded with PayPal's debug id | Nobody could see what PayPal did, as opposed to what the gateway says it did |
 
-Sandbox limits that matter: the hold is placed on PayPal's documented test card with no buyer approval step; payouts to addresses without a sandbox account report `UNCLAIMED`.
+Events never change the books directly. An event names a record; the gateway reads that record from PayPal by id and acts on the reading (`lib/gateway/settlement.ts`). The source of truth stays where the table above puts it.
+
+Sandbox limits that matter: PayPal's sandbox has answered every cancel of an unclaimed payout item with a server error, so recall is proven on the simulator only; no webhook is registered for the sandbox app, so no genuine event has been received. Also: the hold is placed on PayPal's documented test card with no buyer approval step; payouts to addresses without a sandbox account report `UNCLAIMED`.
 
 ## Interoperating with other agent-payment work
 
