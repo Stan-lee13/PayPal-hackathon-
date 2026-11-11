@@ -97,7 +97,7 @@ Every payment produces a **receipt** signed by the gateway that binds the PayPal
 
 The rules are signatures and arithmetic. **No model output decides whether money moves.** An agent's stated reason is stored for the owner and never read by the gateway.
 
-Architecture and state machines: [`docs/FINANCIAL_ARCHITECTURE.md`](docs/FINANCIAL_ARCHITECTURE.md). What was attacked and what broke: [`docs/RED_TEAM_REPORT.md`](docs/RED_TEAM_REPORT.md). Audit: [`docs/AUDIT_REPORT.md`](docs/AUDIT_REPORT.md). Other work in this field: [`docs/COMPETITIVE_INTELLIGENCE.md`](docs/COMPETITIVE_INTELLIGENCE.md).
+Architecture and state machines: [`docs/FINANCIAL_ARCHITECTURE.md`](docs/FINANCIAL_ARCHITECTURE.md). What was attacked and what broke: [`docs/RED_TEAM_REPORT.md`](docs/RED_TEAM_REPORT.md). Audit: [`docs/AUDIT_REPORT.md`](docs/AUDIT_REPORT.md). Where the entry stands today: [`docs/FINAL_READINESS.md`](docs/FINAL_READINESS.md). Other work in this field: [`docs/COMPETITIVE_INTELLIGENCE.md`](docs/COMPETITIVE_INTELLIGENCE.md).
 
 Protocol: [`docs/SPEC.md`](docs/SPEC.md). Core (pure, isomorphic): [`lib/envelope/core.ts`](lib/envelope/core.ts). Gateway: [`lib/gateway/service.ts`](lib/gateway/service.ts). Balances: [`lib/gateway/bank.ts`](lib/gateway/bank.ts). Endpoints: [`lib/api/handlers.ts`](lib/api/handlers.ts).
 
