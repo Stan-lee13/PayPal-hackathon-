@@ -127,6 +127,27 @@ The maker of a promise later decides it with a **keep**:
   "sig": "<signature by the promise's maker, domain envelope-keep/1>", "by": "<its public key>" }
 ```
 
+A promise may carry `"releaseBy": "<public key>"`. That key can then pay the promise with an **acceptance**:
+
+```
+{ "request": { "v": "envelope-accept/1", "promise": "pr_…", "work": "<sha-256 of what was delivered, or empty>",
+               "note": "Checked against the brief.", "nonce": "n_…", "at": "…" },
+  "sig": "<signature by the named key, domain envelope-accept/1>", "by": "<that key>" }
+```
+
+### Reference
+
+```
+{ "v": "envelope-reference/1", "agent": "<public key>", "label": "localization-agent", "account": "…",
+  "knownSince": "…", "asOf": "…", "answersForIt": "Bea" | null,
+  "facts": { "paymentsSettled": 2, "paidMinor": 5500, "promisesKept": 2, "promisesLapsed": 1,
+             "requestsRefused": 1, "refusedFor": ["OVER_ENVELOPE_LIMIT"], "envelopesHeld": 1,
+             "envelopesRevoked": 0, "timesPaid": 0, "earnedMinor": 0 },
+  "paypalMode": "sandbox", "gateway": "<gateway public key>", "sig": "…" }
+```
+
+Facts as one gateway has seen them, signed so the agent can show them to anyone. No score is derived.
+
 ### Account opening
 
 An agent that wants to receive opens an account. The body is signed twice, by the agent's own key and by the owner who answers for it:
@@ -189,6 +210,12 @@ A revocation is `{ request: { v: "envelope-revoke/1", block, nonce, at }, sig, b
 
 A promise is released automatically when its time runs out, when any envelope in its chain is revoked, and when the root is closed. It is earmarked money, not escrow: the payee learns that the money exists and cannot be spent elsewhere, and gets no right to it.
 
+### Releasing a promise on accepted work
+
+`POST /api/gateway/accept`. If a promise names `releaseBy`, an acceptance signed by exactly that key pays it, through the same path as `keep` with `action: "pay"`: the gateway re-checks revocation and that the root is open, then captures and pays out. The maker of the promise consented to this when it signed `releaseBy`. The gateway does not judge the work; it checks one signature. The acceptance's `work` fingerprint, note and time are stored and appear on the receipt as `releasedBy`.
+
+A promise without `releaseBy` can only be paid by its maker. An acceptance from any other key, a keep signature presented as an acceptance, or an acceptance pointed at a different promise is refused.
+
 ### Accounts and paying an agent
 
 `POST /api/accounts`. The gateway accepts an opening only if both signatures verify, so nobody can point another agent's account number at their own PayPal address. A later opening signed by the same agent replaces the earlier one; an older one is ignored. Two keys can never hold the same account number.
@@ -214,6 +241,7 @@ Nothing is reserved, so the answer can go stale; it is valid for five minutes. I
 | Spend | Partial capture of the authorization, then Payouts | The owner is charged exactly what agents spent. PayPal refuses captures beyond the hold. |
 | Close / expire | Void authorization | The remainder goes back automatically. |
 | Set aside | Show authorization details | The fee is reserved under the same hold, and PayPal has confirmed the hold, before a payee starts work. |
+| Accept | Capture + Payout, triggered by the named key's signature | Payment follows evidence of delivery without either side holding PayPal credentials; the fingerprint of the work is bound to the PayPal ids on the receipt. |
 | Pay an agent | Payout to the account's settlement address | One agent's spending becomes another agent's income without either holding PayPal credentials. |
 | Check | Show authorization details | A payee learns from PayPal, through the gateway, that the hold is live before doing any work. |
 | Receipt | capture id, payout batch and item ids | Any PayPal transaction can be traced to its chain of authority, and re-checked with PayPal's own GET endpoints. |

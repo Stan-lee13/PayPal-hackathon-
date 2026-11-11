@@ -6,7 +6,7 @@ Everything needed to fill in the Devpost form and check the entry before submitt
 
 1. **Make the GitHub repository public.** Stage One requires a public repository with a visible licence (MIT is in the repo).
 2. **Merge pull request #5 into `main`.** Vercel then builds the production site. With no settings at all it is the try-it copy: the whole gateway runs in the visitor's browser on a PayPal simulator. Put that URL in the Devpost "Try it out" field.
-3. **Upload `docs/demo/envelope-demo.mp4` to YouTube as Public** and paste the link into Devpost. It is 2:31 and already narrated (a synthetic voice; the first card says so). Record your own voice over it if you prefer; the script is `scripts/demo-narration.json`.
+3. **Upload `docs/demo/envelope-demo.mp4` to YouTube as Public** and paste the link into Devpost. It is 2:43 and already narrated (a synthetic voice; the first card says so). Record your own voice over it if you prefer; the script is `scripts/demo-narration.json`.
 4. *Optional, for a hosted copy on the real sandbox:* in Vercel → Settings → Environment Variables add `DATABASE_URL` (any Postgres), `PAYPAL_CLIENT_ID` and `PAYPAL_CLIENT_SECRET` (sandbox app), then redeploy.
 5. *Optional, for a live model on the hosted copy:* add `AI_BASE_URL`, `AI_API_KEY` and `AI_MODEL` for any OpenAI-compatible endpoint. Without them the hosted copy offers the scripted agents and says no model is connected.
 
@@ -16,7 +16,7 @@ Everything needed to fill in the Devpost form and check the entry before submitt
 
 ## Tagline
 
-Give your agent an envelope, not your wallet. Money PayPal is already holding, which an agent can split for the agents it hires but never enlarge, which any payee can check is really there, and which one agent can use to pay another.
+Give your agent an envelope, not your wallet. Money PayPal is already holding, which an agent can split for the agents it hires but never enlarge, which any payee can check is really there, and which one agent can use to pay another. A treasury for the owner, accounts for the agents, and a protocol between them.
 
 ## Short description (elevator pitch)
 
@@ -40,7 +40,14 @@ Envelope gives an agent something that behaves like an account of its own, built
 - **Set aside.** An agent can earmark a fee for one payee before the work starts. The amount is reserved in every envelope up the chain, PayPal confirms the hold, and the payee gets a signed note. Nothing else can spend that money until it is paid or released.
 - **Spend.** An agent signs a payment request with its own key, or pays what it set aside. The gateway verifies the whole chain, checks the budget of every envelope above it, then makes a partial capture of the hold and a PayPal payout to the payee.
 - **Get paid.** An agent can open an account that receives, signed by its own key and its owner's. Other agents pay it by account number; PayPal pays out to its owner.
+- **Accept.** Money set aside can name an agent whose signed acceptance of the work releases it. The fingerprint of the delivered work goes on the receipt.
 - **Close or revoke.** Revoking one envelope kills everything split from it. Closing the root voids the rest of the hold.
+
+Three layers sit on that one primitive:
+
+- **Treasury**, for the owner: everything their agents can touch in one place. What PayPal is holding now, what was spent, what is set aside, every agent with its budget and a revoke button, and the books reconciled against PayPal by capture and payout id.
+- **Accounts**, for each agent: a number and passport drawn from its key, a statement, an account that can be paid, and a record the gateway will sign as a reference the agent can carry anywhere.
+- **Protocol**, between agents: signed messages any party can verify (introduction, statement of standing, promise, acceptance, receipt).
 
 Each agent has an account number and a passport drawn from its key, with its record, statement and income. Each payment produces a signed receipt that ties the PayPal capture and payout ids to the request and to the chain of authority. The receipt page checks it against PayPal's GET endpoints and re-verifies the signatures in the browser.
 
@@ -59,7 +66,7 @@ Agents outside the app use the same gateway through a command line and an MCP se
 - **PayPal** (sandbox): Orders v2 with `intent: AUTHORIZE` for the hold, partial captures with `final_capture: false`, Payouts for the payee, void on close, refund if a payout cannot be delivered, and GET lookups for proof of funds and for reconciling receipts.
 - **One codebase, two places to run.** Every endpoint is a plain function (`lib/api/handlers.ts`). On a server it runs against Postgres. When the site has no database, the same functions run in the visitor's browser against Postgres compiled to WebAssembly (PGlite) and a PayPal simulator, so a deployment with no configuration is a working demo.
 - **App**: Next.js 15, React 19, TypeScript, Tailwind v4, Drizzle. The interface is drawn as bank stationery: kraft envelopes, rubber stamps, till receipts, passports.
-- **Tests**: 30 automated tests on the simulator, including a corpus of 90 attacks in eight categories. All 90 are refused and none causes a capture or a payout.
+- **Tests**: 31 automated tests on the simulator, including a corpus of 98 attacks in eight categories. All 98 are refused and none causes a capture or a payout.
 
 ### Challenges we ran into
 
@@ -73,7 +80,9 @@ Agents outside the app use the same gateway through a command line and an MCP se
 - One real PayPal hold stands behind a whole tree of agents, and PayPal itself refuses to capture past it.
 - A payee can get proof of funds that includes PayPal's own confirmation, and can have the fee set aside before working.
 - One agent paid another, with the money set aside first, on the real PayPal sandbox.
-- 90 of 90 attacks refused, with no money moved.
+- Payment released by a named agent's signature for delivered work, on the real sandbox, with the work's fingerprint on the receipt.
+- An owner's books matched against PayPal's records, payment by payment.
+- 98 of 98 attacks refused, with no money moved.
 - The whole thing can be tried in a browser with nothing to install or configure.
 
 ### What we learned
@@ -100,34 +109,39 @@ Claude Code (Anthropic) wrote the code, tests and documents under the author's d
 **Fastest: the hosted copy.** Open the site. A red strip says the gateway is running in your browser on a simulator.
 
 1. **Seal an envelope** (top right) → "Seal & hold $200.00 on PayPal".
-2. On the envelope's page press **Run the launch**. The ops agent splits; the localization agent sets $45 aside for translator-agent and then pays it; the creative agent pays the designer.
+2. On the envelope's page press **Run the launch**. The ops agent splits; the localization agent sets $45 aside for translator-agent, payable when ops-agent signs for the delivered work, which it then does; the creative agent pays the designer.
 3. Press **Compromise the creative agent**: a new payee, an overspend and a forged bigger envelope are all denied, with the reason shown.
 4. Click **translator-agent** in the statement: an agent that holds no envelope and gets paid. Click an agent in "Who holds what" and use **Ask the gateway** for proof of funds.
 5. Open a **Receipt & authority chain**: checked against PayPal (simulated here) and re-verified in your browser.
-6. **Close envelope & release the hold.**
+6. Open **Treasury** (top right): every agent under your signature with its budget, where the money went, and **Reconcile with PayPal**.
+7. On an agent's passport, **Get a signed reference**: its record, signed and checked in your browser.
+8. **Close envelope & release the hold.**
 
 **On the real PayPal sandbox** (about five minutes): clone the repository and follow "Run it" in the README with a sandbox app's credentials. `npx tsx scripts/sandbox-run.ts` runs the whole flow with no browser and prints PayPal's ids. `node scripts/e2e.mjs` drives the same flow in a browser.
 
 **With a real model**: see "Live agents" in the README. If you have Claude Code installed, `node scripts/claude-bridge.mjs` needs no API key.
 
-## Video (2:31)
+## Video (2:43)
 
 `docs/demo/envelope-demo.mp4`, recorded by `scripts/record-demo.mjs` against the real PayPal sandbox and assembled by `scripts/assemble_demo.py`. Scenes that wait on the model are sped up and labelled.
 
 | Time | Scene | What is on screen |
 |---|---|---|
 | 0:00 | The problem | Title card |
-| 0:08 | The idea | Landing page |
-| 0:19 | Seal | The form, signed in the browser; PayPal places the hold (authorization `3U976856AP0536901`) |
-| 0:36 | A real model plays the agents | The model splits $45 and $67, sets $45 aside for translator-agent, pays it on delivery, ignores the planted instruction and pays the designer |
-| 1:18 | Compromised agent (scripted) | New payee, overspend, forged bigger envelope: all denied |
-| 1:31 | Result | $112 captured, $88 still held |
+| 0:07 | The idea | Landing page |
+| 0:18 | Seal | The form, signed in the browser; PayPal places the hold (authorization `9PK89405GA223334E`) |
+| 0:35 | A real model plays the agents | The model splits $45 and $67, sets $45 aside for translator-agent, pays it on delivery, ignores the planted instruction and pays the designer |
+| 1:17 | Compromised agent (scripted) | New payee, overspend, forged bigger envelope: all denied |
+| 1:30 | Result | $112 captured, $88 still held |
 | 1:37 | An agent that earns | translator-agent's passport: $45 earned, who answers for it |
 | 1:42 | Proof of funds | "Good for $20.00": hold `PARTIALLY_CAPTURED`, $88.00 unused, signature checked in the browser |
-| 1:52 | Receipt | Chain of authority, PayPal capture and payout ids, checks pass |
-| 2:02 | Revoke and close | PayPal voids the rest of the hold |
-| 2:12 | Numbers | 90 of 90 attacks refused; the try-it copy runs in the browser |
-| 2:22 | Close | "Seal is an authorization. Spend is a capture and a payout. Close is a void." |
+| 1:51 | Receipt | Chain of authority, PayPal capture and payout ids, checks pass |
+| 2:01 | Treasury | Every agent under the owner's signature; "2 of 2 match PayPal" |
+| 2:10 | Revoke and close | PayPal voids the rest of the hold |
+| 2:20 | Numbers | 98 of 98 attacks refused; the try-it copy runs in the browser |
+| 2:30 | Close | "Seal is an authorization. Spend is a capture and a payout. Close is a void." |
+
+The video shows the model paying what it set aside itself. Payment released by a named agent's acceptance is shown by the "Run the launch" button and in `docs/evidence/sandbox-run.json`, not in the video.
 
 ## Where this entry stands
 
@@ -135,7 +149,7 @@ We read the code of 36 other entries (see `docs/DISCOVERY.md`). Honest reading:
 
 - **Stronger than this entry in places.** Several rivals are more complete products: hundreds of tests, CI, Disputes API evidence, PayPal partner onboarding, passkey approval, a fine-tuned model. Some have had hosted demos for weeks.
 - **Shared with rivals.** Signed delegation chains (one rival, with AP2 SD-JWTs), agent passports, signed receipts verified in the browser, and one hold with partial captures for a single agent all exist elsewhere.
-- **Not found in any of the 36.** One PayPal hold behind a whole tree of agents; budgets debited at every ancestor backed by that hold; proof of funds tied to the live hold; money set aside through the delegation tree; a gateway that runs unchanged in the visitor's browser.
+- **Not found in any of the 36.** One PayPal hold behind a whole tree of agents; budgets debited at every ancestor backed by that hold; proof of funds tied to the live hold; money set aside through the delegation tree and released by a named key's signature; a gateway that runs unchanged in the visitor's browser. (The treasury view, signed references and acceptance were built after that reading, so rivals were not checked for those specifically; reputation statements and dashboards certainly exist elsewhere.)
 
 A special award (Best Use of Agentic Commerce, Most Creative, Best Use of PayPal + AI) is a realistic target. A top-three place is possible, not assured.
 
@@ -143,8 +157,8 @@ A special award (Best Use of Agentic Commerce, Most Creative, Best Use of PayPal
 
 | Criterion | Strengths | Weaknesses a judge may raise |
 |---|---|---|
-| Technological implementation | Real sandbox: authorize, partial capture, payout, void, refund path, reconciliation. Ed25519 chains verified in three places. 30 tests and a 90-attack corpus. Gateway runs on a server or in a browser from the same code. | Custodial gateway; test-card funding; no hold reauthorization; no webhooks; fewer tests than the largest entries. |
+| Technological implementation | Real sandbox: authorize, partial capture, payout, void, refund path, reconciliation. Ed25519 chains verified in three places. 31 tests and a 98-attack corpus. Gateway runs on a server or in a browser from the same code. | Custodial gateway; test-card funding; no hold reauthorization; no webhooks; fewer tests than the largest entries. |
 | Design | A distinctive stationery system applied to every page; passports and receipts that carry real data. | Dense pages; phone layout only spot-checked. |
 | Potential impact | Addresses multi-agent delegation, payee trust and agent-to-agent payment with rails that exist today. | Needs PayPal platform products and compliance work before real money. |
 | Innovation | The combination listed above was not found in 36 rival codebases or in the prior art we read. | Each ingredient has prior art; the entry says so. |
-| Presentation | Narrated 2:31 video on the real sandbox with a real model; a hosted copy that needs no setup; evidence files with PayPal ids. | Synthetic narration; the hosted copy is a simulator unless credentials are added. |
+| Presentation | Narrated 2:43 video on the real sandbox with a real model; a hosted copy that needs no setup; evidence files with PayPal ids. | Synthetic narration; the hosted copy is a simulator unless credentials are added. |

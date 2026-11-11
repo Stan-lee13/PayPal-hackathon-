@@ -57,6 +57,14 @@ log("translator-agent delivered; localization-agent paid the $45 it had set asid
 const pr2 = await G.promise(await E.signPromise(locChain, loc!, { amount: 1000, payee: translator, purpose: "translation", ttl: 600 }));
 const rel = await G.keep(await E.signKeep(loc!, pr2.spend!.id, "release"));
 log("a second $10 was set aside, then released: it went back into the envelope", { promised: pr2.status, afterRelease: rel.status });
+
+// Paid on accepted work: $10 set aside, payable when ops-agent (who ordered the work) signs for the delivery.
+const pr3 = await G.promise(await E.signPromise(locChain, loc!, { amount: 1000, payee: translator, purpose: "translation", memo: "Glossary", ttl: 600, releaseBy: ops!.publicKey }));
+const work = await E.sha256("glossary.fr.json + glossary.yo.json");
+let payeeTried = "refused";
+try { await G.accept(await E.signAccept(tr!, pr3.spend!.id, { work })); payeeTried = "NOT REFUSED"; } catch (e) { payeeTried = `refused: ${e instanceof Error ? e.message : e}`; }
+const acc = await G.accept(await E.signAccept(ops!, pr3.spend!.id, { work, note: "Glossary checked against the brief." }));
+log("$10 set aside, payable on ops-agent's acceptance; the payee could not release it itself; ops-agent's signature did", { promised: pr3.status, payeeTriedToReleaseIt: payeeTried, status: acc.status, capture: acc.spend?.captureId, payoutBatch: acc.spend?.payoutBatchId, workFingerprintOnReceipt: acc.receipt?.releasedBy?.work, receiptSignatureValid: acc.receipt ? await G.verifyReceipt(acc.receipt) : false });
 const pay2 = await G.spend(await E.signSpend(artChain, art!, { amount: 7000, payee: designer, purpose: "design", memo: "Launch banner set" }));
 log("creative-agent paid $70", { status: pay2.status, capture: pay2.spend?.captureId, payoutBatch: pay2.spend?.payoutBatchId, reasons: pay2.reasons });
 
@@ -76,14 +84,29 @@ const { root: closed } = await G.revoke(await E.signRevoke(ada!, root.id));
 const authAfter = await getAuthorization(pp, root.authorizationId!);
 log("owner closed the envelope: PayPal released the rest of the hold", { captured: closed.capturedMinor, released: closed.releasedMinor, authorizationStatus: authAfter.status });
 
+const ref = await G.reference(loc!.publicKey);
+log("localization-agent's record, signed by the gateway as a reference", { facts: ref?.facts, signatureValid: ref ? await G.verifyReference(ref) : false });
+const books = await G.reconcileTreasury(ada!.publicKey);
+log("treasury: the owner's books checked against PayPal", { paymentsChecked: books?.checked, matchPayPal: books?.matched, matched: `$${((books?.matchedMinor ?? 0) / 100).toFixed(2)}` });
 const earner = await G.agentProfile(tr!.publicKey);
 log("translator-agent's record", { earned: `$${((earner?.record.receivedMinor ?? 0) / 100).toFixed(2)}`, timesPaid: earner?.record.received, holdsAnEnvelope: (earner?.accounts.length ?? 0) > 0 });
 const payer = await G.agentProfile(loc!.publicKey);
 log("localization-agent's record", { promisesKept: payer?.record.promisesKept, promisesReleasedOrLapsed: payer?.record.promisesLapsed });
 
-for (const s of [pay1, pay2]) if (s.spend) { const u = await G.syncSpend(s.spend.id); log("payout status", { spend: u.id, payee: u.payee, status: u.status, paypal: u.payoutStatus, transaction: u.payoutTransactionId }); }
+// A capture is not a delivered payout. PayPal processes payouts asynchronously, so ask again until each
+// one leaves PENDING (or a minute passes) and record what PayPal finally says.
+for (const s of [pay1, acc, pay2]) if (s.spend) {
+  let u = await G.syncSpend(s.spend.id);
+  const seen = [u.payoutStatus];
+  for (let i = 0; i < 12 && (u.payoutStatus === "PENDING" || u.payoutStatus === null); i++) {
+    await new Promise((r) => setTimeout(r, 5000));
+    u = await G.syncSpend(s.spend.id);
+    if (seen[seen.length - 1] !== u.payoutStatus) seen.push(u.payoutStatus);
+  }
+  log("payout delivery, as PayPal reports it", { spend: u.id, payee: u.payee, sentTo: u.payoutTo ? G.maskEmail(u.payoutTo) : u.payee, statusesSeen: seen, final: u.payoutStatus, meaning: u.payoutStatus === "SUCCESS" ? "delivered to the payee's PayPal account" : u.payoutStatus === "UNCLAIMED" ? "accepted by PayPal and held for the payee to claim: this address has no sandbox account" : "not final when this run ended", transaction: u.payoutTransactionId });
+}
 
 mkdirSync("docs/evidence", { recursive: true });
-writeFileSync("docs/evidence/sandbox-run.json", JSON.stringify({ ranAt: new Date().toISOString(), paypalMode: paypalMode(), note: "Real PayPal sandbox API calls. Payee addresses without a sandbox account are reported by PayPal as UNCLAIMED.", steps, receipt: pay1.receipt }, null, 2));
+writeFileSync("docs/evidence/sandbox-run.json", JSON.stringify({ ranAt: new Date().toISOString(), paypalMode: paypalMode(), note: "Real PayPal sandbox API calls. A completed capture and a delivered payout are different things: each payout's final status from PayPal is recorded at the end. Payee addresses without a sandbox account are reported by PayPal as UNCLAIMED.", steps, receipt: pay1.receipt }, null, 2));
 console.log("Evidence written to docs/evidence/sandbox-run.json");
 await closeDb();

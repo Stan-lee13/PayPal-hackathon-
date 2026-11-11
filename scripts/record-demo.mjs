@@ -182,7 +182,16 @@ await scene("receipt", async () => {
   await page.getByText("Signatures valid").waitFor(T);
 });
 
-// 7. Revoke the agent that was taken over, then close
+// 6b. The owner's treasury, with the books checked against PayPal
+await scene("treasury", async () => {
+  await page.goto(`${BASE}/treasury`);
+  await page.getByTestId("totals").waitFor(T);
+  await wait(2200);
+  await page.getByRole("button", { name: "Reconcile with PayPal" }).click();
+  await page.getByTestId("books").getByText(/\d+ of \d+ match PayPal/i).waitFor(T);
+});
+
+// 7. Revoke the compromised agent, then close
 await page.goto(rootUrl);
 await holdCard();
 await scene("close", async () => {
@@ -198,9 +207,9 @@ await scene("close", async () => {
 });
 
 // 8. Numbers, then the close
-await card("<span class=\"figure\" style=\"font-size:120px\">90<span style=\"color:#8A8271\">/90</span></span>", ["attacks refused in the test corpus. None moved money.", "The try-it copy runs the whole gateway in your browser: nothing to install, nothing to configure."]);
+await card("<span class=\"figure\" style=\"font-size:120px\">98<span style=\"color:#8A8271\">/98</span></span>", ["attacks refused in the test corpus. None moved money.", "The try-it copy runs the whole gateway in your browser: nothing to install, nothing to configure."]);
 await scene("numbers");
-await card("Seal is an authorization.<br>Spend is a capture and a payout.<br><em>Close is a void.</em>", ["Envelope · an account an AI agent can be trusted with", "open source · github.com/Stan-lee13/PayPal-hackathon-"]);
+await card("Seal is an authorization.<br>Spend is a capture and a payout.<br><em>Close is a void.</em>", ["Envelope · a treasury, accounts and a payment protocol for AI agents", "open source · github.com/Stan-lee13/PayPal-hackathon-"]);
 await scene("end");
 
 await ctx.close();

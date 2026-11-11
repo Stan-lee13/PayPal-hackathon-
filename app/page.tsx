@@ -23,6 +23,12 @@ const ACCOUNT = [
   { yours: "Freeze, close", theirs: "Revoke one agent and every envelope under it dies. Close, and the unspent money is let go.", paypal: "Void" },
 ];
 
+const LAYERS = [
+  { name: "Treasury", who: "for the owner", href: "/treasury", cta: "Open the treasury", body: "One place for everything your agents can touch: what PayPal is holding, what was spent, what is set aside, who spent it. Revoke any agent with a signature.", has: ["Budgets that only narrow", "Books reconciled against PayPal", "Ledger export"] },
+  { name: "Accounts", who: "for each agent", href: "/console", cta: "See agents on file", body: "An agent has a number, a passport, a statement, and an account that can be paid. Its record can be signed as a reference it carries anywhere.", has: ["Identity drawn from its key", "Income settled by PayPal payout", "A signed, portable record"] },
+  { name: "Protocol", who: "between agents", href: "/spec", cta: "Read the protocol", body: "Signed messages any agent can verify: prove funds, set money aside, release it when a named agent signs for the work, and a receipt that names everyone who authorized it.", has: ["Proof of funds from the live hold", "Payment released on accepted work", "Receipts anyone can check"] },
+];
+
 const VERBS = [
   { n: "1", verb: "Seal", who: "You, in your browser", paypal: "Authorization", body: "Sign the envelope: how much, to whom, for what, until when. PayPal holds the whole amount. Nothing is charged." },
   { n: "2", verb: "Split", who: "Any agent", paypal: "Nothing", body: "An agent signs a smaller envelope for an agent it hires. Less money, fewer payees, sooner expiry. No server is asked." },
@@ -123,6 +129,22 @@ export default function Home() {
         </section>
 
         {/* ------------------------------------------------------------------ four verbs */}
+        {/* ------------------------------------------------------------------ three layers */}
+        <section className="mx-auto max-w-6xl px-5 pt-16">
+          <p className="label">One primitive, three layers</p>
+          <h2 className="title mt-3 max-w-3xl text-[2.2rem]">What an agent needs to handle money, built on a hold PayPal already offers.</h2>
+          <div className="mt-9 grid gap-x-10 gap-y-9 md:grid-cols-3">
+            {LAYERS.map((l) => (
+              <div key={l.name} className="ruled pt-4">
+                <p className="flex items-baseline justify-between"><span className="display text-[2.4rem]">{l.name}</span><span className="micro">{l.who}</span></p>
+                <p className="mt-3 text-[.95rem] text-ink-2">{l.body}</p>
+                <ul className="mt-3 space-y-1 text-[.9rem]">{l.has.map((h) => <li key={h} className="leader"><span>{h}</span><i /></li>)}</ul>
+                <Link className="link mt-4 inline-block text-[.9rem]" href={l.href}>{l.cta} →</Link>
+              </div>
+            ))}
+          </div>
+        </section>
+
         <section className="mx-auto max-w-6xl px-5 py-16">
           <p className="label">How it works</p>
           <h2 className="title mt-3 max-w-2xl text-[2.2rem]">Four verbs. Each one is something PayPal already does.</h2>
@@ -138,7 +160,7 @@ export default function Home() {
           </ol>
           <div className="mt-10 grid gap-x-10 gap-y-6 border-t-[1.5px] border-ink pt-6 md:grid-cols-2">
             <p className="text-[.95rem] text-ink-2"><span className="title mr-2 text-[1.5rem] text-ink">Check</span>Anyone an agent wants to hire can ask the gateway whether it is good for the money. The answer is signed, names everyone standing behind the agent, and includes PayPal&rsquo;s word that the hold is live.</p>
-            <p className="text-[.95rem] text-ink-2"><span className="title mr-2 text-[1.5rem] text-ink">Set aside</span>An agent can earmark the fee for one payee before the work starts. It is reserved at every level like a payment, so nothing else can spend it. When the work arrives the agent pays it, or releases it.</p>
+            <p className="text-[.95rem] text-ink-2"><span className="title mr-2 text-[1.5rem] text-ink">Set aside</span>An agent can earmark the fee for one payee before the work starts. It is reserved at every level like a payment, so nothing else can spend it. It is paid when the agent says so, or when an agent it named signs for the delivered work; the work&rsquo;s fingerprint goes on the receipt.</p>
           </div>
         </section>
 
