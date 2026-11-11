@@ -1,0 +1,17 @@
+{
+  "name": "hire-an-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A researcher agent hires a writer agent through an Envelope gateway, using only @envelope/sdk.",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "start": "node index.mjs"
+  },
+  "dependencies": {
+    "@envelope/sdk": "file:../../sdk/envelope-sdk-0.1.0.tgz"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
