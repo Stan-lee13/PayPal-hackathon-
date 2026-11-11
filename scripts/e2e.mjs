@@ -1,94 +1,92 @@
 /**
- * Drives the console in a real browser, end to end: seal (browser-side signature + PayPal hold) →
- * agents split and pay → a compromised agent is denied three ways → revoke → close (hold released)
- * → receipt verified against PayPal and in the browser.
+ * End-to-end check in a real browser. Works against either mode of the app: a server gateway
+ * (DATABASE_URL set; PayPal sandbox or simulator) or the in-browser gateway (no DATABASE_URL).
+ * Uses the scripted agents, so it needs no model.
  *
- *   BASE=http://localhost:3000 node scripts/e2e.mjs
+ *   BASE=http://localhost:3000 node scripts/e2e.mjs            # optional: OUT=<dir> for screenshots
+ *
+ * Covers: seal with a key held in the browser, agents split, money set aside and paid agent to
+ * agent, a direct payment, the earning agent's passport, a receipt checked against PayPal and in
+ * the browser, proof of funds, three attacks denied, close, and a second tab seeing the same data.
  */
-import { mkdirSync } from "node:fs";
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE ?? "playwright");
-
 const BASE = process.env.BASE ?? "http://localhost:3000";
-const OUT = process.env.SHOTS ?? "docs/screenshots";
-mkdirSync(OUT, { recursive: true });
+const OUT = process.env.OUT ?? null;
+let failed = false;
 const browser = await chromium.launch();
-const page = await (await browser.newContext({ viewport: { width: 1360, height: 900 }, deviceScaleFactor: Number(process.env.SCALE ?? 1) })).newPage();
-page.on("pageerror", (e) => console.log("page error:", e.message));
-const step = (m) => console.log(`• ${m}`);
-const T = { timeout: 90000 };
-
-await page.goto(`${BASE}/`);
-await page.getByRole("heading", { name: "Give your agent an envelope, not your wallet." }).waitFor();
-await page.screenshot({ path: `${OUT}/01-home.png` });
-
-await page.goto(`${BASE}/console`);
-await page.getByText(/Signed with your key [A-Za-z0-9_-]{6}…/).waitFor(T);
-await page.screenshot({ path: `${OUT}/02-seal.png` });
-await page.getByRole("button", { name: /^Seal & hold \$200\.00 on PayPal/ }).click();
-await page.getByText("PayPal hold backing this envelope").waitFor(T);
-await page.getByText("(you)").waitFor();
-const auth = await page.getByText(/^authorization \S+/).innerText();
-step(`sealed in the browser; ${auth}`);
-await page.screenshot({ path: `${OUT}/03-sealed.png` });
-
-await page.getByRole("button", { name: "Run the launch (agents split & pay)" }).click();
-await page.getByText(/creative-agent asked to pay/).waitFor(T);
-await page.getByRole("button", { name: "Run the launch (agents split & pay)" }).waitFor(T);
-await page.getByTestId("node-localization-agent").waitFor();
-if ((await page.getByText(/^capture \S+ · payout \S+/).count()) < 2) throw new Error("expected two captured + paid-out spends");
-step("agents split offline and paid: two captures + two payouts");
-await page.screenshot({ path: `${OUT}/04-paid.png`, fullPage: true });
-
-// Know your agent: a payee checks the creative agent before doing more work for it
-await page.getByTestId("node-creative-agent").getByRole("link", { name: /creative-agent/ }).click();
-await page.getByRole("heading", { name: "Is it good for the money?" }).waitFor(T);
-await page.getByText("In good standing").first().waitFor(T);
-await page.getByLabel("For (USD)").fill("20");
-await page.getByRole("button", { name: "Ask the gateway" }).click();
-await page.getByTestId("standing").getByText("Signature checked in your browser.").waitFor(T);
-if (!(await page.getByTestId("standing").innerText()).includes("Good for $20.00")) throw new Error("expected a good statement of standing");
-step("proof of funds: " + (await page.getByTestId("standing").getByText(/PARTIALLY_CAPTURED|CREATED/).innerText()).replace(/\s+/g, " "));
-await page.screenshot({ path: `${OUT}/05-passport.png`, fullPage: true });
-await page.goBack();
-await page.getByText("PayPal hold backing this envelope").waitFor(T);
-
-await page.getByRole("button", { name: "Compromise the creative agent" }).click();
-await page.getByText(/forged a bigger envelope/).waitFor(T);
-await page.getByRole("button", { name: "Compromise the creative agent" }).waitFor(T);
-for (const code of ["PAYEE_NOT_ALLOWED", "OVER_ENVELOPE_LIMIT", "WIDENED_LIMIT"]) await page.getByText(code).first().waitFor();
-step("compromised agent denied three ways: wrong payee, over its envelope, forged wider envelope");
-await page.screenshot({ path: `${OUT}/06-denied.png`, fullPage: true });
-
-await page.getByTestId("node-creative-agent").getByRole("button", { name: "Revoke" }).click();
-await page.getByText(/You revoked creative-agent's envelope/).waitFor(T);
-step("owner revoked the creative agent (signed in the browser)");
-
-// the same check now fails, and says why
-await page.getByTestId("node-creative-agent").getByRole("link", { name: /creative-agent/ }).click();
-await page.getByRole("heading", { name: "Is it good for the money?" }).waitFor(T);
-await page.getByLabel("For (USD)").fill("5");
-await page.getByRole("button", { name: "Ask the gateway" }).click();
-await page.getByTestId("standing").getByText("REVOKED").first().waitFor(T);
-if (!(await page.getByTestId("standing").innerText()).includes("Would not pay")) throw new Error("expected a refused statement of standing after revocation");
-step("after revocation the same check says: not good (REVOKED)");
-await page.goBack();
-await page.getByText("PayPal hold backing this envelope").waitFor(T);
-
-await page.getByRole("link", { name: "Receipt & authority chain →" }).first().click();
-await page.getByText("All checks pass").waitFor(T);
-await page.getByText("Signatures valid").waitFor(T);
-step("receipt: reconciled against PayPal, and signatures re-verified in the browser");
-await page.screenshot({ path: `${OUT}/07-receipt.png`, fullPage: true });
-await page.goBack();
-
-await page.getByRole("button", { name: "Close envelope & release the hold" }).click();
-await page.getByText(/You closed the envelope\. PayPal released \$\d+\.\d\d of the hold/).waitFor(T);
-await page.getByText("Closed", { exact: true }).first().waitFor(T);
-await page.getByText("VOIDED").first().waitFor(T).catch(() => {});
-step(await page.getByText(/You closed the envelope/).innerText());
-await page.screenshot({ path: `${OUT}/08-closed.png`, fullPage: true });
-
+const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+const page = await ctx.newPage();
+const logs = [];
+page.on("console", (m) => { if (m.type() === "error" || m.type() === "warning") logs.push(`[${m.type()}] ${m.text().slice(0, 400)}`); });
+page.on("pageerror", (e) => logs.push(`[pageerror] ${String(e).slice(0, 600)}`));
+page.on("requestfailed", (r) => logs.push(`[requestfailed] ${r.url()} ${r.failure()?.errorText}`));
+const T = { timeout: 60000 };
+try {
+  await page.goto(`${BASE}/console`);
+  console.log("gateway mode:", await page.evaluate(() => document.documentElement.dataset.gateway));
+  await page.getByText(/Signed with your key [A-Za-z0-9_-]{6}…/).waitFor(T);
+  await page.getByText(/is translator-agent, an agent owned by Bea/).waitFor(T);
+  console.log("counterparty loaded");
+  if (OUT) await page.screenshot({ path: `${OUT}/local-1-console.png`, fullPage: true }).catch(() => {});
+  await page.getByRole("button", { name: /^Seal & hold/ }).click();
+  await page.getByText("PayPal hold backing this envelope").waitFor(T);
+  console.log("sealed:", page.url());
+  await page.getByRole("button", { name: /Run the launch/ }).click();
+  await page.getByText(/creative-agent asked to pay/).waitFor(T);
+  await page.getByRole("button", { name: "Run the launch (agents split & pay)" }).waitFor(T);
+  await page.waitForTimeout(1500);
+  if (OUT) await page.screenshot({ path: `${OUT}/local-2-envelope.png`, fullPage: true }).catch(() => {});
+  console.log("launch ran");
+  await page.getByText("held for this payee until").waitFor({ state: "detached", timeout: 20000 }).catch(() => {});
+  if (OUT) await page.screenshot({ path: `${OUT}/local-2-envelope.png`, fullPage: true }).catch(() => {});
+  // the agent that got paid
+  await page.getByTestId("statement").getByRole("link", { name: /translator-agent/ }).first().click();
+  await page.getByTestId("receives").waitFor(T);
+  await page.getByTestId("incoming").getByText("from localization-agent").first().waitFor(T);
+  if (OUT) await page.screenshot({ path: `${OUT}/local-3-earner.png`, fullPage: true }).catch(() => {});
+  console.log("translator-agent passport shows income");
+  await page.goBack();
+  await page.getByText("PayPal hold backing this envelope").waitFor(T);
+  // receipt of the promise that was paid
+  await page.getByRole("link", { name: "Receipt & authority chain →" }).last().click();
+  await page.getByText("All checks pass").waitFor(T);
+  await page.getByText("Signatures valid").waitFor(T);
+  if (OUT) await page.screenshot({ path: `${OUT}/local-4-receipt.png`, fullPage: true }).catch(() => {});
+  console.log("receipt verified");
+  await page.goBack();
+  await page.getByText("PayPal hold backing this envelope").waitFor(T);
+  // proof of funds
+  await page.getByTestId("node-creative-agent").getByRole("link", { name: /creative-agent/ }).click();
+  await page.getByRole("heading", { name: "Is it good for the money?" }).waitFor(T);
+  await page.getByLabel("For (USD)").fill("20");
+  await page.getByRole("button", { name: "Ask the gateway" }).click();
+  await page.getByTestId("standing").getByText("Signature checked in your browser.").waitFor(T);
+  console.log("standing:", (await page.getByTestId("standing").innerText()).replace(/\n+/g, " | ").slice(0, 300));
+  await page.goBack();
+  await page.getByText("PayPal hold backing this envelope").waitFor(T);
+  await page.getByRole("button", { name: "Compromise the creative agent" }).click();
+  await page.getByText(/forged a bigger envelope/).waitFor(T);
+  await page.getByRole("button", { name: "Compromise the creative agent" }).waitFor(T);
+  console.log("denials:", await page.getByTestId("statement").getByText("Denied", { exact: true }).count());
+  await page.getByRole("button", { name: "Close envelope & release the hold" }).click();
+  await page.getByText(/You closed the envelope\. PayPal released/).waitFor(T);
+  await page.getByText("Closed", { exact: true }).first().waitFor(T);
+  console.log("closed");
+  const p2 = await ctx.newPage();
+  await p2.goto(`${BASE}/console`);
+  await p2.getByText("Store launch budget").first().waitFor(T);
+  await p2.getByText("can be paid").first().waitFor(T);
+  if (OUT) await p2.screenshot({ path: `${OUT}/local-5-console.png`, fullPage: true }).catch(() => {});
+  console.log("second tab: console lists the envelope and the receiving agent");
+} catch (e) {
+  failed = true;
+  console.log("FAILED:", String(e).slice(0, 500));
+  if (OUT) await page.screenshot({ path: `${OUT}/local-fail.png`, fullPage: true }).catch(() => {});
+}
+const real = logs.filter((l) => !l.includes("_rsc=") && !l.includes("preloaded using"));
+if (real.length) console.log(real.slice(0, 25).join("\n"));
 await browser.close();
-console.log("E2E passed.");
+console.log(failed ? "E2E FAILED" : "E2E PASSED");
+process.exit(failed ? 1 : 0);

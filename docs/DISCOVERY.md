@@ -66,6 +66,33 @@ Consequences for this project:
 - Identity is built (passport, account number, record) but presented as a supporting feature.
 - The lead is the part nobody else was found doing: one real PayPal hold behind a whole tree of agents, budgets debited at every level, a chain anyone can verify, and a payee's proof of funds that asks PayPal itself.
 
+## Third pass: reading rivals' code (11 November)
+
+The second scan read READMEs. For this pass 36 of the closest repositories were cloned and their code read (about 14 in depth, the rest by file tree and targeted search). Nothing was installed or run, and live demos and videos were not opened. A wider sweep for strong entries in other categories was started and did not finish.
+
+What the code showed:
+
+| Envelope's claim | Found in rivals' code? |
+|---|---|
+| One PayPal hold behind a whole delegation tree | Not found in 36. One hold with several partial captures exists for a single agent in three entries (cosign, AgentLedger, one of the "allowance" entries). |
+| Budgets debited at every ancestor | Only in SpendVeto, a commercial multi-rail product with no PayPal hold behind it. IntentChain applies the tightest per-purchase limit in the chain but debits only the root. |
+| A signed chain anyone can verify | Yes: second-key (AP2 SD-JWT delegate chains, ES256, multi-hop), saferemit (two hops), SentinelX (one hop). IntentChain narrows monotonically but signs with a server secret. None does offline multi-hop Ed25519 attenuation, but the idea is shared. |
+| Proof of funds tied to the live hold | Not found in 36. |
+| Signed receipts reconciled with PayPal | Yes: second-key and carte-blanche, and signed ledgers elsewhere. Not unique. |
+
+What rivals have that Envelope did not, as of that reading: a hosted demo needing no setup (nearly all of the strongest); a model inside the app; measured attack results; hold reauthorization; human step-up approval (passkey, phone, email); Disputes API evidence packs; merchant onboarding; Login with PayPal; vaulted, payer-not-present funding; webhook verification; and far more tests in the largest entries.
+
+The reader's blunt summary was that Envelope's mechanism is more original than any of the 36 but that, without a hosted demo, AI inside the app and more tests, it would place below most of the strongest eight on design, presentation and perceived completeness.
+
+What was built in response, the same day:
+
+- A hosted copy that needs no setup: the gateway runs in the visitor's browser when the site has no database.
+- A real model playing the agents inside the app, with its tool calls sent to the gateway as signed requests.
+- A corpus of 90 attacks with counted results.
+- The parts of the "agent account" idea that no rival's code had: money set aside through the delegation tree, and agents that receive.
+
+Not built, and listed as limits: hold reauthorization, human step-up approval, Disputes evidence, merchant onboarding, vaulted funding, webhooks.
+
 ## Decision
 
 Build thesis 1 as **Envelope**. It is the only finalist where the mechanism is uncommon in this field, PayPal's own primitives map one-to-one onto it (authorize = seal, partial capture = spend, void = close), and the whole thing can be demonstrated against the real sandbox without a browser login. Earlier work is reused where it helps: the PayPal client, the simulator, the hash-chained audit log and the interface system.

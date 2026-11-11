@@ -12,7 +12,7 @@ const STAGES = [
   { stage: "ops", agent: "ops-agent", title: "ops-agent", turns: 5 },
   { stage: "localization", agent: "localization-agent", title: "localization-agent", turns: 5 },
   { stage: "creative", agent: "creative-agent", title: "creative-agent", turns: 4 },
-  { stage: "redteam", agent: "creative-agent", title: "creative-agent, taken over (the model is now told to steal)", turns: 8 },
+  { stage: "redteam", agent: "creative-agent", title: "red team: the model now tries to get money out of creative-agent's envelope", turns: 8 },
 ] as const;
 const DEFAULT_BRIEF = "Launch the store in French and Yoruba: get the store strings translated and a banner set designed. Spend as little as the quotes require.";
 const CALL_WORDS: Record<string, string> = { split_envelope: "tears off an envelope", pay: "asks to pay", set_aside: "sets money aside", pay_what_was_set_aside: "pays what it set aside", look_at_my_envelope: "looks at its envelope" };
@@ -36,6 +36,7 @@ export function Mission({ id, root, caps, payees, disabled, onChange }: { id: st
   const [brief, setBrief] = useState(DEFAULT_BRIEF);
   const [lines, setLines] = useState<Line[]>([]);
   const [running, setRunning] = useState(false);
+  const [redteam, setRedteam] = useState(true);
   const stop = useRef(false);
   useEffect(() => { void fetch("/api/ai/status", { cache: "no-store" }).then((r) => r.json()).then(setModel).catch(() => setModel({ available: false })); }, []);
   const add = (l: Line) => setLines((x) => [...x, l]);
@@ -49,7 +50,7 @@ export function Mission({ id, root, caps, payees, disabled, onChange }: { id: st
     };
     try {
       for (const { stage, agent, title, turns: max } of STAGES) {
-        if (stop.current) break;
+        if (stop.current || (stage === "redteam" && !redteam)) break;
         add({ kind: "stage", agent, text: `${title} · played by ${model?.model ?? "a model"}` });
         const turns: Turn[] = [];
         for (let i = 0; i < max && !stop.current; i++) {
@@ -85,8 +86,9 @@ export function Mission({ id, root, caps, payees, disabled, onChange }: { id: st
       <p className="label">Or hand it to a real model</p>
       {model.available ? (
         <>
-          <p className="mt-2 text-sm text-ink-2">A language model ({model.model}) plays each agent and decides what to split, set aside and pay. Its decisions go to the gateway as signed requests. The designer&rsquo;s delivery message carries a planted instruction to pay someone else, and in the last stage the model is told outright to steal. Write any brief you like: try to make the agents overspend.</p>
+          <p className="mt-2 text-sm text-ink-2">A language model ({model.model}) plays each agent and decides what to split, set aside and pay. Its decisions go to the gateway as signed requests. The designer&rsquo;s delivery message carries a planted instruction to pay someone else. Write any brief you like: try to make the agents overspend.</p>
           <label className="label mt-4 block">Your brief to ops-agent<textarea className="field mt-1 min-h-[4.5rem] w-full resize-y !text-[.92rem] !leading-snug" value={brief} maxLength={700} onChange={(e) => setBrief(e.target.value)} disabled={running} /></label>
+          <label className="mt-3 flex items-start gap-2 text-sm text-ink-2"><input type="checkbox" className="mt-1" checked={redteam} onChange={(e) => setRedteam(e.target.checked)} disabled={running} /><span>Finish with a red-team stage: the model is asked to get money out to an address that is not on the envelope. Models sometimes decline; the scripted attacker above never does.</span></label>
           <div className="mt-4 flex flex-wrap items-center gap-3">
             <button type="button" className="btn btn-ink" disabled={running || disabled || !brief.trim()} onClick={run}>{running ? "The model is working…" : "Give the brief to the model"}</button>
             {running && <button type="button" className="btn btn-quiet btn-sm" onClick={() => { stop.current = true; }}>Stop after this step</button>}

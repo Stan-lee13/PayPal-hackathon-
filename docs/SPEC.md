@@ -97,6 +97,48 @@ The payee hands it to the gateway and receives a **statement of standing**:
 
 `account` is a readable account number derived from the agent's public key (its first 60 bits in Crockford base32).
 
+### Promise, keep and promise note
+
+A **promise** sets money aside for one payee. It has the fields of a spend request plus a lifetime, and its own signature domain:
+
+```
+{ "request": { "v": "envelope-promise/1", "leaf": "…", "amount": 4500, "currency": "USD",
+               "payee": "acct:qjq2-q15k-g5sa", "purpose": "translation", "memo": "…",
+               "ttl": 900, "nonce": "n_…", "at": "…" },
+  "sig": "<signature by the last block's holder, domain envelope-promise/1>",
+  "chain": [ …the envelope… ] }
+```
+
+`ttl` is in seconds, between 30 and 3600. The gateway answers with a **promise note** for the payee:
+
+```
+{ "v": "envelope-promise-note/1", "promise": "pr_…",
+  "agent": "<payer's public key>", "agentLabel": "localization-agent", "account": "…",
+  "sponsors": [ { "role": "owner", "label": "Ada", "key": "…" }, { "role": "agent", "label": "ops-agent", "key": "…" } ],
+  "root": "env_…", "amount": 4500, "currency": "USD", "payee": "acct:qjq2-q15k-g5sa", "purpose": "translation",
+  "expiresAt": "…", "paypal": { "mode": "sandbox", "authorizationId": "…", "status": "CREATED" },
+  "issuedAt": "…", "gateway": "<gateway public key>", "sig": "…" }
+```
+
+The maker of a promise later decides it with a **keep**:
+
+```
+{ "request": { "v": "envelope-keep/1", "promise": "pr_…", "action": "pay" | "release", "nonce": "n_…", "at": "…" },
+  "sig": "<signature by the promise's maker, domain envelope-keep/1>", "by": "<its public key>" }
+```
+
+### Account opening
+
+An agent that wants to receive opens an account. The body is signed twice, by the agent's own key and by the owner who answers for it:
+
+```
+{ "body": { "v": "envelope-account/1", "agent": "<agent public key>", "label": "translator-agent",
+            "owner": "<owner public key>", "ownerName": "Bea", "settleTo": "bea@example.com", "at": "…" },
+  "agentSig": "…", "ownerSig": "…" }
+```
+
+A payee written as `acct:` followed by the agent's account number (lower case) means that agent.
+
 ## Rules
 
 ### Splitting (offline)
@@ -136,6 +178,23 @@ Failures: a definite refusal by PayPal releases the reservation (and refunds the
 
 A revocation is `{ request: { v: "envelope-revoke/1", block, nonce, at }, sig, by }`. It is accepted from the principal, from the holder of any block above the target, or from the target's own holder. Revoking a block kills its subtree (rule 5). Revoking the root closes the envelope: the gateway voids the PayPal authorization and the unspent remainder is released.
 
+### Setting money aside
+
+`POST /api/gateway/promise`. A promise is verified and admitted exactly like a spend (the same stateless checks, the same lock, the same budget check at every level) and reserves its amount in every envelope of the chain. It then:
+
+1. asks PayPal for the authorization and requires it to be `CREATED` or `PARTIALLY_CAPTURED`; otherwise the reservation is released and the promise refused;
+2. returns the promise note, signed by the gateway.
+
+`POST /api/gateway/keep` with `action: "pay"` turns the reservation into a payment: capture and payout as for a spend, with the promise id as the idempotency key. Before paying, the gateway checks again that no envelope in the chain has been revoked and that the root is open. `action: "release"` gives the reservation back. Only the key that made the promise can keep it.
+
+A promise is released automatically when its time runs out, when any envelope in its chain is revoked, and when the root is closed. It is earmarked money, not escrow: the payee learns that the money exists and cannot be spent elsewhere, and gets no right to it.
+
+### Accounts and paying an agent
+
+`POST /api/accounts`. The gateway accepts an opening only if both signatures verify, so nobody can point another agent's account number at their own PayPal address. A later opening signed by the same agent replaces the earlier one; an older one is ignored. Two keys can never hold the same account number.
+
+When a spend or promise names an `acct:` payee, the gateway resolves it under the root lock and fixes the settlement address on the spend at that moment; a later change to the account does not redirect a payment already admitted. An account number nobody opened is refused with `PAYEE_ACCOUNT_UNKNOWN`. The payout goes to the settlement address, and the receipt records the account, the agent and where PayPal sent the money.
+
 ### Checking an agent before working for it
 
 Anyone holding a hello may ask `POST /api/gateway/standing`. The gateway:
@@ -154,6 +213,8 @@ Nothing is reserved, so the answer can go stale; it is valid for five minutes. I
 | Seal | Orders v2, `intent: AUTHORIZE` | The money is guaranteed before any agent starts, and never charged up front. |
 | Spend | Partial capture of the authorization, then Payouts | The owner is charged exactly what agents spent. PayPal refuses captures beyond the hold. |
 | Close / expire | Void authorization | The remainder goes back automatically. |
+| Set aside | Show authorization details | The fee is reserved under the same hold, and PayPal has confirmed the hold, before a payee starts work. |
+| Pay an agent | Payout to the account's settlement address | One agent's spending becomes another agent's income without either holding PayPal credentials. |
 | Check | Show authorization details | A payee learns from PayPal, through the gateway, that the hold is live before doing any work. |
 | Receipt | capture id, payout batch and item ids | Any PayPal transaction can be traced to its chain of authority, and re-checked with PayPal's own GET endpoints. |
 
@@ -181,6 +242,7 @@ Envelope's contribution is the combination, on a mainstream fiat rail: a chain a
 ## Roadmap
 
 - Principal consent through PayPal's own checkout or a vaulted wallet instead of the sandbox test card.
-- A statement of standing that also reserves the amount for a short time, so a payee's check becomes a guarantee.
+- Delivery-versus-payment for promises, so a payee holds more than earmarked money.
+- Reauthorizing a hold before it lapses, for envelopes that outlive PayPal's honor period.
 - Envelopes as AP2 / UCP payment-mandate attachments, so merchants can accept them directly.
 - Keys in hardware or passkeys; gateway state in an append-only public log.

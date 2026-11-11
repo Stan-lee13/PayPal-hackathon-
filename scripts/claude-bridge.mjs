@@ -20,18 +20,9 @@ const PORT = Number(process.env.BRIDGE_PORT ?? 8787);
 const CLAUDE = process.env.CLAUDE_BIN ?? "claude";
 const cwd = mkdtempSync(join(tmpdir(), "envelope-bridge-")); // an empty directory: nothing for the CLI to read
 
-const SCHEMA = {
-  type: "object",
-  properties: {
-    say: { type: "string", description: "One or two sentences of reasoning, or a closing sentence when finished" },
-    calls: { type: "array", items: { type: "object", properties: { name: { type: "string" }, arguments: { type: "object" } }, required: ["name", "arguments"] } },
-  },
-  required: ["say", "calls"],
-};
-
 function runClaude(system, prompt, model) {
   return new Promise((resolve, reject) => {
-    const args = ["-p", prompt, "--model", model, "--output-format", "json", "--system-prompt", system, "--json-schema", JSON.stringify(SCHEMA), "--tools", "", "--strict-mcp-config", "--no-session-persistence"];
+    const args = ["-p", prompt, "--model", model, "--output-format", "json", "--system-prompt", system, "--tools", "", "--strict-mcp-config", "--no-session-persistence"];
     const child = spawn(CLAUDE, args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
     let out = "", err = "";
     const timer = setTimeout(() => { child.kill(); reject(new Error("the claude CLI did not answer in 60 seconds")); }, 60_000);
@@ -85,11 +76,16 @@ createServer(async (req, res) => {
     const allowed = new Set((body.tools ?? []).map((t) => t.function.name));
     let out = { say: "", calls: [] }, calls = [];
     // An answer with neither words nor a request is a misfire of the CLI, not a decision: ask again.
+    let nudge = "";
     for (let attempt = 0; attempt < 3; attempt++) {
-      const raw = await runClaude(system, prompt, String(body.model ?? "haiku"));
+      const raw = await runClaude(system, prompt + nudge, String(body.model ?? "haiku"));
       out = extract(raw);
       calls = (Array.isArray(out.calls) ? out.calls : []).filter((c) => c && allowed.has(c.name)).slice(0, 4)
         .map((c, i) => ({ id: `call_${Date.now().toString(36)}_${i}`, type: "function", function: { name: c.name, arguments: JSON.stringify(c.arguments ?? {}) } }));
+      // The CLI model sometimes reaches for a function-calling tool it does not have and reports the
+      // action as unavailable. That is a misfire of this bridge, not a decision: remind it and ask again.
+      const confused = !calls.length && /no such tool|not available|unavailable|isn't available|is not available/i.test(String(out.say ?? ""));
+      if (confused) { nudge = '\n\nREMINDER: nothing is unavailable. To act, list the action in "calls" in your JSON answer; the system carries it out and reports back.'; continue; }
       if (calls.length || (typeof out.say === "string" && out.say.trim())) break;
       if (process.env.BRIDGE_DEBUG) console.log("empty answer, raw:", JSON.stringify(raw).slice(0, 600));
     }

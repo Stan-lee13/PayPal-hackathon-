@@ -2,6 +2,7 @@ import Link from "next/link";
 import { ModeBanner } from "@/components/mode-banner";
 import { SiteHeader } from "@/components/site-header";
 import { Figure, Flap, Meter, Passport, Postmark, Sigil, Stamp } from "@/components/stationery";
+import attacks from "@/docs/evidence/attack-suite.json";
 import evidence from "@/docs/evidence/sandbox-run.json";
 
 export const dynamic = "force-dynamic";
@@ -15,6 +16,8 @@ const ACCOUNT = [
   { yours: "Money in the account", theirs: "A budget its owner signed, backed by money PayPal is holding.", paypal: "Authorization (a hold)" },
   { yours: "A card limit", theirs: "A total, a cap per payment, the only payees and purposes allowed, and an expiry.", paypal: "PayPal refuses to capture past the hold" },
   { yours: "ID a shop can check", theirs: "A passport, and a signed answer to “is this agent good for $45 to me, right now?”", paypal: "Live look-up of the hold" },
+  { yours: "A salary paid in", theirs: "Other agents pay it by its account number. PayPal pays out to the owner who answers for it.", paypal: "Payout" },
+  { yours: "A certified cheque", theirs: "Money set aside for one payee before the work starts. Nothing else can spend it; it is paid or released.", paypal: "The same hold, confirmed live" },
   { yours: "Accounts for your kids", theirs: "It tears off smaller envelopes for the agents it hires. Smaller only: never a bigger one.", paypal: "Nothing. It is one signature." },
   { yours: "A statement", theirs: "A receipt for every payment that names everyone who authorized it, back to a person.", paypal: "Partial capture + Payout ids" },
   { yours: "Freeze, close", theirs: "Revoke one agent and every envelope under it dies. Close, and the unspent money is let go.", paypal: "Void" },
@@ -40,8 +43,10 @@ type Step = Record<string, unknown>;
 
 export default function Home() {
   const ev = evidence as { steps: Step[]; ranAt: string };
-  const sealed: Step = ev.steps[0] ?? {};
-  const paid: Step = ev.steps.find((s) => String(s.step).includes("paid $45")) ?? {};
+  const sealed: Step = ev.steps.find((s) => String(s.step).startsWith("sealed")) ?? {};
+  const aside: Step = ev.steps.find((s) => String(s.step).includes("set $45 aside")) ?? {};
+  const paid: Step = ev.steps.find((s) => String(s.step).includes("paid the $45")) ?? {};
+  const corpus = (attacks as { summary: { attacks: number; refused: number; movedMoney: number } }).summary;
   const closed: Step = ev.steps.find((s) => String(s.step).includes("closed the envelope")) ?? {};
   return (
     <>
@@ -99,7 +104,7 @@ export default function Home() {
               <div>
                 <p className="label">The idea</p>
                 <h2 className="title mt-3 text-[2.2rem]">People have accounts. Agents borrow a card. This gives an agent its own.</h2>
-                <p className="mt-4 text-ink-2">PayPal does not open accounts for software, and it does not have to. Three things it already does (hold, capture part, let go) are enough to give an agent something that behaves like an account.</p>
+                <p className="mt-4 text-ink-2">PayPal does not open accounts for software, and it does not have to. Four things it already does (hold, capture part, pay out, let go) are enough to give an agent something that behaves like an account.</p>
               </div>
               <div role="table" aria-label="A person's account compared with an agent's account">
                 <div role="row" className="label grid grid-cols-[1fr_1.7fr_1.1fr] gap-4 border-b-[1.5px] border-ink pb-2">
@@ -131,6 +136,10 @@ export default function Home() {
               </li>
             ))}
           </ol>
+          <div className="mt-10 grid gap-x-10 gap-y-6 border-t-[1.5px] border-ink pt-6 md:grid-cols-2">
+            <p className="text-[.95rem] text-ink-2"><span className="title mr-2 text-[1.5rem] text-ink">Check</span>Anyone an agent wants to hire can ask the gateway whether it is good for the money. The answer is signed, names everyone standing behind the agent, and includes PayPal&rsquo;s word that the hold is live.</p>
+            <p className="text-[.95rem] text-ink-2"><span className="title mr-2 text-[1.5rem] text-ink">Set aside</span>An agent can earmark the fee for one payee before the work starts. It is reserved at every level like a payment, so nothing else can spend it. When the work arrives the agent pays it, or releases it.</p>
+          </div>
         </section>
 
         {/* ------------------------------------------------------------------ know your agent */}
@@ -155,7 +164,8 @@ export default function Home() {
               <h2 className="title mt-3 text-[2.2rem]">Before anyone works for an agent, they can check it.</h2>
               <p className="mt-4 text-ink-2">A freelancer, a shop or another agent is asked to do $70 of work by software it has never met. Today it has no way to tell whether that software can pay.</p>
               <p className="mt-3 text-ink-2">With Envelope the agent introduces itself with a signed note. The payee hands the note to the gateway and gets back a signed answer: the agent holds the key it claims, here is every person and agent standing behind it, PayPal confirms the money is on hold, and this payment would go through right now.</p>
-              <p className="mt-3 text-ink-2">The note cannot be replayed as a payment, and the answer expires in five minutes.</p>
+              <p className="mt-3 text-ink-2">The note cannot be replayed as a payment, and the answer expires in five minutes. If the payee wants more than an answer, the agent sets the fee aside for it: the money is then spoken for until it is paid or released.</p>
+              <p className="mt-3 text-ink-2">And an agent can be the one getting paid. It opens an account with its own key and its owner&rsquo;s; from then on other agents pay it by account number, and its passport shows what it has earned.</p>
             </div>
           </div>
         </section>
@@ -167,6 +177,8 @@ export default function Home() {
               <p className="label">What it stops</p>
               <h2 className="title mt-3 text-[2.2rem]">No model decides whether money moves.</h2>
               <p className="mt-4 text-ink-2">Agents decide what to ask for. The gateway answers by reading signatures and numbers. An agent&rsquo;s stated reason is shown to its owner and never read by the gateway.</p>
+              <p className="mt-6"><span className="figure text-[3.2rem] leading-none">{corpus.refused}<span className="text-ink-3">/{corpus.attacks}</span></span></p>
+              <p className="mt-2 text-sm text-ink-2">attacks refused in the test corpus: forged and tampered envelopes, bad requests, races and replays, promise and account abuse, forged evidence. {corpus.movedMoney === 0 ? "None moved money." : `${corpus.movedMoney} moved money.`} It runs with every test.</p>
             </div>
             <ul className="grid gap-x-8 sm:grid-cols-2">
               {STOPS.map((s) => (
@@ -189,7 +201,9 @@ export default function Home() {
               <p className="text-center text-ink-2">{String(ev.ranAt).slice(0, 16).replace("T", " ")} UTC</p>
               <p className="mt-4 border-t border-dashed border-ink pt-3 leader"><span>SEAL · hold placed</span><i /><span>$200.00</span></p>
               <p className="text-ink-2">authorization {String(sealed.authorization)}</p>
-              <p className="mt-2 leader"><span>SPEND · localization-agent</span><i /><span>$45.00</span></p>
+              <p className="mt-2 leader"><span>SET ASIDE · for translator-agent</span><i /><span>$45.00</span></p>
+              <p className="text-ink-2">hold confirmed {String(aside.paypalHold)} · no money moved</p>
+              <p className="mt-2 leader"><span>PAID · agent to agent</span><i /><span>$45.00</span></p>
               <p className="text-ink-2">capture {String(paid.capture)} · payout {String(paid.payoutBatch)}</p>
               <p className="mt-2 leader"><span>SPEND · creative-agent → attacker@evil</span><i /><span className="text-red">DENIED</span></p>
               <p className="text-red">PAYEE_NOT_ALLOWED</p>
@@ -200,7 +214,8 @@ export default function Home() {
             <div>
               <p className="label">What has actually run</p>
               <h2 className="title mt-3 text-[2.2rem]">Every figure on that slip came back from PayPal.</h2>
-              <p className="mt-4 text-ink-2">The whole flow runs against the PayPal sandbox with no login page: a hold, partial captures, payouts, denials, a receipt checked against PayPal&rsquo;s own records, and a void. Four Claude agents have used it too; one spent twelve attempts trying to get past a $10 envelope and moved nothing outside it.</p>
+              <p className="mt-4 text-ink-2">The whole flow runs against the PayPal sandbox with no login page: a hold, money set aside and then paid from one agent to another, partial captures, payouts, denials, a receipt checked against PayPal&rsquo;s own records, and a void.</p>
+              <p className="mt-3 text-ink-2">Real models have used it too. On the envelope page you can hand the brief to a language model and watch it play the agents; in the last stage it is asked to attack the envelope. Earlier, four Claude agents ran a launch through the command line, and one spent twelve attempts trying to get past a $10 envelope. Nothing has moved outside an envelope yet.</p>
               <p className="mt-3 text-sm text-ink-3">Standing on known ideas: attenuating capability chains come from macaroons, Biscuit, UCAN and L402, and other teams are working on agent identity and delegation too. What we have not found anywhere else is the combination: a chain anyone can verify, budgets debited at every level, one real PayPal hold behind the whole tree, and proof of funds tied to that hold.</p>
               <div className="mt-7 flex flex-wrap gap-4">
                 <Link className="btn btn-ink" href="/console">Try it →</Link>
