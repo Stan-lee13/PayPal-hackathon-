@@ -88,6 +88,12 @@ export const handlers: Record<string, Handler> = {
   },
 
   /** The proof graph of an envelope: every signed record behind it, with what a browser needs to check each one. */
+  /** Where one payment stands now, whatever its state (a receipt exists only once PayPal has captured). Asking makes the gateway ask PayPal. */
+  "GET /api/spends/:id/status": async ({ params }) => {
+    const s = await G.syncSpend(params.id!);
+    return { body: { id: s.id, status: s.status, delivered: s.status === "PAID", amountMinor: s.amountMinor, currency: s.currency, payee: s.payee, purpose: s.purpose, payoutStatus: s.payoutStatus, captureId: s.captureId, refundId: s.refundId, hasReceipt: Boolean(s.receipt), reasons: withMeaning(s.reasons) } };
+  },
+
   /** Every call the gateway made to PayPal for this envelope, and the events PayPal reported about it. */
   "GET /api/envelopes/:id/paypal": async ({ params }) => {
     const t = await S.paypalTrail(params.id!);
@@ -250,7 +256,9 @@ export const handlers: Record<string, Handler> = {
   "POST /api/gateway/accept": async ({ body }) => {
     const b = z.object({ signed: z.object({ request: z.any(), sig: z.string(), by: z.string() }) }).parse(body);
     const r = await G.accept(b.signed as never);
-    return { status: spendStatus(r.status), body: spendOut(r) };
+    // A decline that released the money did what was asked: that is a success, like an agent releasing its own promise.
+    const declined = (b.signed.request as { decline?: unknown } | null)?.decline === true && r.status === "LAPSED";
+    return { status: declined ? 200 : spendStatus(r.status), body: spendOut(r) };
   },
 
   /** "Is this agent good for the money?" Read-only; moves no money. */

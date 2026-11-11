@@ -44,6 +44,11 @@ export class EnvelopeError extends Error {
     const e = (this.body as { error?: unknown } | null | undefined)?.error;
     return typeof e === "string" ? e : String(this.status);
   }
+  /** The gateway's id for the refused payment, when it kept a record of it. `getStatus(gateway, id)` reads it back. */
+  get spendId(): string | null {
+    const id = (this.body as { spendId?: unknown } | null | undefined)?.spendId;
+    return typeof id === "string" ? id : null;
+  }
   has(code: string): boolean { return this.reasons.some((r) => r.code === code); }
 }
 

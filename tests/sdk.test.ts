@@ -105,7 +105,7 @@ d("@envelope/sdk against the gateway (simulated PayPal)", () => {
     // nor does a real receipt presented as coming from another gateway
     expect((await verifyReceipt(r, stranger.publicKey)).ok).toBe(false);
 
-    expect(await getStatus(gateway, p.spendId)).toMatchObject({ status: "PAID", delivered: true, matchesPayPal: true });
+    expect(await getStatus(gateway, p.spendId)).toMatchObject({ status: "PAID", delivered: true, hasReceipt: true });
     expect((await helper.authority()).availableMinor).toBe(1500);
     expect((await researcher.authority()).availableMinor).toBe(15500);
   });
@@ -257,6 +257,29 @@ d("@envelope/sdk against the gateway (simulated PayPal)", () => {
     expect(reference.facts.paymentsSettled).toBeGreaterThanOrEqual(2);
     expect((await checkReference(gateway, token)).good).toBe(true);
     expect((await checkReference(gateway, { ...reference, facts: { ...reference.facts, paymentsSettled: 999 } })).good).toBe(false);
+  });
+
+  it("any payment can be looked up, the owner recalls one nobody claimed, and the PayPal calls behind it can be read", async () => {
+    const scout = await Agent.generate({ gateway, label: "scout-agent" });
+    const nobody = "unclaimed.nobody@example.com";
+    const { chain, root } = await ada.seal({ to: scout.identity, limit: "15.00", perPayment: "10.00", payees: [nobody], purposes: ["research"], hours: 1 });
+    await scout.hold(chain);
+    // a refused payment has no receipt, and can still be looked up
+    const denied = await refused(scout.pay({ amount: "5.00", payee: "attacker@evil.example", purpose: "research" }));
+    expect(await getStatus(gateway, denied.spendId!)).toMatchObject({ status: "DENIED", delivered: false, hasReceipt: false });
+    const lost = await scout.pay({ amount: "7.00", payee: nobody, purpose: "research" });
+    expect(lost).toMatchObject({ status: "UNCLAIMED", delivered: false });
+    // the agent that paid cannot take it back; its owner can
+    expect((await refused(gateway.recall(lost.spendId, await protocol.signRead(await protocol.importPrivateJwk(await scout.exportKey()), "recall", lost.spendId)))).status).toBe(401);
+    const back = await ada.recall(lost.spendId);
+    expect(back).toMatchObject({ status: "FAILED", payoutStatus: "RETURNED" });
+    expect(back.refundId).toBeTruthy();
+    expect(back.reasons[0]!.code).toBe("RECALLED_BY_OWNER");
+    expect((await scout.authority()).availableMinor).toBe(1500);
+    const trail = await gateway.paypalTrail(root.id);
+    expect(trail.summary).toMatchObject({ holds: 1, captures: 1, payouts: 1, cancels: 1, refunds: 1 });
+    expect(trail.calls.every((c) => typeof c.path === "string" && !/\d{13,19}/.test(JSON.stringify(c)))).toBe(true);
+    await ada.close(root.id);
   });
 
   it("the owner reads their own books, revokes a sub-envelope and closes the root", async () => {

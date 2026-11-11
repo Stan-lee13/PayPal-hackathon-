@@ -5,7 +5,7 @@
  */
 import type { Envelope, SignedAccept, SignedAccount, SignedCard, SignedCardCancel, SignedCharge, SignedFreeze, SignedHello, SignedKeep, SignedPromise, SignedRead, SignedRevoke, SignedSpend, SignedTransfer } from "../../lib/envelope/core";
 import { EnvelopeError } from "./errors";
-import type { AccountOpened, AgentProfile, Books, Card, ChargeOutcome, EnvelopeState, FreezeResult, GatewayKey, GatewayReason, PayPalTrail, PromiseOutcome, ReceiptResponse, Reference, RevokeResult, RootState, SpendOutcome, Standing, TransferOutcome } from "./types";
+import type { AccountOpened, AgentProfile, Books, Card, ChargeOutcome, EnvelopeState, FreezeResult, GatewayKey, GatewayReason, PayPalTrail, PaymentStatus, PromiseOutcome, Recalled, ReceiptResponse, Reference, RevokeResult, RootState, SpendOutcome, Standing, TransferOutcome } from "./types";
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 export type GatewayOptions = {
@@ -135,7 +135,9 @@ export class Gateway {
   reconcileTreasury(signed: SignedRead): Promise<Record<string, unknown>> { return this.ok("POST", `/api/treasury/${encodeURIComponent(signed.by)}/reconcile`, { signed }); }
   async envelopesOf(signed: SignedRead): Promise<RootState[]> { return (await this.ok<{ roots: RootState[] }>("POST", "/api/envelopes/mine", { signed })).roots; }
   /** The owner calls back a payout PayPal is holding unclaimed: PayPal cancels it and the capture is refunded to the owner. */
-  recall(spendId: string, signed: SignedRead): Promise<Record<string, unknown>> { return this.ok("POST", `/api/spends/${encodeURIComponent(spendId)}/recall`, { signed }); }
+  recall(spendId: string, signed: SignedRead): Promise<Recalled> { return this.ok("POST", `/api/spends/${encodeURIComponent(spendId)}/recall`, { signed }); }
+  /** Where one payment stands, whatever its state. Asking makes the gateway ask PayPal. */
+  status(spendId: string): Promise<PaymentStatus> { return this.ok("GET", `/api/spends/${encodeURIComponent(spendId)}/status`); }
 
   // ───────────────────────────── addresses a person can open ─────────────────────────────
   receiptUrl(spendId: string): string { return `${this.url}/r/${spendId}`; }

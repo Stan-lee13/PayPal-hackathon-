@@ -199,7 +199,14 @@ export type Books = {
  * GET /api/envelopes/:id/paypal — the gateway's record of its calls to PayPal for one envelope.
  * Kept loose on purpose: the gateway decides the fields of each entry.
  */
-export type PayPalTrail = { calls?: Array<Record<string, unknown>>; [more: string]: unknown };
+export type PayPalCall = { id: number; at: string; op: string; text: string; moves: boolean; repeat: boolean; method: string; path: string; httpStatus: number; paypalStatus: string | null; resourceId: string | null; amountMinor: number | null; currency: string | null; debugId: string | null; ms: number; error: string | null; requestId: string | null };
+export type PayPalTrail = {
+  mode: string; currency: string; calls: PayPalCall[];
+  summary: { total: number; changed: number; asked: number; repeats: number; refused: number; holds: number; captures: number; payouts: number; refunds: number; cancels: number; voids: number };
+  events: Array<{ id: string; type: string; source: "webhook" | "feed"; subject: string | null; outcome: string; at: string }>;
+};
+export type PaymentStatus = { id: string; status: SpendStatus; delivered: boolean; amountMinor: number; currency: string; payee: string; purpose: string; payoutStatus: string | null; captureId: string | null; refundId: string | null; hasReceipt: boolean; reasons: Array<{ code: string; detail: string; meaning?: string }> };
+export type Recalled = { status: SpendStatus; spendId: string; refundId: string | null; payoutStatus: string | null; reasons: Array<{ code: string; detail: string; meaning?: string }> };
 
 export type RevokeResult ={ block: { id: string; revokedAt: string | null }; root: { status: "ACTIVE" | "CLOSED"; capturedMinor: number; releasedMinor: number | null } };
 export type GatewayKey = { publicKey: string; signs: string[] };

@@ -13,7 +13,7 @@ import * as E from "../../lib/envelope/core";
 import { EnvelopeError, refuseLocally } from "./errors";
 import { Gateway, type GatewayOptions } from "./gateway";
 import { toMinor, type Amount } from "./money";
-import type { AccountOpened, AgentProfile, Balance, Card, ChargeOutcome, EnvelopeState, FreezeResult, PromiseNote, PromiseOutcome, ReceiptResponse, Reference, RevokeResult, RootState, SpendOutcome, SpendStatus, Standing, TransferOutcome } from "./types";
+import type { AccountOpened, AgentProfile, Balance, Card, ChargeOutcome, EnvelopeState, FreezeResult, PromiseNote, PaymentStatus, PromiseOutcome, Recalled, ReceiptResponse, Reference, RevokeResult, RootState, SpendOutcome, SpendStatus, Standing, TransferOutcome } from "./types";
 import { decodeToken, encodeToken, verifyPromiseNote, verifyReceipt, verifyReference, verifyStanding, type Verification } from "./verify";
 
 const KEY = /^[A-Za-z0-9_-]{43}$/;
@@ -423,9 +423,9 @@ export class Owner extends Party {
    * Call back a payment PayPal is holding unclaimed (the address has no PayPal account): PayPal
    * cancels the payout and the capture is refunded to this owner. Needs a gateway that has the recall endpoint.
    */
-  async recall(spendId: string): Promise<Record<string, unknown>> {
+  async recall(spendId: string): Promise<Recalled> {
     const id = text(spendId, "spend id", 60);
-    return this.gateway.recall(id, await E.signRead(this.key, "recall" as E.ReadRequest["what"], id));
+    return this.gateway.recall(id, await E.signRead(this.key, "recall", id));
   }
 }
 
@@ -474,10 +474,9 @@ export async function getReceipt(gateway: Gateway | string, spendId: string): Pr
   return { ...r, paypal: { ok: r.ok, checks: r.checks }, verify: async () => verifyReceipt(r, (await g.key()).publicKey) };
 }
 
-/** Where a payment stands now. Asking makes the gateway ask PayPal. */
-export async function getStatus(gateway: Gateway | string, spendId: string): Promise<{ id: string; status: SpendStatus; delivered: boolean; payoutStatus: string | null; matchesPayPal: boolean }> {
-  const r = await connect(gateway).receipt(text(spendId, "spend id", 60));
-  return { id: r.spend.id, status: r.spend.status, delivered: r.spend.status === "PAID", payoutStatus: r.spend.payoutStatus, matchesPayPal: r.ok };
+/** Where a payment stands now, whatever its state: set aside, refused, in flight, unclaimed, paid, refunded. Asking makes the gateway ask PayPal. */
+export async function getStatus(gateway: Gateway | string, spendId: string): Promise<PaymentStatus> {
+  return connect(gateway).status(text(spendId, "spend id", 60));
 }
 
 /** SHA-256 of some delivered work, for `accept({ work })`. It proves which bytes were referred to, not that they are any good. */
