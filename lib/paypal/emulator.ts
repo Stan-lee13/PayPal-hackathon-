@@ -3,7 +3,9 @@
  * credentials are configured. It implements only the routes lib/paypal/payments.ts calls, with the
  * behaviours we observed in the real sandbox: partial captures leave the hold open
  * (PARTIALLY_CAPTURED), captures beyond the hold are refused, void releases the remainder, repeated
- * PayPal-Request-Ids return the first answer, and a reused sender_batch_id is rejected.
+ * PayPal-Request-Ids return the first answer, and a reused sender_batch_id is rejected. It also keeps
+ * an event feed shaped like PayPal's (one event per capture, payout, refund, void and cancellation),
+ * cancels unclaimed payout items, and "verifies" an event only when it is one it issued, unchanged.
  * Every page shows a SIMULATED banner in this mode; no money moves.
  */
 import { simState, withSimState } from "../sim/store";
@@ -12,8 +14,9 @@ import { toDecimalString, toMinor } from "../money";
 type Money = { currency_code: string; value: string };
 type SimAuth = { id: string; order_id: string; status: "CREATED" | "PARTIALLY_CAPTURED" | "CAPTURED" | "VOIDED"; amount: Money; custom_id: string; expiration_time: string; create_time: string; captured: number };
 type SimCapture = { id: string; authorization_id: string; status: "COMPLETED" | "PENDING" | "DECLINED" | "REFUNDED"; amount: Money; invoice_id?: string; custom_id: string };
-type SimPayout = { batch_id: string; sender_batch_id: string; item_id: string; transaction_id: string; item_status: "SUCCESS" | "UNCLAIMED"; receiver: string; amount: { currency: string; value: string } };
-type Sim = { auths: Record<string, SimAuth>; captures: Record<string, SimCapture>; payouts: Record<string, SimPayout>; idem: Record<string, { status: number; body: unknown }>; calls: string[]; failNext: string | null; failLeft?: number; nextCapture?: "PENDING" | null; refuseRefunds?: boolean };
+type SimPayout = { batch_id: string; sender_batch_id: string; item_id: string; transaction_id: string; item_status: "SUCCESS" | "UNCLAIMED" | "RETURNED" | "FAILED"; receiver: string; amount: { currency: string; value: string } };
+export type SimEvent = { id: string; event_type: string; create_time: string; resource_type: string; resource: Record<string, unknown> };
+type Sim = { events?: SimEvent[]; auths: Record<string, SimAuth>; captures: Record<string, SimCapture>; payouts: Record<string, SimPayout>; idem: Record<string, { status: number; body: unknown }>; calls: string[]; failNext: string | null; failLeft?: number; nextCapture?: "PENDING" | null; refuseRefunds?: boolean };
 
 function state(): Sim {
   return simState<Sim>("paypal", () => ({ auths: {}, captures: {}, payouts: {}, idem: {}, calls: [], failNext: null }));
@@ -23,6 +26,21 @@ const id = (prefix: string) => `${prefix}${crypto.randomUUID().replace(/-/g, "")
 let last: { status: number; body: unknown } | null = null;
 const reply = (status: number, body: unknown) => { last = { status, body }; return new Response(status === 204 ? null : JSON.stringify(body), { status, headers: { "content-type": "application/json" } }); };
 const err = (status: number, name: string, issue: string, description: string) => reply(status, { name, message: description, debug_id: "sim", details: [{ issue, description }] });
+
+/** What a webhook from the simulator must carry to verify. Real PayPal signs with a certificate; this stands in for it. */
+export const SIM_WEBHOOK_ID = "SIM-WEBHOOK";
+export const SIM_SIGNATURE = "SIM-VALID";
+function emit(s: Sim, event_type: string, resource_type: string, resource: Record<string, unknown>) {
+  (s.events ??= []).push({ id: id("WH-SIM"), event_type, create_time: new Date().toISOString(), resource_type, resource: structuredClone(resource) });
+  if (s.events.length > 400) s.events.splice(0, s.events.length - 400);
+}
+const captureResource = (c: SimCapture) => ({ id: c.id, status: c.status, amount: c.amount, invoice_id: c.invoice_id, custom_id: c.custom_id, supplementary_data: { related_ids: { authorization_id: c.authorization_id } } });
+const itemResource = (po: SimPayout) => ({ payout_item_id: po.item_id, transaction_id: po.transaction_id, transaction_status: po.item_status, payout_batch_id: po.batch_id, sender_batch_id: po.sender_batch_id, payout_item: { receiver: po.receiver, amount: po.amount, sender_item_id: po.sender_batch_id } });
+const ITEM_EVENT: Record<SimPayout["item_status"], string> = { SUCCESS: "PAYMENT.PAYOUTS-ITEM.SUCCEEDED", UNCLAIMED: "PAYMENT.PAYOUTS-ITEM.UNCLAIMED", RETURNED: "PAYMENT.PAYOUTS-ITEM.RETURNED", FAILED: "PAYMENT.PAYOUTS-ITEM.FAILED" };
+/** Tests: the events the simulator has reported, oldest first. */
+export async function simEvents(): Promise<SimEvent[]> { return withSimState(() => structuredClone(state().events ?? [])); }
+/** Tests: PayPal changes its mind about a payout later (claimed, returned after 30 days, failed) and reports it. */
+export async function simSetPayout(batchId: string, status: SimPayout["item_status"]) { await withSimState(() => { const s = state(); const po = s.payouts[batchId]; if (po) { po.item_status = status; emit(s, ITEM_EVENT[status], "payouts_item", itemResource(po)); } }); }
 
 /** Tests: make the next call whose path contains `fragment` fail with a 500. */
 export async function simFailNext(fragment: string | null, times = 1) { await withSimState(() => { state().failNext = fragment; state().failLeft = times; }); }
@@ -72,6 +90,7 @@ function route(input: string, init: RequestInit): Response {
     const orderId = id("SIMORD");
     const a: SimAuth = { id: id("SIMAUTH"), order_id: orderId, status: "CREATED", amount: pu.amount, custom_id: pu.custom_id ?? "", create_time: now.toISOString(), expiration_time: new Date(now.getTime() + 29 * 86400_000).toISOString(), captured: 0 };
     s.auths[a.id] = a;
+    emit(s, "PAYMENT.AUTHORIZATION.CREATED", "authorization", pub(a));
     return reply(201, { id: orderId, status: "COMPLETED", purchase_units: [{ reference_id: pu.reference_id, payments: { authorizations: [pub(a)] } }] });
   });
   if ((m = p.match(/^\/v2\/payments\/authorizations\/([^/]+)$/)) && method === "GET") {
@@ -83,7 +102,7 @@ function route(input: string, init: RequestInit): Response {
     if (!a) return err(404, "RESOURCE_NOT_FOUND", "INVALID_RESOURCE_ID", "Authorization not found.");
     if (a.status === "VOIDED") return err(422, "UNPROCESSABLE_ENTITY", m![2] === "void" ? "PREVIOUSLY_VOIDED" : "AUTHORIZATION_VOIDED", "A voided authorization cannot be captured or voided again.");
     if (a.status === "CAPTURED") return err(422, "UNPROCESSABLE_ENTITY", m![2] === "void" ? "PREVIOUSLY_CAPTURED" : "AUTHORIZATION_ALREADY_CAPTURED", "Authorization has been fully captured.");
-    if (m![2] === "void") { a.status = "VOIDED"; return reply(204, null); }
+    if (m![2] === "void") { a.status = "VOIDED"; emit(s, "PAYMENT.AUTHORIZATION.VOIDED", "authorization", pub(a)); return reply(204, null); }
     const cur = a.amount.currency_code;
     const total = toMinor(a.amount.value, cur);
     const want = body?.amount?.value ? toMinor(body.amount.value, cur) : total - a.captured;
@@ -95,6 +114,7 @@ function route(input: string, init: RequestInit): Response {
     const pending = s.nextCapture === "PENDING"; s.nextCapture = null;
     const c: SimCapture = { id: id("SIMCAP"), authorization_id: a.id, status: pending ? "PENDING" : "COMPLETED", amount: { currency_code: cur, value: toDecimalString(want, cur) }, invoice_id: body.invoice_id, custom_id: a.custom_id };
     s.captures[c.id] = c;
+    emit(s, pending ? "PAYMENT.CAPTURE.PENDING" : "PAYMENT.CAPTURE.COMPLETED", "capture", captureResource(c));
     return reply(201, { id: c.id, status: c.status, amount: c.amount, invoice_id: c.invoice_id, custom_id: c.custom_id, final_capture: Boolean(body.final_capture) });
   });
   if ((m = p.match(/^\/v2\/payments\/captures\/([^/]+)$/)) && method === "GET") {
@@ -107,7 +127,9 @@ function route(input: string, init: RequestInit): Response {
     if (s.refuseRefunds) return err(422, "UNPROCESSABLE_ENTITY", "REFUND_FAILED_INSUFFICIENT_FUNDS", "The refund could not be made.");
     if (c.status === "REFUNDED") return err(422, "UNPROCESSABLE_ENTITY", "CAPTURE_FULLY_REFUNDED", "The capture has already been fully refunded.");
     c.status = "REFUNDED";
-    return reply(201, { id: id("SIMREF"), status: "COMPLETED" });
+    const refund = { id: id("SIMREF"), status: "COMPLETED" };
+    emit(s, "PAYMENT.CAPTURE.REFUNDED", "refund", { ...refund, amount: c.amount, invoice_id: c.invoice_id, custom_id: c.custom_id });
+    return reply(201, refund);
   });
   if (p === "/v1/payments/payouts" && method === "POST") return mutate(() => {
     const sbid = body?.sender_batch_header?.sender_batch_id;
@@ -118,12 +140,32 @@ function route(input: string, init: RequestInit): Response {
     if (Object.values(s.payouts).some((x) => x.sender_batch_id === sbid)) return err(400, "USER_BUSINESS_ERROR", "DUPLICATE_REQUEST_ID", "Batch with given sender_batch_id already exists.");
     const po: SimPayout = { batch_id: id("SIMBATCH"), sender_batch_id: sbid, item_id: id("SIMITEM"), transaction_id: id("SIMTXN"), item_status: /unclaimed/i.test(it.receiver) ? "UNCLAIMED" : "SUCCESS", receiver: it.receiver, amount: it.amount };
     s.payouts[po.batch_id] = po;
+    emit(s, ITEM_EVENT[po.item_status], "payouts_item", itemResource(po));
     return reply(201, { batch_header: { payout_batch_id: po.batch_id, batch_status: "PENDING", sender_batch_header: body.sender_batch_header } });
   });
   if ((m = p.match(/^\/v1\/payments\/payouts\/([^/]+)$/)) && method === "GET") {
     const po = s.payouts[m[1]!];
     if (!po) return err(404, "RESOURCE_NOT_FOUND", "INVALID_RESOURCE_ID", "Payout batch not found.");
     return reply(200, { batch_header: { payout_batch_id: po.batch_id, batch_status: "SUCCESS" }, items: [{ payout_item_id: po.item_id, transaction_id: po.transaction_id, transaction_status: po.item_status, payout_item: { receiver: po.receiver, amount: po.amount, sender_item_id: po.sender_batch_id }, ...(po.item_status === "UNCLAIMED" ? { errors: { name: "RECEIVER_UNREGISTERED" } } : {}) }] });
+  }
+  if ((m = p.match(/^\/v1\/payments\/payouts-item\/([^/]+)\/cancel$/)) && method === "POST") return mutate(() => {
+    const po = Object.values(s.payouts).find((x) => x.item_id === m![1]);
+    if (!po) return err(404, "RESOURCE_NOT_FOUND", "INVALID_RESOURCE_ID", "Payout item not found.");
+    if (po.item_status !== "UNCLAIMED") return err(400, "ITEM_INCORRECT_STATUS", "ITEM_INCORRECT_STATUS", "Only an unclaimed payout item can be cancelled.");
+    po.item_status = "RETURNED";
+    emit(s, "PAYMENT.PAYOUTS-ITEM.CANCELED", "payouts_item", itemResource(po));
+    return reply(200, itemResource(po));
+  });
+  if (p === "/v1/notifications/verify-webhook-signature" && method === "POST") {
+    // Genuine = the stand-in signature, this simulator's webhook id, and an event it issued with its type and resource id untouched.
+    const ev = body?.webhook_event;
+    const mine = (s.events ?? []).find((e) => e.id === ev?.id);
+    const same = Boolean(mine && mine.event_type === ev?.event_type && JSON.stringify(mine.resource) === JSON.stringify(ev?.resource));
+    return reply(200, { verification_status: body?.transmission_sig === SIM_SIGNATURE && body?.webhook_id === SIM_WEBHOOK_ID && same ? "SUCCESS" : "FAILURE" });
+  }
+  if (p === "/v1/notifications/webhooks-events" && method === "GET") {
+    const evs = [...(s.events ?? [])].reverse().slice(0, Number(url.searchParams.get("page_size") ?? 10));
+    return reply(200, { events: evs, count: evs.length });
   }
   return err(404, "NOT_FOUND", "UNSUPPORTED_ROUTE", `The simulator does not implement ${method} ${p}.`);
 }

@@ -21,12 +21,15 @@ export function route(key: keyof typeof handlers & string, opts: Opts = {}) {
       return json({ error: "The gateway's database is not reachable." }, 503);
     }
     let body: unknown = undefined;
+    let raw: string | undefined;
     if (hasBody) {
       // A signed envelope with a full chain is a few kilobytes. Nothing legitimate is close to this.
       if (Number(req.headers.get("content-length") ?? 0) > MAX_BODY_BYTES) return json({ error: "Request too large." }, 413);
-      try { const text = await req.text(); if (text.length > MAX_BODY_BYTES) return json({ error: "Request too large." }, 413); body = JSON.parse(text); } catch { return json({ error: "Send JSON." }, 400); }
+      try { const text = await req.text(); if (text.length > MAX_BODY_BYTES) return json({ error: "Request too large." }, 413); raw = text; body = text ? JSON.parse(text) : {}; } catch { return json({ error: "Send JSON." }, 400); }
     }
-    const out = await run(handler, { params: (await ctx.params) ?? {}, body });
+    const headers: Record<string, string> = {};
+    req.headers.forEach((v, k) => { if (k.startsWith("paypal-") || k === "authorization") headers[k] = v; });
+    const out = await run(handler, { params: (await ctx.params) ?? {}, body, headers, raw });
     return json(out.body, out.status);
   };
 }

@@ -6,6 +6,9 @@
  *           POST /v1/payments/payouts                          pay the payee
  *   Close   POST /v2/payments/authorizations/{id}/void         release whatever was never spent
  *   Undo    POST /v2/payments/captures/{id}/refund             if a payout can't be sent after a capture
+ *   Recall  POST /v1/payments/payouts-item/{id}/cancel         take back a payout the payee never claimed
+ *   Events  POST /v1/notifications/verify-webhook-signature    is this event really from PayPal?
+ *           GET  /v1/notifications/webhooks-events             PayPal's own list of the events it reported
  *
  * Verified against the PayPal sandbox on 2026-11-11: twelve partial captures of one authorization
  * all completed, an over-capture was refused by PayPal (MAX_CAPTURE_AMOUNT_EXCEEDED), and a void
@@ -117,4 +120,28 @@ export async function getPayout(pp: PayPalClient, batchId: string): Promise<Payo
     "GET", `/v1/payments/payouts/${encodeURIComponent(batchId)}`);
   const it = r.items?.[0];
   return { batchId: r.batch_header.payout_batch_id, batchStatus: r.batch_header.batch_status, itemId: it?.payout_item_id ?? null, itemStatus: it?.transaction_status ?? null, transactionId: it?.transaction_id ?? null, receiver: it?.payout_item?.receiver ?? null, error: it?.errors?.name ?? null };
+}
+
+/** Cancel a payout item PayPal is holding unclaimed. PayPal returns the money to the sender and reports the item RETURNED. */
+export async function cancelPayoutItem(pp: PayPalClient, itemId: string): Promise<{ itemId: string; itemStatus: string | null }> {
+  const r = await pp.request<{ payout_item_id?: string; transaction_status?: string }>("POST", `/v1/payments/payouts-item/${encodeURIComponent(itemId)}/cancel`);
+  return { itemId: r.payout_item_id ?? itemId, itemStatus: r.transaction_status ?? null };
+}
+
+export type EventHeaders = { authAlgo: string; certUrl: string; transmissionId: string; transmissionSig: string; transmissionTime: string };
+/**
+ * Ask PayPal whether an event it supposedly sent is genuine. The event is passed on byte for byte:
+ * PayPal signs the exact text it sent, so a re-serialized copy can fail to verify.
+ */
+export async function verifyWebhookSignature(pp: PayPalClient, webhookId: string, h: EventHeaders, rawEvent: string): Promise<boolean> {
+  const head = JSON.stringify({ auth_algo: h.authAlgo, cert_url: h.certUrl, transmission_id: h.transmissionId, transmission_sig: h.transmissionSig, transmission_time: h.transmissionTime, webhook_id: webhookId });
+  const r = await pp.request<{ verification_status?: string }>("POST", "/v1/notifications/verify-webhook-signature", { rawBody: `${head.slice(0, -1)},"webhook_event":${rawEvent}}` });
+  return r.verification_status === "SUCCESS";
+}
+
+export type PayPalEventBody = { id: string; event_type: string; create_time?: string; resource?: Record<string, unknown> };
+/** PayPal's own record of the events it reported for this app, newest first. Empty unless a webhook is registered. */
+export async function listEvents(pp: PayPalClient, since?: Date): Promise<PayPalEventBody[]> {
+  const r = await pp.request<{ events?: PayPalEventBody[] }>("GET", "/v1/notifications/webhooks-events", { query: { page_size: "50", ...(since ? { start_time: since.toISOString().replace(/\.\d+Z$/, "Z") } : {}) } });
+  return r.events ?? [];
 }

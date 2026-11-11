@@ -12,11 +12,13 @@ import * as E from "../envelope/core";
 import * as B from "../gateway/bank";
 import { proof } from "../gateway/proof";
 import * as G from "../gateway/service";
+import * as S from "../gateway/settlement";
+import { flushJournal } from "../paypal/journal";
 import { verifyChain } from "../ledger/chain";
 import { paypalMode } from "../paypal/client";
 import { REASON_TEXT } from "../reasons";
 
-export type Input = { params: Record<string, string>; body: unknown };
+export type Input = { params: Record<string, string>; body: unknown; /** Lower-cased request headers and the body as sent; only the webhook and sweep endpoints read them. */ headers?: Record<string, string>; raw?: string };
 export type Output = { status?: number; body: unknown };
 export type Handler = (i: Input) => Promise<Output>;
 
@@ -86,6 +88,36 @@ export const handlers: Record<string, Handler> = {
   },
 
   /** The proof graph of an envelope: every signed record behind it, with what a browser needs to check each one. */
+  /** Every call the gateway made to PayPal for this envelope, and the events PayPal reported about it. */
+  "GET /api/envelopes/:id/paypal": async ({ params }) => {
+    const t = await S.paypalTrail(params.id!);
+    return t ? { body: t } : { status: 404, body: { error: "No such envelope." } };
+  },
+
+  /** The owner takes back a payout nobody claimed: PayPal cancels it and the capture is refunded. */
+  "POST /api/spends/:id/recall": async ({ params, body }) => {
+    const b = z.object({ signed: z.object({ request: z.any(), sig: z.string(), by: z.string().regex(KEY) }) }).parse(body);
+    const s = await S.recall(params.id!, b.signed as never);
+    return { status: s.status === "FAILED" && s.refundId ? 200 : 202, body: { status: s.status, spendId: s.id, refundId: s.refundId, payoutStatus: s.payoutStatus, reasons: withMeaning(s.reasons) } };
+  },
+
+  /** PayPal reports something. Verified with PayPal, applied once, and only ever as a reason to ask PayPal by id. */
+  "POST /api/paypal/webhook": async ({ body, headers, raw }) => {
+    const ev = z.object({ id: z.string().min(1).max(100), event_type: z.string().min(1).max(100), resource: z.record(z.string(), z.unknown()).optional() }).safeParse(body);
+    if (!ev.success) return { status: 400, body: { error: "Not a PayPal event." } };
+    const genuine = await S.genuineEvent(headers ?? {}, raw ?? JSON.stringify(body));
+    if (genuine === "unconfigured") return { status: 503, body: { error: "No webhook id is configured (PAYPAL_WEBHOOK_ID), so events cannot be verified and are not accepted." } };
+    if (genuine === "no") return { status: 401, body: { error: "PayPal did not confirm this event." } };
+    return { body: await S.applyPayPalEvent(ev.data, "webhook") };
+  },
+
+  /** Move along everything unfinished. For a scheduler: with CRON_SECRET set, it must be presented as a bearer token. */
+  "POST /api/sweep": async ({ headers }) => {
+    const secret = process.env.CRON_SECRET;
+    if (secret && headers?.authorization !== `Bearer ${secret}`) return { status: 401, body: { error: "Not authorized." } };
+    return { body: await S.sweepUnfinished() };
+  },
+
   "GET /api/proof/:root": async ({ params }) => {
     const g = await proof(params.root!);
     return g ? { body: g } : { status: 404, body: { error: "No such envelope." } };
@@ -301,8 +333,10 @@ export function match(method: string, path: string): { handler: Handler; params:
 export async function run(handler: Handler, input: Input): Promise<{ status: number; body: unknown }> {
   try {
     const out = await handler(input);
+    await flushJournal(); // records of PayPal calls made during this request
     return { status: out.status ?? 200, body: out.body };
   } catch (e) {
+    await flushJournal().catch(() => undefined);
     const { UserFacingError } = await import("../errors");
     if (e instanceof UserFacingError) return { status: e.status, body: { error: e.message } };
     if (e instanceof z.ZodError) return { status: 400, body: { error: "Invalid request", issues: e.issues.map((i) => i.path.join(".") + ": " + i.message) } };

@@ -150,7 +150,8 @@ export type ChargeRequest = { v: typeof CHARGE_VERSION; card: string; merchant: 
 export type SignedCharge = { request: ChargeRequest; sig: string };
 export type CardCancelRequest = { v: typeof CARD_CANCEL_VERSION; card: string; nonce: string; at: string };
 export type SignedCardCancel = { request: CardCancelRequest; sig: string; by: string };
-export type ReadRequest = { v: typeof READ_VERSION; what: "treasury" | "demo"; subject: string; nonce: string; at: string };
+/** A request only the owner can make: read their books ("treasury"), drive the built-in agents on their envelope ("demo"), or take back a payout nobody claimed ("recall", subject = the payment's id). */
+export type ReadRequest = { v: typeof READ_VERSION; what: "treasury" | "demo" | "recall"; subject: string; nonce: string; at: string };
 export type SignedRead = { request: ReadRequest; sig: string; by: string };
 export type TransferRequest = { v: typeof TRANSFER_VERSION; from: string; kind: "pay" | "withdraw"; amount: number; currency: string; payee: string; purpose: string; memo: string; nonce: string; at: string };
 export type SignedTransfer = { request: TransferRequest; sig: string };
@@ -171,7 +172,7 @@ export type Reason =
   | "NO_BALANCE_ACCOUNT" | "INSUFFICIENT_BALANCE" | "ACCOUNT_FROZEN" | "OVER_ACCOUNT_LIMIT" | "OVER_DAILY_LIMIT"
   | "UNKNOWN_CARD" | "NOT_THE_MERCHANT" | "CARD_CANCELLED" | "CARD_EXPIRED" | "CARD_USED_UP" | "OVER_CARD_LIMIT" | "CHARGE_TOO_SOON"
   | "UNKNOWN_ROOT" | "ROOT_NOT_FUNDED" | "REVOKED" | "REPLAY" | "OVER_ENVELOPE_LIMIT" | "OVER_ANCESTOR_LIMIT" | "FORKED_BLOCK"
-  | "PAYPAL_CAPTURE_FAILED" | "PAYPAL_PAYOUT_FAILED";
+  | "PAYPAL_CAPTURE_FAILED" | "PAYPAL_PAYOUT_FAILED" | "RECALLED_BY_OWNER";
 
 export type Violation = { code: Reason; at: string | null; detail: string };
 

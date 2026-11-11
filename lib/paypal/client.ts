@@ -41,8 +41,16 @@ export function paypalBaseUrl(env: "sandbox" | "live"): string {
   return env === "live" ? "https://api-m.paypal.com" : "https://api-m.sandbox.paypal.com";
 }
 
+/** One call to PayPal, as seen by an observer (lib/paypal/journal.ts). Bodies are passed so ids and amounts can be read; they are never stored. */
+export type CallRecord = { method: string; path: string; requestId: string | null; status: number; ms: number; debugId: string | null; request: unknown; response: unknown };
+let observer: ((c: CallRecord) => void) | null = null;
+/** Called after every request to PayPal, successful or not. One observer at a time. */
+export function setPayPalObserver(fn: ((c: CallRecord) => void) | null) { observer = fn; }
+
 type RequestOptions = {
   body?: unknown;
+  /** A JSON body already serialized, sent byte for byte (webhook verification needs the event exactly as PayPal sent it). */
+  rawBody?: string;
   /** multipart/form-data body (e.g. Disputes provide-evidence). Mutually exclusive with body. */
   form?: FormData;
   requestId?: string;
@@ -124,13 +132,21 @@ export class PayPalClient {
       headers["PayPal-Mock-Response"] = JSON.stringify({ mock_application_codes: opts.mockResponse });
     }
     const qs = opts.query ? `?${new URLSearchParams(opts.query).toString()}` : "";
-    const res = await this.fetchImpl(`${this.baseUrl}${path}${qs}`, {
-      method,
-      headers,
-      body: opts.form ?? (opts.body === undefined ? undefined : JSON.stringify(opts.body)),
-    });
+    const t0 = Date.now();
+    const seen = (status: number, debugId: string | null, response: unknown) => {
+      try { observer?.({ method, path, requestId: opts.requestId ?? null, status, ms: Date.now() - t0, debugId, request: opts.body ?? null, response }); } catch { /* an observer must never break a payment */ }
+    };
+    let res: Response;
+    try {
+      res = await this.fetchImpl(`${this.baseUrl}${path}${qs}`, {
+        method,
+        headers,
+        body: opts.form ?? opts.rawBody ?? (opts.body === undefined ? undefined : JSON.stringify(opts.body)),
+      });
+    } catch (e) { seen(0, null, { name: "NETWORK_ERROR", message: String(e).slice(0, 200) }); throw e; }
     const text = await res.text();
     const json = text ? safeJson(text) : {};
+    seen(res.status, res.headers.get("paypal-debug-id") ?? (json as { debug_id?: string }).debug_id ?? null, json);
     if (!res.ok) {
       const j = json as { name?: string; message?: string; details?: Array<{ issue?: string; description?: string }>; debug_id?: string };
       const issue = j.details?.[0]?.issue;
