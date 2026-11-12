@@ -340,6 +340,26 @@ const ACT_TOOLS: Tool[] = [
     },
   },
   {
+    name: "envelope_refund",
+    description: "Give back, in full, one payment THIS agent received and kept in its balance (for example when it will not do the work after all). The balance is debited and PayPal refunds the capture to the person who paid. Only possible while the money is still in the balance. It cannot be undone.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        payment: { type: "string", description: "The payment's id, e.g. sp_… or pr_… (see envelope_balance for income entries)" },
+        memo: { type: "string", description: "Why it is being returned" },
+      },
+      required: ["payment"],
+      additionalProperties: false,
+    },
+    async run(a) {
+      const agent = await me();
+      const r = await attempt(() => agent.refund(text(a.payment, "payment", 60), { memo: typeof a.memo === "string" ? a.memo.slice(0, 140) : undefined }));
+      if (r.refused) throw new Refused(`${r.refused.outcome ?? "REFUSED"}. ${r.refused.outcome === "DENIED" ? "Nothing moved." : "The money is back in the balance."} ${r.refused.reasons.map((x) => `${x.code}: ${x.meaning ?? ""} (${x.detail})`).join("; ")}`);
+      const o = r.ok!;
+      return o.status === "REFUNDED" ? `REFUNDED: PayPal refunded the capture to the payer (refund ${o.refundId}). Balance now ${usd(o.balanceMinor ?? 0)}.` : `PENDING: the balance is debited (now ${usd(o.balanceMinor ?? 0)}); PayPal has not confirmed the refund yet and will be asked again.`;
+    },
+  },
+  {
     name: "envelope_card_issue",
     description: "Issue a card on THIS agent's own balance so that ONE merchant can charge it: for a subscription or a metered service. You set the most it may take per charge, how many charges it allows in total, the least time between charges (the billing period) and how long the card lives. When the charges are used up or the date passes, the card ends by itself: to subscribe for two months, allow two charges. Only the merchant's own key can charge it, so the card's details are not a secret. No one's bank card is involved. The merchant must have an account (acct:xxxx-xxxx-xxxx).",
     inputSchema: {
@@ -383,7 +403,7 @@ const ACT_TOOLS: Tool[] = [
 
 /** What a client may assume about a tool without calling it (MCP tool annotations). */
 const READ = new Set(READ_TOOLS.map((t) => t.name));
-const IRREVERSIBLE = new Set(["envelope_pay", "envelope_keep", "envelope_accept", "envelope_transfer", "envelope_card_cancel"]);
+const IRREVERSIBLE = new Set(["envelope_pay", "envelope_keep", "envelope_accept", "envelope_transfer", "envelope_refund", "envelope_card_cancel"]);
 const annotations = (name: string) => (READ.has(name)
   ? { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
   : { readOnlyHint: false, destructiveHint: IRREVERSIBLE.has(name), idempotentHint: false, openWorldHint: true });

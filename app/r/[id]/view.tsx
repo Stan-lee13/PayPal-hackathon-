@@ -23,6 +23,7 @@ function Bars({ id }: { id: string }) {
 export function ReceiptView({ id }: { id: string }) {
   const [d, setD] = useState<Data | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [evidence, setEvidence] = useState<{ summary: string; proves: string } | null>(null);
   const [local, setLocal] = useState<Array<{ name: string; ok: boolean }> | null>(null);
 
   useEffect(() => {
@@ -112,6 +113,13 @@ export function ReceiptView({ id }: { id: string }) {
           <div className="flex flex-wrap items-center justify-between gap-3 border-b-[1.5px] border-ink pb-3"><h2 className="title text-2xl">Checked against PayPal just now</h2><Stamp tone={d.ok ? "green" : "red"} land>{d.ok ? "All checks pass" : "Mismatch"}</Stamp></div>
           <p className="mt-3 text-sm text-ink-2">The gateway asked PayPal for the capture and the payout by id and compared them with this receipt.</p>
           <ul className="mt-2 text-[.92rem]">{d.checks.map((c, i) => <Check key={i} {...c} />)}</ul>
+          <p className="mt-3 text-xs leading-relaxed text-ink-2">If the payer ever disputes this payment at PayPal, the gateway answers with the payer&rsquo;s own signature on the envelope and every signature between it and this payment. <button type="button" className="link" data-testid="evidence-link" onClick={async () => { const r = await api(`/api/spends/${id}/evidence`); setEvidence(r.ok ? { summary: r.json.summary, proves: r.json.whatItProves } : { summary: r.json?.error ?? "The evidence could not be put together just now.", proves: "" }); }}>Show what would be sent</button></p>
+          {evidence && (
+            <div className="mt-3" data-testid="evidence">
+              <pre className="code max-h-72 overflow-auto whitespace-pre-wrap p-3 text-[.7rem] leading-relaxed">{evidence.summary}</pre>
+              {evidence.proves && <p className="mt-2 text-xs leading-relaxed text-ink-3">{evidence.proves}</p>}
+            </div>
+          )}
         </section>
 
         <section>

@@ -282,6 +282,36 @@ d("@envelope/sdk against the gateway (simulated PayPal)", () => {
     await ada.close(root.id);
   });
 
+  it("an agent gives a payment back, and the books can be read against PayPal's own", async () => {
+    const giver = await Agent.generate({ gateway, label: "giver-agent" });
+    const keeper = await Agent.generate({ gateway, label: "keeper-agent" });
+    await keeper.openAccount({ owner: bea, settleTo: "bea@example.com", hold: true });
+    const { chain, root } = await ada.seal({ to: giver.identity, limit: "40.00", perPayment: "40.00", payees: [keeper.payee], purposes: ["research"], hours: 1 });
+    await giver.hold(chain);
+    const paid = await giver.pay({ amount: "25.00", payee: keeper.payee, purpose: "research" });
+    expect((await keeper.balance())?.minor).toBe(2500);
+    // only the agent that was paid can give it back
+    expect((await refused(giver.refund(paid.spendId))).codes).toEqual(["NOT_THE_HOLDER"]);
+    const back = await keeper.refund(paid.spendId, { memo: "Cannot take this on" });
+    expect(back).toMatchObject({ status: "REFUNDED", balanceMinor: 0 });
+    expect(back.refundId).toBeTruthy();
+    expect(await getStatus(gateway, paid.spendId)).toMatchObject({ status: "FAILED", delivered: false, refundId: back.refundId });
+    // the owner has the money back; that part of the hold stays used, as it does at PayPal
+    expect((await giver.authority()).availableMinor).toBe(1500);
+    expect((await gateway.envelope(root.id)).root).toMatchObject({ capturedMinor: 0, refundedMinor: 2500 });
+
+    const books = await gateway.books();
+    expect(books.checks.every((c) => c.ok)).toBe(true);
+    expect(books.reserves.covered).toBe(true);
+    const st = await gateway.statement();
+    expect(st.ok).toBe(true);
+    expect(st.matches.find((m) => m.spend === paid.spendId)).toMatchObject({ what: "capture", verdict: "listed", amountMinor: 2500 });
+    const ev = await gateway.evidence(paid.spendId);
+    expect(ev.chainVerifies).toBe(true);
+    expect(ev.summary).toContain(paid.paypal!.captureId!);
+    await ada.close(root.id);
+  });
+
   it("the owner reads their own books, revokes a sub-envelope and closes the root", async () => {
     const t = await ada.treasury();
     expect(t).toBeTruthy();

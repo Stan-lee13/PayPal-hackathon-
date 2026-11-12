@@ -20,6 +20,6 @@ export type * from "./types";
 /** The protocol itself: every signing and verifying function, with no network and no dependencies. */
 export * as protocol from "../../lib/envelope/core";
 export { verifyChain, accountPayee, accountNumber, isAccountPayee, fingerprint as keyFingerprint, generateKeyPair, importPrivateJwk, exportPrivateJwk } from "../../lib/envelope/core";
-export type { Caps, Block, BlockBody, Envelope, KeyPair, Violation, Reason, ChainVerdict, SignedSpend, SignedPromise, SignedHello, SignedAccept, SignedKeep, SignedTransfer, SignedCard, SignedCharge, SignedAccount, SignedRevoke, SignedRead, SignedFreeze, SignedCardCancel } from "../../lib/envelope/core";
+export type { Caps, Block, BlockBody, Envelope, KeyPair, Violation, Reason, ChainVerdict, SignedSpend, SignedPromise, SignedHello, SignedAccept, SignedKeep, SignedTransfer, SignedCard, SignedCharge, SignedAccount, SignedRevoke, SignedRead, SignedFreeze, SignedCardCancel, SignedRefund } from "../../lib/envelope/core";
 
 export const VERSION = "0.1.0";

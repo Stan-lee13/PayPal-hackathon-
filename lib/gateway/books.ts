@@ -11,9 +11,9 @@
  *
  * No model output is read anywhere in this file.
  */
-import { and, desc, eq, gt, inArray, isNotNull, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNotNull, lte, sql } from "drizzle-orm";
 import { getDb } from "../db";
-import { accounts, roots, spends, type Spend } from "../db/schema";
+import { accounts, ledger, roots, spends, type Spend } from "../db/schema";
 import * as E from "../envelope/core";
 import { UserFacingError } from "../errors";
 import { formatMoney } from "../money";
@@ -39,7 +39,11 @@ export function forgetBalance() { lastBalance = null; }
 /**
  * What the gateway owes, against what PayPal says it holds. Owed: every agent's balance, plus captures
  * the owner is due back (a payout failed and PayPal has not yet accepted the refund). Held: the
- * available balance PayPal's Reporting API gives for the gateway's account. `covered` is null when
+ * available balance PayPal's Reporting API gives for the gateway's account.
+ *
+ * PayPal dates its figure ("as of"), and that date can be hours old. Comparing an old balance with what
+ * is owed this second would raise false alarms, so the comparison is made at PayPal's own moment: what
+ * was owed then is summed from the ledger, whose every entry carries its time. `covered` is null when
  * PayPal could not be asked.
  */
 export async function reserves(currency = "USD") {
@@ -50,12 +54,15 @@ export async function reserves(currency = "USD") {
   ]);
   const balances = bal[0]?.total ?? 0, refundsDue = due[0]?.total ?? 0, owed = balances + refundsDue;
   const paypal = await paypalBalance(currency);
+  // Like for like: what was owed at the moment PayPal dates its figure, from the ledger. (That balances equal the ledger is its own check, in the books.)
+  const asOf = paypal?.asOf ? new Date(paypal.asOf) : null;
+  const owedThen = asOf ? ((await db.select({ total: sql<number>`coalesce(sum(${ledger.deltaMinor}), 0)::int` }).from(ledger).where(lte(ledger.createdAt, asOf)))[0]?.total ?? 0) + refundsDue : owed;
   return {
     mode: paypalMode(), currency,
-    owed: { balancesMinor: balances, accountsWithMoney: bal[0]?.n ?? 0, refundsDueMinor: refundsDue, totalMinor: owed },
+    owed: { balancesMinor: balances, accountsWithMoney: bal[0]?.n ?? 0, refundsDueMinor: refundsDue, totalMinor: owed, atPayPalsTimeMinor: owedThen },
     paypal: paypal ? { availableMinor: paypal.availableMinor, totalMinor: paypal.totalMinor, withheldMinor: paypal.withheldMinor, asOf: paypal.asOf } : null,
-    covered: paypal ? paypal.availableMinor >= owed : null,
-    surplusMinor: paypal ? paypal.availableMinor - owed : null,
+    covered: paypal ? paypal.availableMinor >= owedThen : null,
+    surplusMinor: paypal ? paypal.availableMinor - owedThen : null,
   };
 }
 

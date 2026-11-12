@@ -21,6 +21,7 @@
  *   npx tsx scripts/agent.ts transfer --as <agent> --payee acct:xxxx-xxxx-xxxx --amount 12 --purpose proofreading   (or a PayPal address)
  *   npx tsx scripts/agent.ts withdraw --as <agent> --amount 20                      (to the owner's PayPal address)
  *   npx tsx scripts/agent.ts freeze   --as <owner> --agent <agent>                  (and: unfreeze)
+ *   npx tsx scripts/agent.ts refund   --as <agent> <payment id> --memo "why"       (give back a payment it kept: PayPal refunds the capture to the payer)
  *   npx tsx scripts/agent.ts books
  *
  * A card (the agent lets ONE merchant charge its balance, within limits, and it ends by itself):
@@ -143,6 +144,20 @@ switch (cmd) {
     const r = await attempt(() => me.openAccount({ owner, ownerName: args["owner-name"] ?? args.owner!, settleTo: need("settle-to"), hold, ...(args["per-payment"] ? { perPayment: cents(args["per-payment"]) } : {}) }), "Refused");
     const a = r.ok!;
     console.log(`${args.as} can now be paid as ${a.payee} (account ${a.account}). ${a.holds ? `Income stays in its balance${a.perPaymentMinor ? `; it may pay at most ${usd(a.perPaymentMinor)} at once` : ""}. Withdrawals go to ${a.settlesTo}.` : `Income settles to ${a.settlesTo}.`}`);
+    break;
+  }
+  case "refund": {
+    // The agent that was paid gives one payment back. Its balance is debited and PayPal refunds the capture to the owner who paid.
+    const me = await agentNamed(need("as"));
+    const id = rest[0] ?? need("payment");
+    const r = await attempt(() => me.refund(id, { memo: args.memo }), "Gateway error");
+    if (r.refused) {
+      console.log(`${r.refused.outcome ?? "REFUSED"}. ${r.refused.outcome === "DENIED" ? "Nothing moved." : "The money is back in the balance."}`);
+      printReasons(r.refused.reasons);
+      process.exit(3);
+    }
+    const o = r.ok!;
+    console.log(o.status === "REFUNDED" ? `REFUNDED: PayPal refunded the capture to the payer (refund ${o.refundId}). Balance now ${usd(o.balanceMinor ?? 0)}.` : `PENDING: the balance is debited (now ${usd(o.balanceMinor ?? 0)}); PayPal has not confirmed the refund yet and will be asked again.`);
     break;
   }
   case "transfer":

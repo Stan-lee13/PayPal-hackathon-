@@ -137,10 +137,26 @@ const wd = await B.transfer(await E.signTransfer(wr!, { kind: "withdraw", amount
 log("writer-agent withdrew $20 to its owner: a real PayPal payout", { status: wd.status, payoutBatch: wd.transfer?.payoutBatchId, payoutStatus: wd.transfer?.payoutStatus, sentTo: wd.transfer?.payoutTo ? G.maskEmail(wd.transfer.payoutTo) : null, writerBalance: usd(wd.balanceMinor), reasons: wd.reasons.map((r) => r.code) });
 const out2 = await B.transfer(await E.signTransfer(ed!, { amount: 500, payee: designer, purpose: "design", memo: "Header image" }));
 log("editor-agent paid $5 of what it was paid to a PayPal address: a real PayPal payout", { status: out2.status, payoutBatch: out2.transfer?.payoutBatchId, payoutStatus: out2.transfer?.payoutStatus, editorBalance: usd(out2.balanceMinor), reasons: out2.reasons.map((r) => r.code) });
+// A refund. buyer-agent pays writer-agent a $6 deposit for a second piece; writer-agent decides not to take it on and
+// gives the deposit back. Its balance is debited and PayPal refunds the capture to the payer. Then the same $6 is asked
+// for again: PayPal does not return a refunded capture to the hold, so the gateway refuses before PayPal would.
+const K = await import("../lib/gateway/books");
+const { getCapture: readCapture } = await import("../lib/paypal/payments");
+const deposit = await G.spend(await E.signSpend(chain2, buyer!, { amount: 600, payee: writer, purpose: "writing", memo: "Deposit for a second piece" }));
+let buyerTried = "refused";
+{ const r = await B.refund(await E.signRefund(buyer!, deposit.spend!.id)); buyerTried = r.status === "DENIED" ? `refused: ${r.reasons.map((x) => x.code).join(", ")}` : "NOT REFUSED"; }
+const given = await B.refund(await E.signRefund(wr!, deposit.spend!.id, "Cannot take the second piece on"));
+const after2 = (await G.tree(root2.id))!.root;
+log("writer-agent gave a $6 deposit back: its balance was debited and PayPal refunded the capture to the payer; the payer's own agent could not make it do so", {
+  paid: deposit.status, capture: deposit.spend?.captureId, payerTriedToRefundIt: buyerTried, status: given.status, refund: given.refundId, reason: given.reasons[0]?.code ?? null,
+  captureAtPayPal: (await readCapture(pp, deposit.spend!.captureId!).catch(() => null))?.status ?? "not readable", writerBalance: usd(given.balanceMinor), chargedToOwner: usd(after2.capturedMinor), refundedToOwner: usd(after2.refundedMinor),
+});
+const again = await G.spend(await E.signSpend(chain2, buyer!, { amount: 600, payee: writer, purpose: "writing", memo: "Would only fit if the refund gave hold capacity back" }));
+log("the refunded $6 is not spendable again: $50 + $6 of the $60 hold are used at PayPal, so a further $6 is refused by the gateway's own arithmetic", { status: again.status, reasons: again.reasons.map((r) => r.code), capture: again.spend?.captureId ?? null });
 const { root: closed2 } = await G.revoke(await E.signRevoke(dee!, root2.id));
-log("the second owner closed the envelope: PayPal released what was not spent", { captured: usd(closed2.capturedMinor), released: usd(closed2.releasedMinor), authorizationStatus: (await getAuthorization(pp, root2.authorizationId!)).status });
+log("the second owner closed the envelope: PayPal released what was not spent", { captured: usd(closed2.capturedMinor), refunded: usd(closed2.refundedMinor), released: usd(closed2.releasedMinor), authorizationStatus: (await getAuthorization(pp, root2.authorizationId!)).status });
 const pos = await B.position();
-log("the books", { paidIn: usd(pos.totals.capturedInMinor), paidOut: usd(pos.totals.paidOutMinor), heldForAgents: usd(pos.totals.balancesMinor), movedBetweenAgents: usd(pos.totals.bookTransferredMinor), balances: Object.fromEntries(pos.accounts.filter((a) => a.mode === "hold").map((a) => [a.label, usd(a.balanceMinor)])), checks: pos.checks.map((c) => `${c.ok ? "ok" : "FAIL"} ${c.name}`) });
+log("the books", { paidIn: usd(pos.totals.capturedInMinor), paidOut: usd(pos.totals.paidOutMinor), refunded: usd(pos.totals.refundedMinor), heldForAgents: usd(pos.totals.balancesMinor), movedBetweenAgents: usd(pos.totals.bookTransferredMinor), balances: Object.fromEntries(pos.accounts.filter((a) => a.mode === "hold").map((a) => [a.label, usd(a.balanceMinor)])), checks: pos.checks.map((c) => `${c.ok ? "ok" : "FAIL"} ${c.name}`) });
 for (const t of [wd, out2]) if (t.transfer?.payoutBatchId) {
   let u = (await B.syncTransfer(t.transfer.id))!;
   const seen = [u.payoutStatus];
@@ -200,6 +216,21 @@ const sweep = await S.sweepUnfinished();
 log("sweep: every unfinished payment and transfer in this database was put to PayPal", { checked: sweep.checked, moved: sweep.moved, eventsFromPayPalFeed: sweep.events.seen });
 const { root: closed3 } = await G.revoke(await E.signRevoke(fay!, root3.id));
 log("third envelope closed", { captured: usd(closed3.capturedMinor), released: usd(closed3.releasedMinor), authorizationStatus: (await getAuthorization(pp, root3.authorizationId!)).status });
+
+// The books against PayPal's own: the balance its Reporting API gives for the gateway's account, its statement of that
+// account (Transaction Search), and what its Disputes API says about this account.
+const res = await K.reserves();
+log("reserves: what agents are owed against the balance PayPal reports for the gateway's account", {
+  owedToAgents: usd(res.owed.balancesMinor), refundsDue: usd(res.owed.refundsDueMinor), paypalAvailable: res.paypal ? usd(res.paypal.availableMinor) : "not answered", paypalAsOf: res.paypal?.asOf ?? null,
+  owedAtThatMoment: usd(res.owed.atPayPalsTimeMinor), covered: res.covered, note: "the sandbox account also holds test money from earlier runs; PayPal's figure is dated, and is compared with what was owed at that moment",
+});
+const stmt = await K.statement(6);
+log("PayPal's own statement (Transaction Search), last six hours, against the captures and payouts recorded here", {
+  paypalLines: stmt.paypalLines, ourRecords: stmt.ours, listedWithTheSameAmount: stmt.listed, amountDiffers: stmt.differs, notListedYet: stmt.notListedYet, linesNotFromThisDatabase: stmt.otherActivity,
+  note: "PayPal says its statement can lag by up to three hours, so records made in this run are usually not listed yet; scripts/statement-check.ts asks again later",
+});
+const swept = await S.sweepUnfinished();
+log("disputes: PayPal was asked for every dispute against the account", { asked: swept.disputes.asked, disputesAtPayPal: swept.disputes.atPayPal, aboutPaymentsHere: swept.disputes.aboutPaymentsHere.length });
 
 // What PayPal did, call by call, for each envelope: read back from the gateway's record of its own PayPal calls.
 for (const [name, r] of [["first", root], ["second", root2], ["third", root3]] as const) {

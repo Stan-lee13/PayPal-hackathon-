@@ -64,7 +64,7 @@ export async function ensureCounterparty() {
  */
 /** DEMO: a "month" on the demo subscription, so two billing periods fit in a visit. */
 export const DEMO_PERIOD_SECONDS = 30;
-export const BANK_ACTIONS = ["pay-proofreader", "withdraw", "drain", "freeze", "unfreeze", "card-subscribe", "card-charge", "card-overcharge", "card-thief", "card-cancel"] as const;
+export const BANK_ACTIONS = ["pay-proofreader", "withdraw", "drain", "refund", "freeze", "unfreeze", "card-subscribe", "card-charge", "card-overcharge", "card-thief", "card-cancel"] as const;
 export type BankAction = (typeof BANK_ACTIONS)[number];
 export async function bankAct(action: BankAction) {
   const cp = await ensureCounterparty();
@@ -74,6 +74,13 @@ export async function bankAct(action: BankAction) {
     return { action, narration: action === "freeze" ? "Bea signed a freeze. Nothing can leave translator-agent's balance until she lifts it." : "Bea lifted the freeze.", status: a.frozenAt ? "FROZEN" : "OPEN", reasons: [] as E.Violation[], balanceMinor: a.balanceMinor, transferId: null as string | null };
   }
   if (action.startsWith("card-")) return cardAct(action, tr.key, cp);
+  if (action === "refund") {
+    // Give back the most recent payment it still holds: its balance is debited and PayPal refunds the capture to the payer.
+    const last = await getDb().query.spends.findFirst({ where: and(eq(spends.payeeAgent, tr.key.publicKey), eq(spends.status, "PAID"), eq(spends.payoutStatus, "HELD_IN_ACCOUNT")), orderBy: desc(spends.createdAt) });
+    if (!last) return { action, narration: "translator-agent has no payment in its balance to give back.", status: "DENIED", reasons: [{ code: "NOT_REFUNDABLE", at: null, detail: "nothing it was paid is still refundable" }] as E.Violation[], balanceMinor: null as number | null, transferId: null as string | null };
+    const r = await B.refund(await E.signRefund(tr.key, last.id, "Returning the fee"));
+    return { action, narration: `translator-agent signed a refund of the $${(last.amountMinor / 100).toFixed(2)} it was paid by ${last.leafLabel}.`, status: r.status as string, reasons: r.reasons, balanceMinor: r.balanceMinor, transferId: null as string | null };
+  }
   const acct = (await getDb().query.accounts.findFirst({ where: eq(accounts.agent, tr.key.publicKey) }))!;
   const signed =
     action === "pay-proofreader" ? await E.signTransfer(tr.key, { amount: 1200, payee: cp.proofreader.payee, purpose: "proofreading", memo: "Proofread the Spanish strings" })

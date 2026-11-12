@@ -25,9 +25,11 @@ const page = await ctx.newPage();
 const logs = [];
 page.on("console", (m) => { if (m.type() === "error" || m.type() === "warning") logs.push(`[${m.type()}] ${m.text().slice(0, 400)}`); });
 page.on("pageerror", (e) => logs.push(`[pageerror] ${String(e).slice(0, 600)}`));
+if (process.env.E2E_DEBUG) { const t0 = Date.now(); page.on("console", (m) => console.log(`  ${((Date.now() - t0) / 1000).toFixed(1)}s ${m.text().slice(0, 240)}`)); }
 page.on("requestfailed", (r) => logs.push(`[requestfailed] ${r.url()} ${r.failure()?.errorText}`));
 const T = { timeout: 60000 };
 try {
+  const health0 = await (await fetch(`${BASE}/api/health`)).json().catch(() => ({}));
   await page.goto(`${BASE}/console`);
   console.log("gateway mode:", await page.evaluate(() => document.documentElement.dataset.gateway));
   await page.getByText(/Signed with your key [A-Za-z0-9_-]{6}…/).waitFor(T);
@@ -102,14 +104,24 @@ try {
   await page.goto(`${BASE}/bank`);
   await page.getByTestId("bank-checks").getByText("Books balance").waitFor(T);
   await page.getByTestId("bank-accounts").getByText("proofreader-agent").waitFor(T);
+  // the books against PayPal's own: its reported balance covers what agents are owed, and its statement agrees with ours
+  await page.getByTestId("bank-reserves").getByText("Covered at PayPal").waitFor(T);
+  if (health0.paypalMode === "simulated") {
+    await page.getByTestId("bank-statement").getByRole("button", { name: "Compare with PayPal" }).click();
+    await page.getByTestId("bank-statement").getByText("No disagreement.").waitFor(T);
+  }
   if (OUT) await page.screenshot({ path: `${OUT}/local-3c-bank.png`, fullPage: true }).catch(() => {});
-  console.log("the books balance");
+  console.log("the books balance; PayPal's reported balance covers what agents are owed" + (health0.paypalMode === "simulated" ? "; PayPal's statement agrees with every capture and payout" : ""));
   await page.goto(envelopeUrl);
   await page.getByText("PayPal hold backing this envelope").waitFor(T);
   // receipt of the promise that was paid
   await page.getByRole("link", { name: "Receipt & authority chain →" }).last().click();
   await page.getByText("All checks pass").waitFor(T);
   await page.getByText("Signatures valid").waitFor(T);
+  // PayPal's Disputes API was asked about this capture, and the evidence the gateway would answer a dispute with can be read
+  await page.getByText("PayPal holds no dispute against this capture").waitFor(T);
+  await page.getByTestId("evidence-link").click();
+  await page.getByTestId("evidence").getByText(/This payment was made by software acting inside limits the payer signed/).waitFor(T);
   if (OUT) await page.screenshot({ path: `${OUT}/local-4-receipt.png`, fullPage: true }).catch(() => {});
   console.log("receipt verified");
   await page.goBack();
@@ -176,6 +188,7 @@ try {
   await p2.getByText("can be paid").first().waitFor(T);
   if (OUT) await p2.screenshot({ path: `${OUT}/local-5-console.png`, fullPage: true }).catch(() => {});
   console.log("second tab: console lists the envelope and the receiving agent");
+  await p2.close();
   // What PayPal did, and a recall. The recall runs on the simulator only: PayPal's sandbox does not complete a cancel (see the README).
   const health = await (await fetch(`${BASE}/api/health`)).json().catch(() => ({}));
   if (health.paypalMode === "simulated") {
@@ -197,6 +210,16 @@ try {
     await rail.getByText("Cancelled an unclaimed payout").waitFor(T);
     await rail.getByText("Refunded a capture").waitFor(T);
     if (OUT) await page.screenshot({ path: `${OUT}/local-9-recall.png`, fullPage: true }).catch(() => {});
+    // a refund: translator-agent gives back the $45 it was just paid from this envelope; PayPal refunds the capture
+    const here = page.url();
+    await page.getByTestId("statement").getByRole("link", { name: /translator-agent/ }).first().click();
+    await page.getByTestId("bank-actions").getByRole("button", { name: "Give its last payment back" }).click();
+    await page.getByTestId("bank-result").getByText("Refunded by PayPal.").waitFor(T);
+    await page.goto(here);
+    await page.getByTestId("statement").getByText("Refunded by the payee").waitFor(T);
+    await page.getByTestId("refunded").getByText(/\$112\.00 was captured and then refunded/).waitFor(T);
+    await page.getByTestId("paypal-rail").getByText("Refunded a capture").first().waitFor(T);
+    console.log("refund: the agent that was paid gave $45 back; PayPal refunded the capture; the envelope shows $112 refunded and not spendable again");
     console.log("paypal record: hold, captures and payout listed; an unclaimed payout recalled by the owner: cancelled at PayPal, capture refunded");
   }
 } catch (e) {

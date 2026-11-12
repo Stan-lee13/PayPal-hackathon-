@@ -56,9 +56,19 @@ d("the books against PayPal's (simulated PayPal)", async () => {
     expect(await fresh()).toMatchObject({ owed: { totalMinor: 5000 }, paypal: { availableMinor: 5000 }, covered: true });
     expect((await B.transfer(await E.signTransfer(w.wr, { kind: "withdraw", amount: 2000 }))).status).toBe("PAID");
     expect(await fresh()).toMatchObject({ owed: { totalMinor: 3000 }, paypal: { availableMinor: 3000 }, covered: true, surplusMinor: 0 });
-    // if the ledger ever claimed more than PayPal holds, it would say so
-    await getDb().update(schema.accounts).set({ balanceMinor: 9000 }).where(eq(schema.accounts.agent, w.wr.publicKey));
-    expect(await fresh()).toMatchObject({ covered: false, surplusMinor: -6000 });
+    // PayPal dates its figure. More income arriving after that date is not a shortfall: the comparison is made at PayPal's moment.
+    const dated = await K.reserves(); // served from the figure read a moment ago
+    await new Promise((r) => setTimeout(r, 5200));
+    await w.earn(1000);
+    const later = await K.reserves();
+    expect(later.paypal!.asOf).toBe(dated.paypal!.asOf);
+    expect(later).toMatchObject({ owed: { totalMinor: 4000, atPayPalsTimeMinor: 3000 }, paypal: { availableMinor: 3000 }, covered: true });
+    expect(await fresh()).toMatchObject({ owed: { totalMinor: 4000 }, paypal: { availableMinor: 4000 }, covered: true, surplusMinor: 0 });
+    // if money ever left the PayPal account that the ledger knows nothing about, it would say so
+    const { getPayPal } = await import("../lib/paypal/client");
+    const { payout } = await import("../lib/paypal/payments");
+    await payout(getPayPal(), { spendId: "outside-the-books", receiverEmail: "someone@example.com", amountMinor: 1500, currency: "USD", note: "not on the ledger" });
+    expect(await fresh()).toMatchObject({ owed: { totalMinor: 4000 }, paypal: { availableMinor: 2500 }, covered: false, surplusMinor: -1500 });
   });
 
   it("the agent that was paid gives a payment back: balance debited once, PayPal refunds the capture, the owner's books follow", async () => {

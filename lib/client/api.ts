@@ -13,7 +13,12 @@ export async function api<T = any>(path: string, init: { method?: "GET" | "POST"
   const method = init.method ?? (init.body === undefined ? "GET" : "POST");
   if (gatewayInBrowser()) {
     const { dispatch } = await import("../local/router");
-    const out = await dispatch(method, path, init.body === undefined ? undefined : JSON.parse(JSON.stringify(init.body)));
+    // If the in-browser gateway has not answered in a while, the page says so (components/gateway-stall.tsx) rather than sit silent.
+    const slow = setTimeout(() => window.dispatchEvent(new Event("envelope:stalled")), 20_000);
+    let out: Awaited<ReturnType<typeof dispatch>>;
+    try { out = await dispatch(method, path, init.body === undefined ? undefined : JSON.parse(JSON.stringify(init.body))); }
+    finally { clearTimeout(slow); }
+    window.dispatchEvent(new Event("envelope:answered"));
     // Same shape a network round trip would give: dates become strings.
     return { ok: out.status >= 200 && out.status < 300, status: out.status, json: JSON.parse(JSON.stringify(out.body)) as T };
   }

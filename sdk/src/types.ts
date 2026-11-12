@@ -175,6 +175,26 @@ export type TransferOutcome = {
   status: TransferStatus; duplicate: boolean; transferId: string | null; reasons: GatewayReason[];
   balanceMinor: number | null; paypal: { payoutBatchId: string; payoutStatus: string | null } | null; receipt: TransferReceipt | null;
 };
+/** What became of a refund an agent asked for. REFUNDED: PayPal refunded the capture to the owner. PENDING: the balance is debited and PayPal will be asked again. */
+export type RefundOutcome = { status: "REFUNDED" | "PENDING" | "DENIED" | "FAILED"; spendId: string | null; refundId: string | null; reasons: GatewayReason[]; balanceMinor: number | null };
+/** What the gateway owes against what PayPal says it holds. `covered` is null when PayPal could not be asked. */
+export type Reserves = {
+  mode: string; currency: string;
+  owed: { balancesMinor: number; accountsWithMoney: number; refundsDueMinor: number; totalMinor: number; /** What was owed at the moment PayPal dates its balance: the figure `covered` compares with. */ atPayPalsTimeMinor: number };
+  paypal: { availableMinor: number; totalMinor: number; withheldMinor: number; asOf: string | null } | null;
+  covered: boolean | null; surplusMinor: number | null;
+};
+/** The gateway's records against PayPal's own statement of its account. PayPal's statement can lag by hours. */
+export type StatementCheck = {
+  mode: string; from: string; to: string; paypalLines: number; ours: number; listed: number; differs: number; notListedYet: number; otherActivity: number; ok: boolean;
+  matches: Array<{ paypalId: string; what: "capture" | "payout" | "refund"; spend: string; amountMinor: number; listedMinor: number | null; verdict: "listed" | "amount differs" | "not listed yet" }>;
+};
+/** What the gateway sends PayPal if a payer disputes a payment: the signed chain of authority, in words and in full. */
+export type Evidence = {
+  spend: string; amountMinor: number; currency: string; payee: string; purpose: string; summary: string; chainVerifies: boolean; payerKey: string;
+  paypal: { mode: string; authorizationId: string | null; captureId: string; payoutBatchId: string | null };
+  dispute: { id: string; status: string | null } | null; links: { proof: string; receipt: string }; whatItProves: string; [more: string]: unknown;
+};
 export type ChargeOutcome = {
   status: TransferStatus; duplicate: boolean; chargeId: string | null; reasons: GatewayReason[];
   card: { id: string; state: CardState; charges: number; maxCharges: number } | null;
@@ -191,8 +211,9 @@ export type ReceiptResponse = {
 export type Books = {
   mode: string;
   accounts: Array<{ agent: string; account: string; label: string; owner: string; mode: "settle" | "hold"; balanceMinor: number; frozen: boolean; perPaymentMinor: number | null }>;
-  totals: { accounts: number; holding: number; balancesMinor: number; capturedInMinor: number; paidOutMinor: number; bookTransfers: number; bookTransferredMinor: number };
+  totals: { accounts: number; holding: number; balancesMinor: number; capturedInMinor: number; paidOutMinor: number; refundedMinor: number; bookTransfers: number; bookTransferredMinor: number };
   checks: Check[];
+  reserves: Reserves;
 };
 
 /**
