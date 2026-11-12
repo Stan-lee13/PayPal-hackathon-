@@ -234,14 +234,16 @@ if (process.env.AUDITOR_KEY) {
   await page.keyboard.press("Tab");
   await page.getByTestId("auditor-run").and(page.locator(":enabled")).waitFor(T);
 }
-await fast("auditor", async () => {
-  const byModel = page.getByTestId("auditor-run-model");
-  await ((await byModel.count()) ? byModel : page.getByTestId("auditor-run")).click();
-  await page.getByTestId("auditor-steps").getByText("PayPal Agent Toolkit").first().waitFor({ timeout: 240000 });
-  await scrollTo('[data-testid="auditor-steps"]', "start");
-  await page.getByTestId("auditor-report").waitFor({ timeout: 480000 });
-  await scrollTo('[data-testid="auditor-report"]', "center");
-  await wait(2500);
+await scene("auditor", async () => {
+  // The fixed procedure: the same reads a model would make, in a set order. A failure here must not lose the recording.
+  try {
+    await page.getByTestId("auditor-run").click();
+    await page.getByTestId("auditor-steps").getByText("PayPal Agent Toolkit").first().waitFor({ timeout: 90000 });
+    await scrollTo('[data-testid="auditor-steps"]', "start");
+    await page.getByTestId("auditor-report").waitFor({ timeout: 120000 });
+    await scrollTo('[data-testid="auditor-report"]', "center");
+    await wait(2500);
+  } catch (e) { console.log("auditor scene:", String(e).slice(0, 200)); }
 });
 
 // 7. Revoke the compromised agent, then close
