@@ -14,6 +14,7 @@ const STEPS: Array<{ step: string; what: string; record: string; paypal: string;
   { step: "PayPal has the last word", what: "Nothing is called paid until PayPal says it arrived. Its own events finish a settlement; each is verified and applied once.", record: "PayPal's event, and the status read back from PayPal", paypal: "Webhooks · events" },
   { step: "Anyone can follow it", what: "Pick a payment and trace it to the owner's signature. Your browser checks every signature itself.", record: "The proof graph", paypal: "Capture · show" },
   { step: "The books are checked", what: "What agents are owed against PayPal's reported balance; every record against PayPal's own statement, fees included.", record: "Reserves and a statement match", paypal: "Reporting · Disputes", see: { href: "/bank", label: "The books" } },
+  { step: "An agent audits the agents", what: "The auditor asks PayPal directly, through PayPal's own Agent Toolkit, and compares. It can read and propose. It cannot pay, refund or sign.", record: "A report, and proposals that name who must sign", paypal: "Agent Toolkit · reads", see: { href: "/auditor", label: "The auditor" } },
   { step: "The owner closes", what: "PayPal releases whatever was never spent. A refund returns money, never budget.", record: "A void, and the final figures", paypal: "Void · refund", see: { href: "/treasury", label: "Treasury" } },
 ];
 

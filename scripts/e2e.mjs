@@ -245,6 +245,28 @@ try {
     await page.getByTestId("paypal-rail").getByText("Refunded a capture").first().waitFor(T);
     console.log("refund: the agent that was paid gave $45 back; PayPal refunded the capture; the envelope shows $112 refunded and not spendable again");
     console.log("paypal record: hold, captures and payout listed; an unclaimed payout recalled by the owner: cancelled at PayPal, capture refunded");
+
+    // The auditor: PayPal's own Agent Toolkit, cut down to reading, run by the gateway. It finds a dispute the gateway has not heard of.
+    await page.goto(`${BASE}/auditor`);
+    await page.getByTestId("auditor-reach").getByText("list_transactions").waitFor(T);
+    await page.getByRole("button", { name: "create_refund" }).click();
+    await page.getByTestId("auditor-refusal").getByText(/is not a tool the auditor has/).waitFor(T);
+    await page.getByTestId("auditor-stage-dispute").click();
+    await page.getByTestId("auditor-note").getByText(/has disputed payment/).waitFor(T);
+    await page.getByTestId("auditor-run").click();
+    await page.getByTestId("auditor-report").getByText(/thing(s)? needs? a person\./).waitFor(T);
+    const proposal = page.getByTestId("auditor-proposal").filter({ hasText: "Answer the dispute" });
+    await proposal.getByText("stands", { exact: true }).waitFor(T);
+    await proposal.getByText("the gateway's sweep", { exact: true }).waitFor(T);
+    await page.getByTestId("auditor-steps").getByText("PayPal Agent Toolkit").first().waitFor(T);
+    if (OUT) await page.screenshot({ path: `${OUT}/local-9-auditor.png`, fullPage: true }).catch(() => {});
+    await proposal.getByTestId("auditor-sweep").click();
+    await page.getByTestId("auditor-note").getByText(/sent the signed evidence/).waitFor(T);
+    await page.getByTestId("auditor-run").click();
+    await page.getByTestId("auditor-steps").getByText("list_disputes").waitFor(T);
+    await page.getByTestId("auditor-report").waitFor(T);
+    if (await page.getByTestId("auditor-proposal").filter({ hasText: "Answer the dispute" }).count()) throw new Error("the dispute was answered, yet the auditor still proposes answering it");
+    console.log("auditor: read PayPal through PayPal's Agent Toolkit, was refused a refund tool, found a dispute the gateway had not heard of, proposed; the gateway's sweep answered it; a second audit no longer proposes it");
   }
 } catch (e) {
   failed = true;

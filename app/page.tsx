@@ -56,6 +56,7 @@ const RAIL: Array<{ api: string; does: string; proven: "sandbox" | "simulator"; 
   { api: "Reporting · balances", does: "Is the money really there? What agents are owed is set against the balance PayPal itself reports for the account.", proven: "sandbox", note: "PayPal's figure is a couple of hours old, so the comparison is made at that moment" },
   { api: "Reporting · transaction search", does: "A second source. Every capture, payout and refund recorded here is looked up in PayPal's own statement of the account, which is also where PayPal's fees show.", proven: "sandbox", note: "records are listed up to three hours late; a record that disagrees has only been produced on the simulator" },
   { api: "Disputes · list, show, provide evidence", does: "If a payer disputes a payment at PayPal, the gateway finds it and answers with the payer's own signed chain of authority.", proven: "simulator", note: "the sandbox was asked and holds no dispute against this account" },
+  { api: "PayPal Agent Toolkit · read tools", does: "The auditor, an agent on the operator's side, asks PayPal directly through PayPal's own toolkit and compares the answers with the gateway's books. It gets the five tools that read, out of 47. The toolkit holds no credential: the gateway carries its requests, and carries only reads.", proven: "sandbox", note: "all 28 listed records found again through the toolkit with the same amounts; a refund the toolkit was asked to make was stopped before anything was sent" },
 ];
 
 const STOPS = [
