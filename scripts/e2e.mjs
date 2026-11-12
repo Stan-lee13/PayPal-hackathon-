@@ -188,7 +188,7 @@ try {
   await p2.getByText("can be paid").first().waitFor(T);
   if (OUT) await p2.screenshot({ path: `${OUT}/local-5-console.png`, fullPage: true }).catch(() => {});
   console.log("second tab: console lists the envelope and the receiving agent");
-  await p2.close();
+  // The second tab stays open (and keeps polling) for the rest of the run: two tabs share one in-browser database.
   // What PayPal did, and a recall. The recall runs on the simulator only: PayPal's sandbox does not complete a cancel (see the README).
   const health = await (await fetch(`${BASE}/api/health`)).json().catch(() => ({}));
   if (health.paypalMode === "simulated") {
