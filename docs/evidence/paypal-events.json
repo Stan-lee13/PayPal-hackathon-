@@ -1,0 +1,125 @@
+{
+  "ranAt": "2026-11-12T04:26:07.697Z",
+  "paypalMode": "sandbox",
+  "note": "Real PayPal sandbox. Events were read from PayPal's event feed with the gateway's credentials; none was pushed to this gateway, so no delivery signature was verified here. An event never changes the books by itself: it makes the gateway read the record it names from PayPal.",
+  "steps": [
+    {
+      "step": "a webhook is registered for the sandbox app, so PayPal records its events",
+      "at": "2026-11-12T04:22:07.307Z",
+      "webhook": "25W82274K7440843K",
+      "url": "https://envelope-paypal.vercel.app/api/paypal/webhook",
+      "events": [
+        "*"
+      ]
+    },
+    {
+      "step": "sealed: PayPal hold placed",
+      "at": "2026-11-12T04:22:10.028Z",
+      "root": "env_3_6Adl_Dh3I0FRY3",
+      "authorization": "7WY24032LA280193S",
+      "held": "$30.00"
+    },
+    {
+      "step": "ops-agent paid translator-agent $8: captured, payout requested; left as PayPal first reported it",
+      "at": "2026-11-12T04:22:13.381Z",
+      "payment": "sp_UsvruL0ZCsh61Quq",
+      "status": "PAYOUT_PENDING",
+      "capture": "1US29419BV064010D",
+      "payoutBatch": "5NPPWWQNN5RCU",
+      "payoutStatus": "PENDING"
+    },
+    {
+      "step": "ops-agent paid writer-agent $6 into its balance; writer-agent gave it back and PayPal refunded the capture",
+      "at": "2026-11-12T04:22:17.316Z",
+      "payment": "sp_t-lF3Zfo83CwRZxu",
+      "capture": "0B786346AS217003F",
+      "refund": "0SA80919WM509970A",
+      "status": "REFUNDED"
+    },
+    {
+      "step": "PayPal's event feed, read with the gateway's own credentials",
+      "at": "2026-11-12T04:25:02.417Z",
+      "eventsAboutThisRun": 7,
+      "types": [
+        "PAYMENT.PAYOUTSBATCH.SUCCESS",
+        "PAYMENT.PAYOUTS-ITEM.SUCCEEDED",
+        "PAYMENT.PAYOUTSBATCH.PROCESSING",
+        "PAYMENT.CAPTURE.REFUNDED",
+        "PAYMENT.CAPTURE.COMPLETED",
+        "PAYMENT.AUTHORIZATION.CREATED"
+      ],
+      "firstEventId": "WH-3HF87427EG546205B-8TL95958924754000",
+      "paymentStillAsFirstReported": "PAYOUT_PENDING"
+    },
+    {
+      "step": "the gateway applied PayPal's events: each made it read the named record from PayPal, and that reading changed the books",
+      "at": "2026-11-12T04:25:03.442Z",
+      "eventsInFeed": 7,
+      "appliedNow": 7,
+      "aboutThisRun": [
+        {
+          "event": "WH-3HF87427EG546205B-8TL95958924754000",
+          "type": "PAYMENT.AUTHORIZATION.CREATED",
+          "outcome": "hold read from PayPal: PARTIALLY_CAPTURED"
+        },
+        {
+          "event": "WH-1T3143963U194860B-76B399520S658052M",
+          "type": "PAYMENT.CAPTURE.COMPLETED",
+          "outcome": "payment PAYOUT_PENDING → PAID"
+        },
+        {
+          "event": "WH-3C8389775N680921H-25L64377DF1395814",
+          "type": "PAYMENT.CAPTURE.COMPLETED",
+          "outcome": "payment unchanged (FAILED)"
+        },
+        {
+          "event": "WH-1BS46954CJ023852B-27J86679Y0530853S",
+          "type": "PAYMENT.CAPTURE.REFUNDED",
+          "outcome": "payment unchanged (FAILED)"
+        },
+        {
+          "event": "WH-31G82669SB462711F-8S3456540X599342H",
+          "type": "PAYMENT.PAYOUTSBATCH.PROCESSING",
+          "outcome": "payment unchanged (PAID)"
+        },
+        {
+          "event": "WH-5X591987GA387325K-84J48603JS0644923",
+          "type": "PAYMENT.PAYOUTS-ITEM.SUCCEEDED",
+          "outcome": "payment unchanged (PAID)"
+        },
+        {
+          "event": "WH-98M268330Y918203Y-5FV473419D4022244",
+          "type": "PAYMENT.PAYOUTSBATCH.SUCCESS",
+          "outcome": "payment unchanged (PAID)"
+        }
+      ],
+      "paymentBefore": "PAYOUT_PENDING",
+      "paymentAfter": "PAID",
+      "payoutStatusAfter": "SUCCESS",
+      "meaning": "delivered to the payee's PayPal account, settled by PayPal's own event"
+    },
+    {
+      "step": "the same feed read again applied nothing",
+      "at": "2026-11-12T04:25:03.719Z",
+      "eventsInFeed": 7,
+      "appliedNow": 0
+    },
+    {
+      "step": "the owner closed the envelope: PayPal released the rest of the hold",
+      "at": "2026-11-12T04:25:04.726Z",
+      "captured": 800,
+      "refunded": 600,
+      "released": 1600
+    },
+    {
+      "step": "PayPal's event for the void arrived in the feed and was applied once",
+      "at": "2026-11-12T04:26:07.697Z",
+      "applied": [
+        {
+          "type": "PAYMENT.AUTHORIZATION.VOIDED",
+          "outcome": "hold read from PayPal: VOIDED"
+        }
+      ]
+    }
+  ]
+}
