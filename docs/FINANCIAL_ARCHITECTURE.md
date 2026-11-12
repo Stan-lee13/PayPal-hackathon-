@@ -2,7 +2,7 @@
 
 How money and authority are represented, which record is the truth for each amount, and what state every operation can be in. The message formats and rules are in [`SPEC.md`](SPEC.md); this document is the map.
 
-## One system, seven parts
+## One system, eight parts
 
 | Part | What it is | Where |
 |---|---|---|
@@ -11,6 +11,7 @@ How money and authority are represented, which record is the truth for each amou
 | Balances and cards | Accounts that keep money, transfers, refunds by the agent that was paid, cards, the books. | `lib/gateway/bank.ts` |
 | The books against PayPal's own | Reserves (PayPal's reported balance), the statement match (Transaction Search), disputes and the evidence that answers them. | `lib/gateway/books.ts` |
 | Settlement | The record of PayPal calls, PayPal's events, the sweep, recall. | `lib/gateway/settlement.ts`, `lib/paypal/journal.ts` |
+| The auditor | An agent on the operator's side that reads PayPal through PayPal's own Agent Toolkit (five read tools, no credential), reads the books, and proposes. The gateway checks each proposal by rule. Writes nothing. | `lib/paypal/toolkit.ts`, `lib/gateway/auditor.ts`, `lib/ai/auditor.ts` |
 | Proof graph | Reads the records above and lays them out as nodes and relations with what a browser needs to check each. Writes nothing. | `lib/gateway/proof.ts` |
 | Endpoints | One plain function per endpoint, wrapped for a server or called directly in the browser. | `lib/api/handlers.ts`, `lib/api/next.ts`, `lib/local/router.ts` |
 
@@ -26,6 +27,7 @@ Two places to run, one codebase: on a server against Postgres and the PayPal san
 | Gateway | A signing key; PayPal credentials | Refuse, reserve, call PayPal, sign receipts and notes | Mint authority: every payment needs signatures it cannot produce |
 | PayPal | The money | Hold, capture, pay out, void, refund; refuse to capture past the hold; report the account's balance and statement; open and decide disputes | — |
 | A language model | Nothing | Propose tool calls, which are signed by the agent's key and judged by the gateway like any request | Decide whether money moves |
+| The auditor (a model, or a fixed procedure) | No key and no PayPal credential; against real PayPal, the operator's bearer key for its reads | Read PayPal through five tools of PayPal's Agent Toolkit, read the gateway's books, and propose one of four actions | Pay, refund, capture, void, sign, or change a record. Carry out its own proposal: each names the envelope's owner, the agent's owner or the gateway's sweep |
 
 A compromised gateway could refuse service, misreport, or misuse its PayPal credentials. It could not forge an owner's or agent's signature, so its misbehaviour would show in receipts that fail to verify. That boundary is why signatures are used although the gateway is online.
 
@@ -137,6 +139,7 @@ What moves things along without a person: the sweep (`/api/sweep`), which asks P
 | Reserves | Reporting: `GET /v1/reporting/balances` | "Agents are owed $X" would be checked only against the gateway's own arithmetic |
 | Statement | Reporting: `GET /v1/reporting/transactions` | The only evidence a capture happened would be the answer to the call that made it |
 | Disputes | `GET /v1/customer/disputes`, `POST …/provide-evidence` | A payer's dispute would arrive as a surprise reversal, unanswered |
+| Audit | PayPal Agent Toolkit: `list_transactions`, `list_disputes`, `get_dispute`, `get_order`, `get_refund` (all `GET`) | The books would be checked against PayPal only by the gateway's own reading code. The toolkit is a second route to the same record that shares none of it |
 
 Events never change the books directly. An event names a record; the gateway reads that record from PayPal by id and acts on the reading (`lib/gateway/settlement.ts`). The source of truth stays where the table above puts it.
 
@@ -149,5 +152,26 @@ Envelope is not a replacement for mandates or checkout protocols; it covers what
 - **AP2 mandates** describe what a user authorized one agent to buy. An intent mandate could be the source of a root envelope's caps, and a cart mandate could be the object a promise or card refers to. Not implemented; the root block's fields were kept close to that shape for this reason.
 - **Checkout protocols (ACP, UCP)** describe how an agent and one seller complete a purchase. Envelope answers a different question, upstream of checkout: is this agent allowed to spend this, and who stands behind it.
 - **Attenuating tokens (macaroons, Biscuit, UCAN, the IETF attenuating-agent-token and agent-delegation drafts)** are the prior art for the chain. What Envelope adds is money: budgets debited at every ancestor and a real hold behind the root.
-- **PayPal's Agent Toolkit** gives an agent PayPal API access through credentials the agent's runtime holds. Here an agent holds a signed envelope and never a PayPal credential, which is the point of the design, so the toolkit is not used. A gateway operator could still drive PayPal through it.
+- **PayPal's Agent Toolkit** gives an agent PayPal API access through credentials the agent's runtime holds. Here an agent that spends holds a signed envelope and never a PayPal credential, so no spending agent is given the toolkit. It is used on the operator's side, by the auditor, and only to read (next section).
 - **Network agent cards (Visa Intelligent Commerce, Mastercard Agent Pay)** work at any card merchant. Xenoncard does not; it is a different trade (see the README's limits).
+
+## The auditor, and how PayPal's toolkit is held to reading
+
+The toolkit is PayPal's own package (`@paypal/agent-toolkit` 1.11.0). It builds the requests; the gateway decides which of them exist.
+
+```
+ model or fixed procedure ──tool call──▶ gateway: auditorRead(tool, args)
+                                           ├─ not one of five names ─▶ refused; the toolkit is not called
+                                           └─ PayPal Agent Toolkit builds the request (placeholder token, no credential)
+                                                └─ carrier: GET on one of five paths? ── no ─▶ stopped; nothing sent
+                                                     └─ yes ─▶ the gateway's one PayPal client sends it and adds the real token
+ model or fixed procedure ──propose(kind, target)──▶ gateway: checkProposal ─▶ stands or not, and who must sign
+```
+
+- **Three restrictions, none depending on the model or on the toolkit's configuration.** No credential; a list of five names; a carrier that sends only `GET`s on five listed paths. The toolkit calls a shared HTTP client, and the gateway replaces that client's transport for PayPal's hosts. The toolkit's own host name (`api.sandbox.paypal.com`) is therefore never contacted; requests go to `api-m.sandbox.paypal.com` like every other call.
+- **The same code in every mode.** The carrier is the gateway's PayPal client, so the toolkit reads the sandbox, live PayPal or the built-in simulator, and in the in-browser copy the package runs in the tab.
+- **Proposals are judged on records.** Four kinds: answer a dispute, recall a payout, close an envelope, freeze an account. The target must exist and be in the state the proposal is about; for a dispute, PayPal is asked at that moment. The reason the agent gives is not read. The check changes nothing.
+- **What the auditor is told.** Each answer is reduced by code to ids, statuses and amounts. Free text another party wrote (a memo) is passed as a quotation with control characters removed.
+- **Who may ask.** On the simulator, anyone. Against real PayPal the reads show the operator's whole account, so they need `AUDITOR_SECRET` as a bearer token, and with none configured the auditor answers 503.
+
+Proven on the sandbox by the fixed procedure (`evidence/auditor.json`). Finding and answering a dispute is proven on the simulator only. The model-driven path has run only with a stand-in model in tests.

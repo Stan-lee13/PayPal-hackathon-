@@ -110,7 +110,7 @@ Found and left, with reasons:
 
 ## Numbers
 
-- 101 automated tests passed at the end of this round (63 before it). After the next round: 109. After the one after that: 114.
+- 101 automated tests passed at the end of this round (63 before it). After the next round: 109. After the one after that: 114. After the last round (the auditor and test depth): 447.
 - The attack corpus is unchanged at 171, all refused. New adversarial cases for recall and events are in `tests/paypal-rail.test.ts` so that figure, which the recorded video quotes, stays true.
 - Browser test: passes with a server gateway and with the in-browser gateway.
 
@@ -215,7 +215,7 @@ A sweep of GitHub (Devpost's gallery is not published) found that every one of t
 | Not built | Why |
 |---|---|
 | Hold reauthorization (7 of the 12 rivals) | PayPal allows it only once the three-day honor period is over, so it cannot be exercised on the sandbox before the deadline, and what it does to a hold that has been partly captured is not documented. Building it would have meant guessing. Proof of funds now says when the honor period ends, which is the honest half of the same question |
-| PayPal's Agent Toolkit (7 of 12) | It gives an agent PayPal API access through credentials its runtime holds. Agents here hold a signed envelope and never a PayPal credential; that is the point of the design |
+| PayPal's Agent Toolkit (7 of 12) | It gives an agent PayPal API access through credentials its runtime holds. Agents here hold a signed envelope and never a PayPal credential; that is the point of the design. (Reversed in part in the next round: the toolkit is now used, read-only, by an auditor on the operator's side. See the last section) |
 | Vault (7 of 12) | It follows from payer approval (save the approved account for the next envelope) and would be the next thing to build. There was not time to prove it |
 | Order tracking, Login with PayPal, Invoicing | No question in this product that only they answer |
 | An AG Grid ledger (a sponsor prize, 10 of 12) | A separate prize; not what the entry is about |
@@ -243,3 +243,54 @@ A sweep of GitHub (Devpost's gallery is not published) found that every one of t
 - Recall still has not completed on the sandbox, and no dispute evidence has been sent to the real PayPal.
 - Hold reauthorization, Vault, order tracking, Login with PayPal, Invoicing.
 - The video has not been re-recorded: it predates the last three rounds.
+
+## The round after that: the auditor, test depth, a guided tour (12 November)
+
+### What was asked
+
+Three things. Why PayPal's Agent Toolkit had been ruled out, when agents are meant to be the main users of the product. Why rivals still had many more tests. And a path a judge can follow without reading anything.
+
+### The decision on the toolkit
+
+"No place in the design" was too strong. The toolkit, out of the box, gives a model PayPal credentials and 47 tools, among them `create_order`, `pay_order` and `create_refund`. That is the arrangement Envelope replaces for agents that spend, and that part of the earlier decision stands: no spending agent is given it. But there is a job on the operator's side that only reads: checking what the spending agents did. That is where the toolkit fits.
+
+### What was built
+
+1. **The toolkit inside the gateway, cut down to reading** (`lib/paypal/toolkit.ts`). Five tools: `list_transactions`, `list_disputes`, `get_dispute`, `get_order`, `get_refund`. Three restrictions that do not depend on the model or on the toolkit's own configuration: it is given a placeholder token and no credential, and every request it builds is carried by the gateway's one PayPal client; any other tool is refused by name before the toolkit is called; and the carrier sends only `GET`s on five listed paths. The toolkit's hard-coded host (`api.sandbox.paypal.com`) is never contacted; requests go through the gateway's client to `api-m.sandbox.paypal.com`.
+2. **The auditor's reads and the check on its proposals** (`lib/gateway/auditor.ts`). Four reads of the gateway's records (`envelope_books`, `envelope_statement`, `envelope_unsettled`, `envelope_payment`) and `checkProposal`: four kinds (answer_dispute, recall_payout, close_envelope, freeze_account), judged against the records by rule. The reason text is not read. The answer names who would have to sign: the envelope's owner, the agent's owner, or the gateway's sweep.
+3. **Two ways to run it over the same tools** (`lib/ai/auditor.ts`): a model decides what to read (`/api/ai/audit` gives it the tool list), or a fixed procedure does when no model is connected.
+4. **Three fronts**: the `/auditor` page, which also runs in the in-browser copy with the toolkit package in the tab; a terminal (`npm run auditor`, `-- --model`, `-- --evidence FILE`); and MCP (`ENVELOPE_ROLE=auditor npm run mcp`, ten tools, no agent key). Endpoints: `GET /api/auditor`, `POST /api/auditor/read`, `POST /api/auditor/check`, and, on the simulator only, `POST /api/demo/dispute`. Against real PayPal the reads need `AUDITOR_SECRET`; with none configured the auditor answers 503.
+5. **Test depth.** Each of the 171 attacks is its own named test. 24 seeded runs make 40 to 80 random moves over two envelope trees and four accounts and check the gateway against an independent model after every move, even seeds with PayPal fees on. A matrix covers each of the eight terms narrower, equal and wider, 49 ordered pairs, and chains one to seven deep.
+6. **A guided tour** (`components/tour.tsx`, `/?tour=1`): seven steps, each advanced by the gateway's records or the page, not a timer.
+
+### Proven, and where
+
+| Thing | Simulator | Real PayPal sandbox |
+|---|---|---|
+| The toolkit's reads agree with the gateway's own reader | `tests/auditor.test.ts` | Yes, by the fixed procedure: 482 settled and 84 pending transactions read; of 34 records, 28 listed with the same amount (6 not listed yet) and all 28 found again through the toolkit. `evidence/auditor.json` |
+| A toolkit write is stopped | All 42 other tools refused by name; with the name check removed, the carrier stops `create_refund`, `pay_order` and `accept_dispute_claim` | Yes: `create_refund` refused by name, and stopped at the wire with nothing sent |
+| Proposals | Stand or fall on the records; unknown kinds refused | Five recall proposals for unclaimed payouts stand; each takes the envelope's owner. None was carried out |
+| A dispute the gateway has not heard of | Found through the toolkit, proposed, answered by the sweep, gone from a second audit (tests, and the browser test on the in-browser copy) | No: the sandbox holds no dispute against this account |
+| A memo that gives the auditor orders | A model that obeys it gets two refusals and one proposal naming the owner; nothing changes | Not run |
+| A real language model running the audit | No. Tests use a stand-in model that makes chosen tool calls | No. No model key was available |
+| The tour | `scripts/tour-check.mjs` on the in-browser copy | Not applicable |
+
+### Numbers
+
+- 447 automated tests in 17 files pass in about 93 seconds (114 before): `attacks` 172, `narrowing` 125, `invariants` 25, `auditor` 11, `mcp` 14, and the rest unchanged.
+- 160 further random seeds (100 to 259) passed once. No mutation testing was done, so there is no measure of what an injected fault would escape.
+- The attack corpus is unchanged at 171, all refused; `scripts/attack-suite.ts` reports the same.
+- The MCP server has fifteen tools as an agent and ten as an auditor.
+
+### Considered and not built
+
+- **PayPal's Cryptocurrency On/Off Ramp.** Switched on for the sandbox app. A partner service in which a person buys or sells crypto on PayPal's pages; `GET /v1/crypto/configurations` answered and nothing else was called. It does not fit an agent paying from a hold. See `FINANCIAL_FRONTIER_ROADMAP.md`.
+- **Sponsor tools.** None is used: AG Grid, APIMatic's context plugin, Bryntum, Channel3, Render.
+- Hold reauthorization, Vault, order tracking, Login with PayPal and Invoicing remain not built.
+
+### Not done
+
+- The model-driven audit has not been run with a real language model.
+- On a server gateway that has `CRON_SECRET` set, the auditor page's "Run the gateway's sweep now" button cannot run the sweep: the gateway answers 401 and the page says the scheduler will answer the dispute on its next run.
+- The auditor has one shared operator key against real PayPal, and no per-person sign-in.
+- The video predates this round too.

@@ -6,7 +6,32 @@ Every screen says which PayPal it is talking to. A red strip means the simulator
 
 ## A. The hosted copy (two minutes, nothing to install)
 
-Open the site: <https://envelope-paypal.vercel.app> (also <https://kept-paypal.vercel.app>). The red strip says the whole gateway is running in your browser on a PayPal simulator.
+**Default path: the guided tour.** Open <https://envelope-paypal.vercel.app/?tour=1>, or press **Take the two-minute tour** on the landing page. The red strip at the top says the whole gateway is running in your browser on a PayPal simulator. A dark strip along the bottom names the step, rings the control to press, and moves on when the gateway's records or the page show the step has happened. If the step is on another page it offers **Take me there →**. **Skip** passes a step; **End** closes the tour; it remembers where it was across a reload.
+
+| Tour step | Press | It moves on when |
+|---|---|---|
+| 1 Seal | **Seal & hold $200.00 on PayPal** | the envelope's page opens |
+| 2 Agents pay | **Run the launch** | the agents have stopped and PayPal has captured something |
+| 3 Attack | **Compromise the creative agent** | a new refusal is on record |
+| 4 Trace a payment | any **Receipt & authority chain** | the receipt opens |
+| 5 The books | **Compare with PayPal** (Accounts) | the statement match is on the page |
+| 6 The auditor | **A payer disputes the latest payment**, then **Audit by the fixed procedure** (or **Let a model audit**) | the auditor's report is on the page |
+| 7 Close | **Close envelope & release the hold** | the envelope is closed |
+
+`scripts/tour-check.mjs` walks exactly this in a real browser.
+
+**The auditor beat**, on the **Auditor** page (also step 6 of the tour):
+
+1. Under "Hand it a tool it does not have", press `create_refund`. The answer is a 403: it is not a tool the auditor has.
+2. Press **A payer disputes the latest payment**. Simulator only: a note says which payment was disputed and that the gateway has not been told.
+3. Press **Audit by the fixed procedure**, or **Let a model audit** when a model is connected. The list "What it read, in order" shows reads marked "PayPal Agent Toolkit" (`list_transactions`, `list_disputes`, `get_dispute`) and reads of the gateway's books. The report says "1 thing needs a person."
+4. Under Proposals: "Answer the dispute", stamped "stands", and "It takes the gateway's sweep, not the auditor."
+5. Press **Run the gateway's sweep now**. The note says the signed evidence was sent and gives PayPal's new status.
+6. Audit again. The proposal is gone.
+
+On a server gateway that has `CRON_SECRET` set, step 5's button cannot run the sweep: the gateway answers 401 and the page says the scheduler will answer the dispute on its next run. On the hosted copy, and on any gateway without `CRON_SECRET`, the button works. Against real PayPal there is no button to stage a dispute, and the page asks for the operator's key (`AUDITOR_SECRET`) before any read.
+
+**The longer path, by hand.** Open the site: <https://envelope-paypal.vercel.app> (also <https://kept-paypal.vercel.app>).
 
 | # | Do this | You should see | What it shows |
 |---|---|---|---|
@@ -67,9 +92,11 @@ npx tsx scripts/statement-check.ts        # some hours later, same database: Pay
 Checks to run:
 
 ```bash
-npm test                                  # 114 tests, on the simulator
+npm test                                  # 447 tests in 17 files, on the simulator
 npx tsx scripts/attack-suite.ts           # 171 attacks, all refused
 PLAYWRIGHT_MODULE=$(npm root -g)/playwright node scripts/e2e.mjs    # the browser walk-through, automated
+BASE=http://localhost:3001 PLAYWRIGHT_MODULE=$(npm root -g)/playwright node scripts/tour-check.mjs   # the guided tour, walked in a browser
+npm run auditor                           # the auditor by its fixed procedure, against whatever PAYPAL_MODE says
 # two tabs on the in-browser copy (start it with: DATABASE_URL= PAYPAL_MODE=simulated npx next start -p 3001)
 BASE=http://localhost:3001 PLAYWRIGHT_MODULE=$(npm root -g)/playwright node scripts/tabs-stress.mjs
 ```
@@ -99,7 +126,7 @@ and ask the model to check what it may spend, then pay someone on its envelope, 
 
 ## D. A video under three minutes
 
-The recorded video in `docs/demo/` predates the last three rounds: it does not show the PayPal panel, recall, the Developers page, refunds, reserves, the statement check, disputes, payer approval or PayPal's events. This is a script for a new take if the owner decides to record one. Nothing here has been recorded. It opens with the person and the problem, and stays under three minutes.
+The recorded video in `docs/demo/` predates the last four rounds: it does not show the PayPal panel, recall, the Developers page, refunds, reserves, the statement check, disputes, payer approval, PayPal's events, the auditor or the tour. The script below has no auditor scene; a take that adds one should record it where it is proven: the fixed procedure on the sandbox (reads through PayPal's toolkit, the refused refund), or the dispute beat on the simulator with the red strip in view. This is a script for a new take if the owner decides to record one. Nothing here has been recorded. It opens with the person and the problem, and stays under three minutes.
 
 | Time | On screen | Say |
 |---|---|---|

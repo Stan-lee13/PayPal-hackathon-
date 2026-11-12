@@ -58,7 +58,7 @@ What is missing: key storage that is not demo-grade (hardware-backed owner keys,
 
 ### Layer 3: Treasury
 
-What exists: one owner's view across the envelopes sealed with their key, with reconciliation against PayPal and a ledger export.
+What exists: one owner's view across the envelopes sealed with their key, with reconciliation against PayPal and a ledger export. Beside it, for the operator, an auditor: an agent that reads PayPal through PayPal's own Agent Toolkit (five read tools, no credential) and the gateway's books, and proposes actions that a person or the gateway's own rules must carry out (`lib/gateway/auditor.ts`). The fixed procedure ran on the sandbox; the model-driven audit has run only with a stand-in model in tests.
 
 What it could become, as the first product a business would pay for:
 
@@ -122,6 +122,16 @@ Hypotheses, not findings:
 - **Financial institutions** are partners, and later customers for the authority and evidence layer under their own agent products.
 
 Nothing here has been validated with a customer. The first step after the hackathon is conversations, not features.
+
+### Considered and not built: PayPal's Cryptocurrency On/Off Ramp
+
+The capability was switched on for the sandbox app on 12 November. What PayPal's documentation says of it: a limited-release partner service for wallets and dApps. On Ramp lets a customer buy crypto into their own wallet; Off Ramp lets them sell from it, with the dollars landing in PayPal. Both are for approved partners, and the customer completes the step on PayPal's own pages in a browser.
+
+What was checked from here, read-only: `GET /v1/crypto/configurations` on the sandbox answered 200 and lists `TOPUP` and `OFFRAMP` for the US with BTC, LTC, ETH, BCH, SOL and PYUSD. No order entry was created and nothing else was called.
+
+Why nothing was built on it. An envelope is an agent paying from a hold a person has already approved, with no person present at the payment. The ramp needs a person in a browser and a wallet address, and partner approval before it can be offered. The Payouts API, which is how money leaves here, offers PayPal and Venmo wallets only. So the ramp does not fit this lifecycle, and adding a call to it would have been breadth without a use.
+
+Also not built, as stated elsewhere: hold reauthorization (PayPal allows it only from day four, so it cannot be exercised on the sandbox now) and Vault.
 
 ## What has to be true before real money
 

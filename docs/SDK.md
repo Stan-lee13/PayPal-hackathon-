@@ -246,6 +246,27 @@ The MCP server offers 15 tools, each marked with MCP annotations:
 freeze: those belong to a person. A refusal by the gateway comes back with `isError: true` and the
 reason codes in the text. The transport is stdio; there is no HTTP transport.
 
+### A second role: the auditor
+
+```bash
+ENVELOPE_ROLE=auditor GATEWAY=http://localhost:3000 npm run mcp     # AUDITOR_KEY=… when the gateway talks to real PayPal
+```
+
+In this role the server holds no agent key and no envelope, and needs no `ENVELOPE_AGENT`. It
+offers ten tools, fetched from the gateway and run by it, all marked `readOnlyHint: true`:
+
+| Group | Tools |
+|---|---|
+| PayPal, through PayPal's Agent Toolkit inside the gateway | `list_transactions`, `list_disputes`, `get_dispute`, `get_order`, `get_refund` |
+| The gateway's books | `envelope_books`, `envelope_statement`, `envelope_unsettled`, `envelope_payment` |
+| Say | `propose` (`answer_dispute`, `recall_payout`, `close_envelope`, `freeze_account`) |
+
+The toolkit's writing tools and this server's spending tools are not there: asking for
+`create_refund` or `envelope_pay` is an unknown tool. `propose` answers whether the proposal stands
+on the gateway's records and whose signature it takes; it carries nothing out. The same tools over
+HTTP: `GET /api/auditor`, `POST /api/auditor/read`, `POST /api/auditor/check`. From a terminal,
+inside the gateway's process: `npm run auditor`. The SDK itself has no auditor class.
+
 ## Tests
 
 ```bash
@@ -253,8 +274,9 @@ npx vitest run tests/sdk.test.ts tests/mcp.test.ts
 ```
 
 - `tests/sdk.test.ts` (19 tests): the SDK against the gateway's real handlers on the PayPal simulator.
-- `tests/mcp.test.ts` (13 tests): the MCP server as a separate process over stdio, speaking JSON-RPC
-  to a local HTTP gateway, and 34 command-line invocations with their output checked.
+- `tests/mcp.test.ts` (14 tests): the MCP server as a separate process over stdio, speaking JSON-RPC
+  to a local HTTP gateway, in the agent role and the auditor role, and 34 command-line invocations
+  with their output checked.
 
 These run on the simulator. The example program has also been run against the real PayPal sandbox:
 [`evidence/sdk-run.md`](evidence/sdk-run.md). That run predates `refund`, `statement`, `evidence`, `requestApproval` and `sealApproved`,

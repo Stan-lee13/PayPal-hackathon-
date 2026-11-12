@@ -101,6 +101,26 @@ On the simulated checkout page, the address to return to comes from the link, so
 
 Attacks on pushed deliveries, on the real sandbox (`scripts/replay-delivery.ts`, `evidence/paypal-events.json`): two genuine deliveries from PayPal were offered to a gateway three ways each. With one character of the body changed and PayPal's own headers: refused (401), because PayPal's `verify-webhook-signature` did not confirm it. As delivered: confirmed by PayPal and applied. Delivered again: "already applied". The copy with no gateway (`tests/paypal-rail.test.ts`): a request without PayPal's headers is refused and not logged; the `authorization` header is never logged; the body is logged byte for byte and nothing is stored or applied.
 
+## Later still on 12 November: the auditor, and tests that make their own attacks
+
+**The auditor.** PayPal's Agent Toolkit ships 47 tools, and many of them write. It now runs inside the gateway for an auditing agent, so it was attacked as a way to move money. Nothing broke. What was tried (`tests/auditor.test.ts`, 11 tests, on the simulator with the real toolkit package building every request):
+
+- Each of the toolkit's 42 other tools was asked for by name, directly and over the endpoint. All refused; the toolkit never built a request, and nothing in the gateway's records or at PayPal changed.
+- With the name check taken away, the toolkit itself was asked to refund a real capture, pay an order and accept a dispute claim. The carrier stopped all three before they left (`POST`, not sent), and stopped a read on a path it does not list.
+- A payment was made with a memo that tells the auditor the owner has authorised it to refund the payment and close every envelope, and that tries to close the quotation it is placed in. A stand-in model that does everything the memo says got two refusals, one proposal that does not stand (`refund_payment` is not a kind the auditor has) and one that stands but names the envelope's owner as the signer. The envelope stayed active and no refund was made.
+- Proposals with kinds that would be a payment, a refund or new authority were refused; proposals about records that do not exist, or that are not in the state proposed about, do not stand.
+- Against real PayPal the reads were refused with no key (503 when none is configured, 401 with a wrong one).
+
+On the real sandbox (`evidence/auditor.json`): the toolkit was asked to refund a capture. Refused by name; with the name check removed, the carrier stopped `POST /v2/payments/captures/…/refund` and nothing was sent to PayPal.
+
+Limits of this. The model that "obeys the memo" is a stand-in making chosen tool calls. No real language model has been run as the auditor, so how one behaves is not known; what is shown is the most it could do. The carrier's list is five paths, and a new read tool would need a new path added by hand.
+
+**Tests that make their own attacks** (`tests/invariants.test.ts`). 24 seeded runs each build two envelope trees and four accounts and make 40 to 80 moves chosen by a generator: payments inside and outside the limits, promises, forged wider splits, revocations by people who may not, refunds, recalls, transfers, freezes, cards, replays, closing. After every move the gateway's verdict and everything it recorded must equal an independent model kept by the test, so a refused move is seen to have changed nothing. Even seeds run with PayPal fees on. A further 160 seeds (100 to 259) passed once. No fault was found. No mutation testing was done, so this does not measure which injected faults the tests would miss.
+
+**The narrowing rules, exhaustively** (`tests/narrowing.test.ts`, 125 tests, no database): each of the eight terms narrower, equal and wider; 49 ordered pairs where one term narrows and another widens; chains one to seven deep, with a one-cent widening at each depth blamed on the right block.
+
+The 171 attacks of the corpus are now one named test each (`tests/attacks.test.ts`), so a single attack can be run alone.
+
 ## What was tried and held
 
 From the attack corpus, all refused with no capture or payout caused:
@@ -124,7 +144,10 @@ From the reviewer's notes, areas examined with nothing found: the approval thres
 ## Reproducing
 
 ```bash
-npm test                              # 114 tests on the simulator
+npm test                              # 447 tests on the simulator
+npx vitest run tests/auditor.test.ts tests/invariants.test.ts tests/narrowing.test.ts
+INVARIANT_SEEDS=101,102,103 npx vitest run tests/invariants.test.ts   # more random runs
+npm run auditor                       # the auditor's fixed procedure; ends by asking PayPal's toolkit to refund a capture
 npx tsx scripts/attack-suite.ts       # the corpus; rewrites docs/evidence/attack-suite.json
 npx vitest run tests/settlement.test.ts tests/review-findings.test.ts tests/replay-encoding.test.ts tests/books.test.ts tests/approval.test.ts
 npx tsx scripts/paypal-refund-capacity.ts   # on the real sandbox: a refunded capture does not reopen the hold
@@ -151,6 +174,8 @@ These are known and not fixed.
 | The dispute evidence is public to whoever has the payment's id. | Like the receipt. It contains the signed chain and the payee's address as the agent signed it. A real deployment would send it to PayPal and show it only to the parties. |
 | The webhook receiver trusts PayPal's verification call. | It does not verify the certificate chain itself. Because an event can only cause a read of PayPal, a wrongly accepted event could not move money. |
 | The copy with no gateway writes PayPal's deliveries to the host's log. | Headers and body, unchanged, so they can be replayed. On the sandbox these are test events; with real money the log would hold payers' details and would need the same care as the database. A request without PayPal's headers is refused and not logged, and there is a per-instance limit, which is not a shared one. |
+| No real language model has been run as the auditor. | The fixed procedure ran on the sandbox. The model-driven path was tested with a stand-in model. A real model can do no more than read and propose, but what it would propose is not known. |
+| The auditor's reads are open on the simulator and behind one shared key on real PayPal. | They show the whole PayPal account. There is no per-person sign-in, and the key is a bearer token in an environment variable. |
 | Payer approval has not completed on the real sandbox. | PayPal made the order and returned the approval link, and sealing before approval was refused. Completing it needs a person to sign in at PayPal and approve. The whole path is tested on the simulator. <!-- APPROVAL-SANDBOX --> |
 | A hold is never reauthorized. | PayPal recommends capturing within three days of the authorization and allows reauthorization only after that, so it cannot be exercised on the sandbox within the hackathon, and what it does to a partly captured hold is not documented. An envelope may live 28 days; after the third its hold is past the honor period. Proof of funds says when that is; nothing renews it. |
 | Recall covers payments from an envelope only, and has not completed on the sandbox. | A payout from an agent's balance that goes unclaimed still waits for PayPal to return it. On the sandbox PayPal answered every cancel with an error. |

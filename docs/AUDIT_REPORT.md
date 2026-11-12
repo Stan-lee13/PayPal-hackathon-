@@ -76,11 +76,13 @@ How real each part is. **Operational** means it ran on the real PayPal sandbox a
 | Reserves: what agents are owed against PayPal's reported balance | Operational for the reading; a shortfall has only been produced on the simulator | `evidence/sandbox-run.json`; `tests/books.test.ts` |
 | PayPal's statement (Transaction Search) against the records | Matched on the sandbox: all 28 listed with the same amount, none with a different one. PayPal's fees are read from the same lines ($24.69 on the listed records) <!-- STATEMENT-CHECK --> | `evidence/statement-check.json`; `tests/books.test.ts` |
 | Disputes: found, marked, answered with evidence | Asked on the sandbox (none held); the rest simulated only | `evidence/sandbox-run.json`; `tests/books.test.ts` |
+| The auditor: PayPal's Agent Toolkit cut down to five read tools, the gateway's books, and proposals checked by rule | Operational for the fixed procedure: on the sandbox all 28 listed records were found again through the toolkit with the same amounts, five recall proposals stand for the owner to sign, and a refund the toolkit was asked to make was stopped with nothing sent. A dispute found and answered, and a memo that gives the auditor orders: simulated only. The model-driven audit: tested with a stand-in model, not run with a real one | `evidence/auditor.json`; `tests/auditor.test.ts` (11), `tests/mcp.test.ts`; `lib/paypal/toolkit.ts`, `lib/gateway/auditor.ts` |
+| Guided tour on the hosted copy | Tested in a browser on the in-browser copy | `scripts/tour-check.mjs`; `components/tour.tsx` |
 | Pending capture handling | Simulated only | the sandbox never returned a pending capture |
 | Refund-due handling | Simulated only | the sandbox never refused a refund |
 | Returned or failed payout handling | Simulated only | no sandbox payout failed |
 | Keys sealed at rest | Tested | `tests/settlement.test.ts` |
-| Hold reauthorization, Vault, Invoicing, order tracking, Login with PayPal, PayPal's Agent Toolkit, partial refunds | Not built. Reauthorization cannot be exercised on the sandbox before a hold's fourth day | — |
+| Hold reauthorization, Vault, Invoicing, order tracking, Login with PayPal, the Cryptocurrency On/Off Ramp, partial refunds | Not built. Reauthorization cannot be exercised on the sandbox before a hold's fourth day. The ramp is a partner service a person completes on PayPal's pages; only its configuration endpoint was read. PayPal's Agent Toolkit is used by the auditor, read-only, and is given to no spending agent | — |
 | Lending, interest, insurance, network cards | Not built, and not to be built without licensed partners | — |
 
 ## Findings
@@ -112,6 +114,9 @@ Severity is about what could go wrong with money or private data. Faults that we
 | No sign-in anywhere | — | By design: every action that matters carries a signature, and reads of an owner's books carry one too |
 | Rate limits per address, with request bodies capped at 128 KB | Low | In place; the address comes from a proxy header |
 | Security headers (frame, content type, referrer, permissions, HSTS) | — | In place |
+| The auditor's reads show the operator's whole PayPal account, including lines that are not the gateway's | Medium | Open on the simulator, like the rest of the demo. Against real PayPal the reads need one shared operator key (`AUDITOR_SECRET`) and the auditor is off without one. No per-person sign-in |
+| PayPal's Agent Toolkit ships tools that write (`create_order`, `pay_order`, `create_refund` and others) | — | Contained three ways: the toolkit is given no credential; a tool outside the five reads is refused by name before it is called; the gateway's client sends only `GET`s on five listed paths for it. Tested for all 42 other tools, and for three writes with the name check removed |
+| Text in a record (a memo, a purpose) could carry instructions to the auditor's model | Low | Bounded. Such text reaches the model as a quotation with control characters removed. A model that obeys it has only reads and `propose`; a proposal is judged on the records and names a signer who is not the auditor. Tested with a stand-in model that obeys the memo; not tried with a real model |
 | No external review | High | Open |
 
 ### Product and interface
@@ -125,6 +130,8 @@ Found by using the app on a desktop and a phone-sized screen, as an owner, a pay
 | "Failed · refunded" was shown for payments that failed with nothing to refund | Fixed: "Failed · not paid", and a separate "Refund due" |
 | The console listed every envelope on the gateway to every visitor | Fixed: it lists yours |
 | A payout PayPal is holding unclaimed could be read as paid at a glance on the envelope page | The stamp says "Unclaimed"; the proof graph says "not delivered" in words |
+| A first-time visitor had no order to follow | Fixed by the guided tour (`/?tour=1`): a strip that rings the next control and moves on when the step has happened |
+| On a server gateway with `CRON_SECRET` set, the auditor page's "Run the gateway's sweep now" cannot run the sweep | Open. The gateway answers 401 and the page says the scheduler will answer the dispute on its next run |
 | The agent page is long: passport, record, reference, account, balance, card, income, envelopes, statement | Open. It works; it is dense |
 | Pages are dense with small monospace text | Open. A deliberate look, at some cost to first-read comprehension |
 | No loading skeletons; pages show a one-line "looking" state | Open |
