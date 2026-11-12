@@ -824,6 +824,12 @@ export const maskEmail = (e: string) => e.replace(/^(.)[^@]*(@.*)$/, "$1••�
 // ---------------------------------------------------------------------------
 
 export const STANDING_VERSION = "envelope-standing/1" as const;
+/** PayPal keeps an authorization for 29 days and recommends capturing within the first 3 (the honor period). Given when it expires, when that period ends. */
+export function honorPeriodEnds(expiresAt: string | Date | null): string | null {
+  if (!expiresAt) return null;
+  const t = new Date(expiresAt).getTime();
+  return Number.isFinite(t) ? new Date(t - 26 * 86400_000).toISOString() : null;
+}
 /** How long a statement of standing may be relied on. Budgets move, so it is short. */
 export const STANDING_TTL_MS = 5 * 60_000;
 
@@ -841,7 +847,12 @@ export type Standing = {
   reasons: Array<{ code: E.Reason; detail: string }>;
   /** The most the agent could pay this payee for this purpose in one payment right now. */
   availableMinor: number;
-  paypal: { mode: string; authorizationId: string | null; status: string | null; unusedMinor: number | null };
+  /**
+   * `honoredUntil`: PayPal recommends capturing within three days of the authorization (its honor
+   * period). Until then is when a hold is at its strongest; after it, and until `authorizedUntil`
+   * (29 days), a capture is still attempted and is subject to the funds being available.
+   */
+  paypal: { mode: string; authorizationId: string | null; status: string | null; unusedMinor: number | null; honoredUntil: string | null; authorizedUntil: string | null };
   issuedAt: string;
   validUntil: string;
   gateway: string;
@@ -889,12 +900,14 @@ export async function standing(hello: E.SignedHello): Promise<Standing> {
   }
 
   // Ask PayPal itself whether the hold is still there.
-  const paypal: Standing["paypal"] = { mode: paypalMode(), authorizationId: root.authorizationId, status: null, unusedMinor: null };
+  const paypal: Standing["paypal"] = { mode: paypalMode(), authorizationId: root.authorizationId, status: null, unusedMinor: null, honoredUntil: null, authorizedUntil: null };
   if (root.authorizationId && root.status === "ACTIVE") {
     try {
       const auth = await getAuthorization(getPayPal(), root.authorizationId);
       paypal.status = auth.status;
       paypal.unusedMinor = Math.max(0, auth.amountMinor - root.capturedMinor - root.refundedMinor);
+      paypal.authorizedUntil = auth.expiresAt;
+      paypal.honoredUntil = honorPeriodEnds(auth.expiresAt);
       if (auth.status !== "CREATED" && auth.status !== "PARTIALLY_CAPTURED") reasons.push({ code: "ROOT_NOT_FUNDED", at: root.id, detail: `PayPal reports the hold as ${auth.status}` });
       else available = Math.min(available, paypal.unusedMinor);
     } catch (e) {

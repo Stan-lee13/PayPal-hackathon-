@@ -78,7 +78,8 @@ export type Standing = {
   good: boolean;
   reasons: Array<{ code: string; detail: string }>;
   availableMinor: number;
-  paypal: { mode: string; authorizationId: string | null; status: string | null; unusedMinor: number | null };
+  /** `honoredUntil` is the end of PayPal's three-day honor period, when the hold is at its strongest; `authorizedUntil` is when the authorization itself ends (29 days). */
+  paypal: { mode: string; authorizationId: string | null; status: string | null; unusedMinor: number | null; honoredUntil: string | null; authorizedUntil: string | null };
   issuedAt: string; validUntil: string; gateway: string; sig: string;
 };
 

@@ -169,6 +169,7 @@ export function EnvelopeView({ id }: { id: string }) {
             <div>
               <p className="label">PayPal hold backing this envelope</p>
               <p className="mono mt-1 text-[.72rem] text-ink-2">authorization {root.authorizationId}</p>
+              {open && root.authorizationExpiresAt && <p className="mt-1 max-w-sm text-[.72rem] leading-snug text-ink-3" title="PayPal recommends capturing within three days of the authorization. After that a capture is still attempted, subject to the funds being available.">In PayPal&rsquo;s honor period until {new Date(Date.parse(root.authorizationExpiresAt) - 26 * 86400_000).toISOString().slice(0, 16).replace("T", " ")} UTC · authorized until {new Date(root.authorizationExpiresAt).toISOString().slice(0, 10)}</p>}
             </div>
             <Postmark className="-mr-4 -mt-4 shrink-0 rotate-[7deg]" size={104} tone={open ? "blue" : "grey"} top="PAYPAL · HOLD" bottom={open ? "AUTHORIZED" : "VOIDED"} line1={usd(root.limitMinor)} line2={d.mode === "sandbox" ? "SANDBOX" : d.mode.toUpperCase()} />
           </div>

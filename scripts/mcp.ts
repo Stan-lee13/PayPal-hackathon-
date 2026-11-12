@@ -149,7 +149,7 @@ const READ_TOOLS: Tool[] = [
       return [
         `${s.agentLabel}, account ${s.account}`,
         `Stands behind it: ${s.sponsors.map((x) => `${x.label} (${x.role})`).join(" → ")}`,
-        `PayPal hold ${s.paypal.authorizationId ?? "none"}: ${s.paypal.status ?? "not confirmed"}${s.paypal.unusedMinor !== null ? `, ${usd(s.paypal.unusedMinor)} unused` : ""} (${s.paypal.mode})`,
+        `PayPal hold ${s.paypal.authorizationId ?? "none"}: ${s.paypal.status ?? "not confirmed"}${s.paypal.unusedMinor !== null ? `, ${usd(s.paypal.unusedMinor)} unused` : ""}${s.paypal.honoredUntil ? `, in PayPal's honor period until ${s.paypal.honoredUntil.slice(0, 16).replace("T", " ")} UTC` : ""} (${s.paypal.mode})`,
         `Asked: ${usd(s.ask.amount)} to ${s.ask.payee} for ${s.ask.purpose}`,
         s.good ? `GOOD: it can pay up to ${usd(s.availableMinor)} in one payment right now.` : `NOT GOOD: this payment would be refused. ${s.reasons.map((x) => `${x.code} (${x.detail})`).join("; ")}`,
         `Gateway signature: ${c.signature.ok ? "valid" : "INVALID, do not rely on this"}. Valid until ${s.validUntil}.`,
