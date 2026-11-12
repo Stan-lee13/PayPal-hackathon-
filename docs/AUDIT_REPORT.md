@@ -66,7 +66,10 @@ How real each part is. **Operational** means it ran on the real PayPal sandbox a
 | Record of every PayPal call, shown per envelope | Operational | `evidence/sandbox-run.json`, `evidence/sdk-run.md`; `tests/paypal-rail.test.ts` |
 | SDK (`sdk/`), with the MCP server and command line built on it | Operational for the SDK; the rebuilt MCP server is tested over real MCP on the simulator | `evidence/sdk-run.md`; `tests/sdk.test.ts`, `tests/mcp.test.ts` |
 | Sweep of unfinished payments | Operational (ran on the sandbox from the script, nothing to move). Scheduled daily in `vercel.json`; the schedule has not been seen to fire | `evidence/sandbox-run.json` |
-| PayPal events: verified, applied once | Simulated only; the sandbox rejected a forged event | `tests/paypal-rail.test.ts` |
+| PayPal events: verified, applied once | Operational. From PayPal's event feed: seven events about one run applied once each, one of which settled a payment. Pushed: two deliveries confirmed by PayPal's signature check and the same two edited refused; they reached the gateway by replay from the hosted copy's log, not directly | `evidence/paypal-events.json`; `tests/paypal-rail.test.ts` |
+| The owner approves the hold in PayPal's own checkout | Tested end to end on the simulator. On the sandbox PayPal made the order and returned its approval link, and sealing before approval was refused; a person's approval is pending <!-- APPROVAL-SANDBOX --> | `tests/approval.test.ts`, `tests/sdk.test.ts`, the browser test; `scripts/approval-check.ts` |
+| PayPal's honor period in proof of funds | Tested (arithmetic on the expiry PayPal reports; signed with the statement) | `tests/gateway.test.ts` |
+| A copy with no gateway logs PayPal's deliveries for replay | Operational on the hosted copy (the two deliveries above came from its log); tested | `lib/api/relay.ts`; `tests/paypal-rail.test.ts` |
 | Recall of an unclaimed payout | Simulated only; PayPal's sandbox would not cancel | `tests/paypal-rail.test.ts`; `evidence/sandbox-run.json` records the refusals |
 | Refund by the agent that was paid | Operational | `evidence/sandbox-run.json` (capture `1XG96277EH6264408`, refund `4C249901ET649933V`); `tests/books.test.ts`, `tests/sdk.test.ts` |
 | A refund keeps the envelope's budget used, as PayPal keeps the hold used | Operational | `scripts/paypal-refund-capacity.ts` on the sandbox; the main run refuses the refunded $6 a second time |
@@ -77,7 +80,7 @@ How real each part is. **Operational** means it ran on the real PayPal sandbox a
 | Refund-due handling | Simulated only | the sandbox never refused a refund |
 | Returned or failed payout handling | Simulated only | no sandbox payout failed |
 | Keys sealed at rest | Tested | `tests/settlement.test.ts` |
-| Hold reauthorization, payer-present funding, Vault, Invoicing, order tracking, partial refunds | Not built | — |
+| Hold reauthorization, Vault, Invoicing, order tracking, Login with PayPal, PayPal's Agent Toolkit, partial refunds | Not built. Reauthorization cannot be exercised on the sandbox before a hold's fourth day | — |
 | Lending, interest, insurance, network cards | Not built, and not to be built without licensed partners | — |
 
 ## Findings
@@ -89,13 +92,14 @@ Severity is about what could go wrong with money or private data. Faults that we
 | Finding | Severity | State |
 |---|---|---|
 | The database and PayPal cannot commit together; correctness depends on a fixed order of steps, idempotency keys and guarded status changes | — | By design. Described in the architecture document. Every step is retryable; four concurrency and failure cases have tests |
-| Nothing advances unfinished payments on a timer | Medium | Mostly closed: the sweep is scheduled daily in `vercel.json` and a webhook receiver exists. The schedule has not been seen to fire, and no webhook is registered |
-| A hold that lapses at PayPal is not reauthorized | Medium | Open. An envelope can live at most 28 days for this reason |
+| Nothing advances unfinished payments on a timer | Medium | Mostly closed: PayPal's events finished payments on the sandbox, from its feed and pushed (by replay from the hosted copy's log); the sweep is scheduled daily in `vercel.json`. The schedule has not been seen to fire, and a delivery received directly by a deployed gateway has not been run |
+| A hold that lapses at PayPal is not reauthorized, and after three days it is past PayPal's honor period | Medium | Open. An envelope can live at most 28 days. Proof of funds now says when the honor period ends, so a payee can see a weaker hold for what it is; nothing renews it |
 | Captured funds rest in the gateway's PayPal account between capture and payout, and for as long as an agent keeps a balance | High for real money | Open. This is the main reason the system is sandbox-only |
 | A payout accepted by PayPal and held `UNCLAIMED` stays charged until PayPal returns it or the owner recalls it | Low | Open; shown as unclaimed, never as paid. Recall has not completed on the sandbox |
 | A payment into a balance cannot be reversed by the payer | Medium | Partly closed. The agent that was paid can refund it in full while it still holds the money (ran on the sandbox). The payer's own route is a dispute at PayPal, which the gateway finds and answers with evidence (simulator only) |
 | After a refund the books returned the budget, which PayPal does not | High | Fixed on 12 November: the amount stays used and is recorded as refunded. Found on the sandbox |
 | What agents are owed was checked only against the gateway's own arithmetic | Medium | Closed in part: reserves compare it with PayPal's reported balance at PayPal's dated moment. On the sandbox the account holds old test money, so the check cannot fail there |
+| The owner's consent to the hold was never given at PayPal: the hold went on a sandbox test card | Medium | Closed in part: the owner can approve the hold in PayPal's own checkout, and the gateway seals only on PayPal's word that the order made for this envelope is approved. Proven on the simulator; pending a person's approval on the sandbox <!-- APPROVAL-SANDBOX --> |
 
 ### Security and privacy
 

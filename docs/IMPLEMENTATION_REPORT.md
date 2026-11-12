@@ -1,6 +1,6 @@
 # Implementation report
 
-What was researched, decided, built and proven in the round of work that ended on 11 November 2026 (pull request #8), and in the shorter round that followed on 12 November (pull request #9), which has its own section at the end. Earlier rounds are in the git history and in [`RED_TEAM_REPORT.md`](RED_TEAM_REPORT.md).
+What was researched, decided, built and proven in the round of work that ended on 11 November 2026 (pull request #8), and in the two shorter rounds that followed on 12 November (pull request #9, then #10 and #11), each with its own section at the end. Earlier rounds are in the git history and in [`RED_TEAM_REPORT.md`](RED_TEAM_REPORT.md).
 
 ## The question this round answered
 

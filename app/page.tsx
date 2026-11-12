@@ -1,3 +1,4 @@
+import { Journey } from "@/components/journey";
 import Link from "next/link";
 import { ModeBanner } from "@/components/mode-banner";
 import { SiteHeader } from "@/components/site-header";
@@ -51,7 +52,7 @@ const RAIL: Array<{ api: string; does: string; proven: "sandbox" | "simulator"; 
   { api: "Captures · refund", does: "Money goes back to the owner: when a paid agent gives a payment back, or when a payout cannot be delivered. That part of the envelope stays used, as it does at PayPal.", proven: "sandbox", note: "an agent's refund ran on the sandbox; a refund after a failed payout only on the simulator" },
   { api: "Payouts item · cancel", does: "The owner recalls a payment nobody claimed, instead of waiting thirty days.", proven: "simulator", note: "PayPal's sandbox answered every cancel with a server error" },
   { api: "Webhooks · event feed", does: "PayPal's own events finish a settlement. Each one makes the gateway read the record it names from PayPal, and is applied once.", proven: "sandbox", note: "seven events about one run; one of them took a payment from pending to paid" },
-  { api: "Webhooks · verify signature", does: "A delivery PayPal pushes is verified with PayPal before anything is done with it.", proven: "sandbox", note: "two genuine deliveries confirmed and the same two with one character changed refused; they reached the gateway by replay from this copy's log" },
+  { api: "Webhooks · verify signature", does: "A delivery PayPal pushes is verified with PayPal before anything is done with it.", proven: "sandbox", note: "two genuine deliveries confirmed and the same two with one character changed refused; they reached the gateway by replay from the hosted copy's log" },
   { api: "Reporting · balances", does: "Is the money really there? What agents are owed is set against the balance PayPal itself reports for the account.", proven: "sandbox", note: "PayPal's figure is a couple of hours old, so the comparison is made at that moment" },
   { api: "Reporting · transaction search", does: "A second source. Every capture, payout and refund recorded here is looked up in PayPal's own statement of the account, which is also where PayPal's fees show.", proven: "sandbox", note: "records are listed up to three hours late; a record that disagrees has only been produced on the simulator" },
   { api: "Disputes · list, show, provide evidence", does: "If a payer disputes a payment at PayPal, the gateway finds it and answers with the payer's own signed chain of authority.", proven: "simulator", note: "the sandbox was asked and holds no dispute against this account" },
@@ -187,6 +188,8 @@ export default function Home() {
             <p className="text-[.95rem] text-ink-2"><span className="title mr-2 text-[1.5rem] text-ink">Set aside</span>An agent can earmark the fee for one payee before the work starts. It is reserved at every level like a payment, so nothing else can spend it. It is paid when the agent says so, or when an agent it named signs for the delivered work; the work&rsquo;s fingerprint goes on the receipt.</p>
           </div>
         </section>
+
+        <Journey />
 
         {/* ------------------------------------------------------------------ the PayPal rail */}
         {rails.length > 0 && (

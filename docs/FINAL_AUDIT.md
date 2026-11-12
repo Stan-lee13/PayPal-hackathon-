@@ -2,7 +2,7 @@
 
 The state of the entry on 12 November 2026, on branch `ccr-8487dcc7-qzxc0i` (pull request #11; pull requests #8, #9 and #10 are merged). The Devpost deadline is 12 November 2026, 12:00 pm PST (20:00 UTC, 9:00 pm in Lagos). The rules say that after the deadline nothing may be touched: no commits, no README edits.
 
-Every line marked "ran" or "pass" was run on this branch; where a check was last run before the final changes, the line says so. What was built in the last two rounds, and how it was decided, is in [`IMPLEMENTATION_REPORT.md`](IMPLEMENTATION_REPORT.md).
+Every line marked "ran" or "pass" was run on this branch; where a check was last run before the final changes, the line says so. What was built in the last three rounds, and how it was decided, is in [`IMPLEMENTATION_REPORT.md`](IMPLEMENTATION_REPORT.md).
 
 ## Verdict
 
@@ -45,8 +45,8 @@ The only component that holds PayPal credentials is the gateway. No model output
 | Production build | Pass | `next build` |
 | Automated tests | 114 of 114 pass | `npm test`, PayPal simulator, local Postgres |
 | Attack corpus | 171 of 171 refused, none moved money | `npx tsx scripts/attack-suite.ts` |
-| Browser test, server gateway | Pass, with the payer-approval step | `scripts/e2e.mjs` in Chromium on the simulator, with a second tab open to the end. Last run before the honor-period dates were added to two pages |
-| Browser test, in-browser gateway | Pass, with the payer-approval step (one run; 15 of 15 on the code before that step) | the same script with no database: the mode the hosted copy runs in. Before the fix to tab sharing it failed about one run in two with a second tab open. Last run before the honor-period dates were added to two pages |
+| Browser test, server gateway | Pass, on the final code, with the payer-approval step | `scripts/e2e.mjs` in Chromium on the simulator, with a second tab open to the end |
+| Browser test, in-browser gateway | Pass, 3 of 3 runs on the final code with the payer-approval step (15 of 15 on the code before that step) | the same script with no database: the mode the hosted copy runs in. Before the fix to tab sharing it failed about one run in two with a second tab open |
 | Two tabs, in-browser gateway | Pass | `scripts/tabs-stress.mjs`: reloads, closes, the tab holding the database going away, the database moving mid-request. Its last step fails every time without the fix |
 | Phone width | No sideways scroll on six pages at 390 px | measured in Chromium; not tried on a phone |
 | Real PayPal sandbox, scripted | Ran on 12 November | `scripts/sandbox-run.ts`; `evidence/sandbox-run.json` |

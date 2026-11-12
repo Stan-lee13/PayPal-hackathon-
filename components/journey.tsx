@@ -26,7 +26,7 @@ export function Journey() {
         <p className="mt-4 max-w-2xl text-ink-2">Accounts, cards, the treasury, receipts and the books are not separate features. They are the same payment seen at different moments, and every one of them rests on the step before it.</p>
         <ol className="mt-10 border-t-[1.5px] border-ink">
           {STEPS.map((s, i) => (
-            <li key={s.step} className="grid grid-cols-[2.2rem_minmax(0,1fr)] gap-x-4 gap-y-1 border-b border-rule py-4 md:grid-cols-[2.2rem_minmax(0,1.1fr)_minmax(0,2fr)_minmax(0,1.5fr)_auto] md:items-baseline md:gap-x-6">
+            <li key={s.step} className="grid grid-cols-[2.2rem_minmax(0,1fr)] gap-x-4 gap-y-1 border-b border-rule py-4 md:grid-cols-[2.2rem_minmax(0,1.1fr)_minmax(0,2fr)_minmax(0,1.5fr)_9.5rem] md:items-baseline md:gap-x-6">
               <span className="mono text-sm text-ink-3">{String(i + 1).padStart(2, "0")}</span>
               <span className="title text-[1.15rem]">{s.step}</span>
               <span className="col-start-2 text-[.92rem] text-ink-2 md:col-start-auto">{s.what}</span>
