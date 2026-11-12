@@ -49,6 +49,12 @@ async function ownerAsks(body: unknown, principal: string): Promise<boolean> {
 }
 const spendStatus = (s: string) => (s === "DENIED" ? 403 : s === "FAILED" ? 502 : s === "LAPSED" ? 409 : 200);
 
+async function sweepFor(headers: Record<string, string> | undefined): Promise<Output> {
+  const secret = process.env.CRON_SECRET;
+  if (secret && headers?.authorization !== `Bearer ${secret}`) return { status: 401, body: { error: "Not authorized." } };
+  return { body: await S.sweepUnfinished() };
+}
+
 /** When each unfinished payment was last put to PayPal because somebody looked at its envelope. */
 const lastAsked = new Map<string, number>();
 
@@ -131,11 +137,9 @@ export const handlers: Record<string, Handler> = {
   },
 
   /** Move along everything unfinished. For a scheduler: with CRON_SECRET set, it must be presented as a bearer token. */
-  "POST /api/sweep": async ({ headers }) => {
-    const secret = process.env.CRON_SECRET;
-    if (secret && headers?.authorization !== `Bearer ${secret}`) return { status: 401, body: { error: "Not authorized." } };
-    return { body: await S.sweepUnfinished() };
-  },
+  "POST /api/sweep": async ({ headers }) => sweepFor(headers),
+  /** The same, for schedulers that can only GET (Vercel Cron). */
+  "GET /api/sweep": async ({ headers }) => sweepFor(headers),
 
   "GET /api/proof/:root": async ({ params }) => {
     const g = await proof(params.root!);
