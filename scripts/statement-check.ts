@@ -26,7 +26,7 @@ const out = {
   // From PayPal's statement alone, for the records it lists: the fees are PayPal's own figures.
   position: { cameIn: usd(st.position.inMinor), wentOut: usd(st.position.outMinor), refunded: usd(st.position.refundedMinor), paypalFees: usd(st.position.feesMinor), leftAtPayPalByTheseRecords: usd(st.position.netMinor), note: "Agents and payees were credited and paid the full amounts; PayPal's fees fall on the gateway's operator and are not priced in." },
   reserves: { owedToAgents: usd(res.owed.balancesMinor), owedAtPayPalsMoment: usd(res.owed.atPayPalsTimeMinor), paypalAvailable: res.paypal ? usd(res.paypal.availableMinor) : null, paypalAsOf: res.paypal?.asOf ?? null, covered: res.covered },
-  matches: st.matches.map((m) => ({ what: m.what, paypalId: m.paypalId, payment: m.spend, recorded: usd(m.amountMinor), onPayPalsStatement: m.listedMinor === null ? null : usd(m.listedMinor), paypalFee: m.feeMinor === null ? null : usd(m.feeMinor), verdict: m.verdict })),
+  matches: st.matches.map((m) => ({ what: m.what, paypalId: m.paypalId, payment: m.spend, recorded: usd(m.amountMinor), onPayPalsStatement: m.listedMinor === null ? null : usd(m.listedMinor), paypalFee: m.feeMinor === null ? null : usd(m.feeMinor), ...(m.returned ? { cameBack: true } : {}), verdict: m.verdict })),
   note: "Lines not from this database are other activity on the same sandbox account (earlier runs). A record not listed yet is within PayPal's stated lag, not an error.",
 };
 console.log(JSON.stringify({ ...out, matches: `${out.matches.length} (see file)` }, null, 1));

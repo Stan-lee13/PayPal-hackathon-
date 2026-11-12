@@ -77,6 +77,8 @@ export type StatementMatch = {
   amountMinor: number; listedMinor: number | null;
   /** What PayPal charged on this line, from its statement. Null until the line is listed. */
   feeMinor: number | null;
+  /** A payout that PayPal returned or cancelled. It is still looked up, but it is not money that went out. */
+  returned: boolean;
   verdict: "listed" | "amount differs" | "not listed yet";
 };
 
@@ -91,8 +93,10 @@ export type StatementMatch = {
  *
  * The statement is also the only place PayPal's fees appear. Agents and payees are credited and paid the
  * full amounts, so the fees fall on whoever operates the gateway; `position` says what the listed records
- * left at PayPal once they are taken off.
+ * left at PayPal once they are taken off. A payout PayPal returned or cancelled is left out of that sum,
+ * with its fee: the money came back, and PayPal lists the reversal as a line of its own.
  */
+const CAME_BACK = ["FAILED", "RETURNED", "BLOCKED", "REFUNDED", "REVERSED", "DENIED", "CANCELED"];
 export async function statement(hours = 72) {
   const db = getDb();
   const end = new Date(), start = new Date(end.getTime() - Math.min(hours, 24 * 30) * 3600_000);
@@ -103,23 +107,23 @@ export async function statement(hours = 72) {
   const matches: StatementMatch[] = [];
   const seen = new Set<string>();
   const position = { inMinor: 0, outMinor: 0, refundedMinor: 0, feesMinor: 0, netMinor: 0 };
-  const look = (l: (typeof lines)[number] | undefined, paypalId: string, what: StatementMatch["what"], record: { id: string; amountMinor: number; currency: string }) => {
-    if (l) {
-      seen.add(l.id);
+  const look = (l: (typeof lines)[number] | undefined, paypalId: string, what: StatementMatch["what"], record: { id: string; amountMinor: number; currency: string }, returned = false) => {
+    if (l) seen.add(l.id);
+    if (l && !returned) {
       position[what === "capture" ? "inMinor" : what === "payout" ? "outMinor" : "refundedMinor"] += Math.abs(l.amountMinor);
       position.feesMinor += l.feeMinor;
       position.netMinor += l.amountMinor - l.feeMinor;
     }
-    matches.push({ paypalId: l?.id ?? paypalId, what, spend: record.id, amountMinor: record.amountMinor, listedMinor: l ? Math.abs(l.amountMinor) : null, feeMinor: l ? l.feeMinor : null, verdict: !l ? "not listed yet" : Math.abs(l.amountMinor) === record.amountMinor && l.currency === record.currency ? "listed" : "amount differs" });
+    matches.push({ paypalId: l?.id ?? paypalId, what, spend: record.id, amountMinor: record.amountMinor, listedMinor: l ? Math.abs(l.amountMinor) : null, feeMinor: l ? l.feeMinor : null, returned, verdict: !l ? "not listed yet" : Math.abs(l.amountMinor) === record.amountMinor && l.currency === record.currency ? "listed" : "amount differs" });
   };
   const paid = await db.select().from(spends).where(and(isNotNull(spends.captureId), gt(spends.createdAt, start))).orderBy(desc(spends.createdAt)).limit(300);
   for (const s of paid) {
     look(byId.get(s.captureId!), s.captureId!, "capture", s);
-    if (s.payoutTransactionId) look(byId.get(s.payoutTransactionId), s.payoutTransactionId, "payout", s);
+    if (s.payoutTransactionId) look(byId.get(s.payoutTransactionId), s.payoutTransactionId, "payout", s, CAME_BACK.includes(s.payoutStatus ?? ""));
     if (s.refundId) look(byId.get(s.refundId), s.refundId, "refund", s);
   }
   const sent = await db.select().from(transfers).where(and(isNotNull(transfers.payoutItemId), gt(transfers.createdAt, start))).orderBy(desc(transfers.createdAt)).limit(200);
-  for (const t of sent) look(payoutBySender.get(t.id), t.payoutItemId!, "payout", t);
+  for (const t of sent) look(payoutBySender.get(t.id), t.payoutItemId!, "payout", t, CAME_BACK.includes(t.payoutStatus ?? ""));
   const count = (v: StatementMatch["verdict"]) => matches.filter((m) => m.verdict === v).length;
   return {
     mode: paypalMode(), from: start.toISOString(), to: end.toISOString(),

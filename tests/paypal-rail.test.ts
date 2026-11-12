@@ -16,6 +16,7 @@ d("the PayPal rail (simulated PayPal)", async () => {
   const { eq, sql } = await import("drizzle-orm");
   const G = await import("../lib/gateway/service");
   const S = await import("../lib/gateway/settlement");
+  const K = await import("../lib/gateway/books");
   const sim = await import("../lib/paypal/emulator");
   const { handlers, run } = await import("../lib/api/handlers");
   const { resetSimMemory } = await import("../lib/sim/store");
@@ -100,6 +101,13 @@ d("the PayPal rail (simulated PayPal)", async () => {
     expect((await G.spend(await E.signSpend(w.chain, w.ops, { amount: 8000, payee: w.payee, purpose: "design" }))).status).toBe("UNCLAIMED");
     const t = (await S.paypalTrail(w.root.id))!;
     expect(t.summary).toMatchObject({ cancels: 1, refunds: 1 });
+    // PayPal's statement: $67 and $80 came in, the $67 was refunded, and only the $80 payout is money out: the recalled one came back.
+    const st = await K.statement();
+    expect(st).toMatchObject({ differs: 0, notListedYet: 0, ok: true, position: { inMinor: 14700, outMinor: 8000, refundedMinor: 6700, feesMinor: 0, netMinor: 0 } });
+    expect(st.matches.filter((m) => m.returned).map((m) => m.what)).toEqual(["payout"]);
+    // and what those records leave at PayPal is the balance PayPal itself reports
+    K.forgetBalance();
+    expect((await K.reserves()).paypal?.availableMinor).toBe(st.position.netMinor);
   });
 
   it("a delivered payment cannot be recalled", async () => {
@@ -167,6 +175,11 @@ d("the PayPal rail (simulated PayPal)", async () => {
     expect(again.events.outcomes[0]!.outcome).toBe("payment unchanged (FAILED)");
     expect((await S.sweepUnfinished()).events.applied).toBe(0);
     expect(await calls("/refund")).toBe(1);
+    // the statement counts neither the returned payout nor anything left behind: capture in, refund out, nothing at PayPal
+    const st = await K.statement();
+    K.forgetBalance();
+    expect(st.position.netMinor).toBe(0);
+    expect((await K.reserves()).paypal?.availableMinor).toBe(0);
   });
 
   it("when PayPal reports the hold voided, the envelope closes and nothing more can be spent", async () => {
