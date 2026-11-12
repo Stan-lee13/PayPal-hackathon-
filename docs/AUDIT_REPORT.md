@@ -36,7 +36,7 @@ An audit of the repository as it stood on 11 November 2026, done by reading the 
         └── lib/paypal/              client (sandbox) and a built-in simulator
 ```
 
-Tables: `roots`, `blocks`, `spends`, `accounts`, `ledger`, `transfers`, `cards`, `audit_log` (hash-chained), `paypal_calls`, `paypal_events`, `gateway_keys`, `demo_keys`, `rate_limits`, `emulator_state`. Seven migrations. This inventory was written before the SDK, the record of PayPal calls, recall and events were added; those are in the rows marked below and in [`IMPLEMENTATION_REPORT.md`](IMPLEMENTATION_REPORT.md).
+Tables: `roots`, `blocks`, `spends`, `accounts`, `ledger`, `transfers`, `cards`, `audit_log` (hash-chained), `paypal_calls`, `paypal_events`, `gateway_keys`, `demo_keys`, `rate_limits`, `emulator_state`. Nine migrations. `lib/gateway/books.ts` (reserves, PayPal's statement, disputes and evidence) and `lib/gateway/settlement.ts` sit beside `service.ts` and `bank.ts`. This inventory was written before the SDK, the record of PayPal calls, recall, events, refunds, reserves, the statement check and disputes were added; those are in the rows marked below and in [`IMPLEMENTATION_REPORT.md`](IMPLEMENTATION_REPORT.md).
 
 ## Feature inventory
 
@@ -62,17 +62,22 @@ How real each part is. **Operational** means it ran on the real PayPal sandbox a
 | Proof graph | Operational | shown in the video on the sandbox (`evidence/model-run.md`); `scripts/e2e.mjs` on the simulator in both gateway modes |
 | A model playing the agents inside the app | Operational | `evidence/model-run.md` |
 | MCP server and command line | Operational for split, pay and cards; the balance commands were run on the simulator | `evidence/agent-run.md`, `evidence/card-run.md` |
-| In-browser gateway (the hosted try-it copy) | Operational as a simulator | the browser test; production health check |
+| In-browser gateway (the hosted try-it copy) | Operational as a simulator; its tab sharing was rebuilt on 12 November so a closed or reloaded tab cannot freeze the others | the browser test; `scripts/tabs-stress.mjs`; production health check |
 | Record of every PayPal call, shown per envelope | Operational | `evidence/sandbox-run.json`, `evidence/sdk-run.md`; `tests/paypal-rail.test.ts` |
 | SDK (`sdk/`), with the MCP server and command line built on it | Operational for the SDK; the rebuilt MCP server is tested over real MCP on the simulator | `evidence/sdk-run.md`; `tests/sdk.test.ts`, `tests/mcp.test.ts` |
-| Sweep of unfinished payments | Operational (ran on the sandbox, nothing to move) | `evidence/sandbox-run.json` |
+| Sweep of unfinished payments | Operational (ran on the sandbox from the script, nothing to move). Scheduled daily in `vercel.json`; the schedule has not been seen to fire | `evidence/sandbox-run.json` |
 | PayPal events: verified, applied once | Simulated only; the sandbox rejected a forged event | `tests/paypal-rail.test.ts` |
 | Recall of an unclaimed payout | Simulated only; PayPal's sandbox would not cancel | `tests/paypal-rail.test.ts`; `evidence/sandbox-run.json` records the refusals |
+| Refund by the agent that was paid | Operational | `evidence/sandbox-run.json` (capture `1XG96277EH6264408`, refund `4C249901ET649933V`); `tests/books.test.ts`, `tests/sdk.test.ts` |
+| A refund keeps the envelope's budget used, as PayPal keeps the hold used | Operational | `scripts/paypal-refund-capacity.ts` on the sandbox; the main run refuses the refunded $6 a second time |
+| Reserves: what agents are owed against PayPal's reported balance | Operational for the reading; a shortfall has only been produced on the simulator | `evidence/sandbox-run.json`; `tests/books.test.ts` |
+| PayPal's statement (Transaction Search) against the records | Matched on the sandbox: all 28 listed with the same amount, none with a different one. PayPal's fees are read from the same lines ($24.69 on the listed records) <!-- STATEMENT-CHECK --> | `evidence/statement-check.json`; `tests/books.test.ts` |
+| Disputes: found, marked, answered with evidence | Asked on the sandbox (none held); the rest simulated only | `evidence/sandbox-run.json`; `tests/books.test.ts` |
 | Pending capture handling | Simulated only | the sandbox never returned a pending capture |
 | Refund-due handling | Simulated only | the sandbox never refused a refund |
 | Returned or failed payout handling | Simulated only | no sandbox payout failed |
 | Keys sealed at rest | Tested | `tests/settlement.test.ts` |
-| Hold reauthorization, payer-present funding, disputes, Vault, Transaction Search | Not built | — |
+| Hold reauthorization, payer-present funding, Vault, Invoicing, order tracking, partial refunds | Not built | — |
 | Lending, interest, insurance, network cards | Not built, and not to be built without licensed partners | — |
 
 ## Findings
@@ -84,11 +89,13 @@ Severity is about what could go wrong with money or private data. Faults that we
 | Finding | Severity | State |
 |---|---|---|
 | The database and PayPal cannot commit together; correctness depends on a fixed order of steps, idempotency keys and guarded status changes | — | By design. Described in the architecture document. Every step is retryable; four concurrency and failure cases have tests |
-| Nothing advances unfinished payments on a timer | Medium | Partly closed: a sweep endpoint and a webhook receiver exist; neither is scheduled or registered on a deployment |
+| Nothing advances unfinished payments on a timer | Medium | Mostly closed: the sweep is scheduled daily in `vercel.json` and a webhook receiver exists. The schedule has not been seen to fire, and no webhook is registered |
 | A hold that lapses at PayPal is not reauthorized | Medium | Open. An envelope can live at most 28 days for this reason |
 | Captured funds rest in the gateway's PayPal account between capture and payout, and for as long as an agent keeps a balance | High for real money | Open. This is the main reason the system is sandbox-only |
-| A payout accepted by PayPal and held `UNCLAIMED` stays debited until PayPal returns it | Low | Open; shown as unclaimed, never as paid |
-| A payment into a balance cannot be reversed by the payer | Medium | Open. Disputes are not built |
+| A payout accepted by PayPal and held `UNCLAIMED` stays charged until PayPal returns it or the owner recalls it | Low | Open; shown as unclaimed, never as paid. Recall has not completed on the sandbox |
+| A payment into a balance cannot be reversed by the payer | Medium | Partly closed. The agent that was paid can refund it in full while it still holds the money (ran on the sandbox). The payer's own route is a dispute at PayPal, which the gateway finds and answers with evidence (simulator only) |
+| After a refund the books returned the budget, which PayPal does not | High | Fixed on 12 November: the amount stays used and is recorded as refunded. Found on the sandbox |
+| What agents are owed was checked only against the gateway's own arithmetic | Medium | Closed in part: reserves compare it with PayPal's reported balance at PayPal's dated moment. On the sandbox the account holds old test money, so the check cannot fail there |
 
 ### Security and privacy
 
@@ -122,4 +129,4 @@ Found by using the app on a desktop and a phone-sized screen, as an owner, a pay
 
 ## Verdict
 
-The core claim holds up: one PayPal hold, authority that can only be narrowed, every payment traceable to a person, and no model deciding whether money moves. The audit found fifteen real faults, most in the hours before submission, and fixed them with tests. What remains open is mostly what separates a sandbox demonstration from a product that touches real money: custody, key management, timers and webhooks, and a review by someone who did not write the code.
+The core claim holds up: one PayPal hold, authority that can only be narrowed, every payment traceable to a person, and no model deciding whether money moves. The audit found fifteen real faults, most in the hours before submission, and fixed them with tests; five more were found and fixed the next day (red team report, items 16 to 20), one of them by the real sandbox contradicting the books. What remains open is mostly what separates a sandbox demonstration from a product that touches real money: custody, key management, timers and webhooks, and a review by someone who did not write the code.

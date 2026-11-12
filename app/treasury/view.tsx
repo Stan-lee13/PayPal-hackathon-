@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/client/api";
+import { usePoll } from "@/lib/client/poll";
 import { fingerprint, signAccept, signRead, signRevoke, type KeyPair } from "@/lib/envelope/core";
 import { principalKey } from "@/lib/principal-key";
 import { Figure, Meter, Sigil, SpendStamp, Stamp, usd } from "@/components/stationery";
@@ -35,12 +36,8 @@ export function TreasuryView() {
     const r = await api(`/api/treasury/${key.publicKey}`, { method: "POST", body: { signed: await signRead(key, "treasury", key.publicKey) } });
     setD(r.ok ? r.json : null);
   }, []);
-  useEffect(() => { void principalKey(false).then((k) => { setMe(k); if (k) void load(k); else setD(null); }); }, [load]);
-  useEffect(() => {
-    if (!me) return;
-    const t = setInterval(() => { if (document.visibilityState === "visible") void load(me); }, 4000);
-    return () => clearInterval(t);
-  }, [me, load]);
+  useEffect(() => { void principalKey(false).then((k) => { setMe(k); if (!k) setD(null); }); }, []);
+  usePoll(async () => { if (me) await load(me); }, 4000, me?.publicKey);
 
   async function revoke(a: AgentRow) {
     if (!me) return;

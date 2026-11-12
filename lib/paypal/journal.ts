@@ -24,6 +24,10 @@ const OPS: Array<[string, RegExp, string]> = [
   ["POST", /^\/v1\/payments\/payouts$/, "payout.send"],
   ["GET", /^\/v1\/payments\/payouts\/[^/]+$/, "payout.read"],
   ["POST", /^\/v1\/payments\/payouts-item\/[^/]+\/cancel$/, "payout.cancel"],
+  ["GET", /^\/v1\/reporting\/balances$/, "balance.read"],
+  ["GET", /^\/v1\/reporting\/transactions$/, "statement.read"],
+  ["GET", /^\/v1\/customer\/disputes(\/[^/]+)?$/, "dispute.read"],
+  ["POST", /^\/v1\/customer\/disputes\/[^/]+\/provide-evidence$/, "dispute.evidence"],
   ["POST", /^\/v1\/notifications\/verify-webhook-signature$/, "event.verify"],
   ["GET", /^\/v1\/notifications\/webhooks-events$/, "event.feed"],
 ];
@@ -31,13 +35,14 @@ export const OP_TEXT: Record<string, string> = {
   "hold.place": "Placed the hold", "hold.read": "Read the hold", "hold.void": "Released the rest of the hold",
   capture: "Captured part of the hold", "capture.read": "Read a capture", refund: "Refunded a capture",
   "payout.send": "Sent a payout", "payout.read": "Read a payout", "payout.cancel": "Cancelled an unclaimed payout",
+  "balance.read": "Read the account balance", "statement.read": "Read its own statement", "dispute.read": "Asked about disputes", "dispute.evidence": "Sent evidence for a dispute",
   "event.verify": "Verified an event's signature", "event.feed": "Read its event feed",
 };
 /** Operations that change something at PayPal, as opposed to asking. */
-export const MOVES = ["hold.place", "capture", "hold.void", "refund", "payout.send", "payout.cancel"];
+export const MOVES = ["hold.place", "capture", "hold.void", "refund", "payout.send", "payout.cancel", "dispute.evidence"];
 
 /** Path words that are PayPal's, as opposed to ids. */
-const WORDS = new Set(["v1", "v2", "v3", "checkout", "orders", "payments", "authorizations", "captures", "capture", "void", "refund", "payouts", "payouts-item", "cancel", "notifications", "verify-webhook-signature", "webhooks-events"]);
+const WORDS = new Set(["v1", "v2", "v3", "checkout", "orders", "payments", "authorizations", "captures", "capture", "void", "refund", "payouts", "payouts-item", "cancel", "notifications", "verify-webhook-signature", "webhooks-events", "reporting", "balances", "transactions", "customer", "disputes", "provide-evidence"]);
 type Loose = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 const str = (x: unknown): string | null => (typeof x === "string" && x ? x : null);
 

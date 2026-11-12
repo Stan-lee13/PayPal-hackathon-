@@ -24,7 +24,7 @@ import { formatMoney } from "../money";
 import * as E from "../envelope/core";
 import { getPayPal, PayPalApiError, paypalMode } from "../paypal/client";
 import "../paypal/journal"; // every PayPal call made through this gateway is recorded, whoever loads it
-import { authorizeHold, capturePart, getAuthorization, getCapture, getPayout, payout, refundCapture, voidAuthorization } from "../paypal/payments";
+import { authorizeHold, capturePart, disputesFor, getAuthorization, getCapture, getPayout, payout, refundCapture, voidAuthorization, type DisputeFacts } from "../paypal/payments";
 import { openJwk, sealJwk } from "../keystore";
 import { audit } from "../services/audit";
 
@@ -417,12 +417,15 @@ export async function settle(spendId: string): Promise<Spend> {
   };
   const receipt: Receipt = { ...receiptBody, sig: await E.signDetached(gw.privateKey, RECEIPT_VERSION, receiptBody) };
   const status = credit ? "PAID" : payoutState(s.payoutStatus);
+  let mine = false; // did THIS arrival of the request finish the payment? Only then does it write it up.
   const final = await db.transaction(async (tx) => {
     await lockRoot(tx, s.rootId);
     const [u] = await tx.update(spends).set({ status, receipt, settledAt: new Date() }).where(and(eq(spends.id, s.id), eq(spends.status, "CAPTURED"))).returning();
-    if (u) await tx.update(blocks).set({ reservedMinor: sql`${blocks.reservedMinor} - ${s.amountMinor}`, spentMinor: sql`${blocks.spentMinor} + ${s.amountMinor}` }).where(inArray(blocks.id, s.chainIds));
+    if (u) { mine = true; await tx.update(blocks).set({ reservedMinor: sql`${blocks.reservedMinor} - ${s.amountMinor}`, spentMinor: sql`${blocks.spentMinor} + ${s.amountMinor}` }).where(inArray(blocks.id, s.chainIds)); }
     return u ?? (await tx.query.spends.findFirst({ where: eq(spends.id, s.id) }))!;
   });
+  // Another arrival of the same request got there first and has already recorded it on the audit trail: one payment, one line.
+  if (!mine) return final;
   if (credit) { await trail(root, "gateway", "balance.credited", "OK", s.captureId, { spend: s.id, account: s.payee, amount: formatMoney(s.amountMinor, s.currency), ledgerEntry: credit.id }); return final; }
   await trail(root, "paypal", "payout.sent", "OK", s.payoutBatchId, { spend: s.id, to: s.payoutTo ?? s.payee, ...(s.payeeAgent ? { account: s.payee } : {}), amount: formatMoney(s.amountMinor, s.currency), item: s.payoutItemId, status: s.payoutStatus });
   if (s.payoutStatus && PAYOUT_DEAD.includes(s.payoutStatus)) return undoDeadPayout(final, s.payoutStatus, null);
@@ -438,15 +441,19 @@ function payoutState(itemStatus: string | null): Spend["status"] {
 
 /**
  * Captured money that cannot reach its payee goes back to the owner. If PayPal refuses the refund as
- * well, the owner has still been charged: the spend is parked as REFUND_DUE, the capture stays in the
- * books and the budget stays used, until a later attempt (syncSpend) gets the refund through.
+ * well, the owner has still been charged: the spend is parked as REFUND_DUE and the capture stays in the
+ * books until a later attempt (syncSpend) gets the refund through.
+ *
+ * A refund gives the owner their money back. It does not give the hold its capacity back: PayPal counts
+ * a refunded capture against the authorization for good (seen on the sandbox, scripts/paypal-refund-capacity.ts).
+ * So the amount stays used in every envelope on the path, and the root records it as refunded, not as free.
  */
 async function refundOrPark(s: Spend, root: Root, why: string, payoutStatus: string | null): Promise<Spend> {
   const db = getDb();
   let refundId: string | null = null;
   try { refundId = (await refundCapture(getPayPal(), s.captureId!, s.id, "Payout could not be delivered")).id; }
   catch (e) { if (e instanceof PayPalApiError && e.issue === "CAPTURE_FULLY_REFUNDED") refundId = "already-refunded"; }
-  const reason: E.Violation = { code: "PAYPAL_PAYOUT_FAILED", at: root.id, detail: `${why}${refundId ? "; the capture was refunded to the owner" : "; the refund also failed, so the owner has been charged and the amount stays counted until PayPal accepts the refund"}` };
+  const reason: E.Violation = { code: "PAYPAL_PAYOUT_FAILED", at: root.id, detail: `${why}${refundId ? "; the capture was refunded to the owner (that part of the hold stays used: PayPal does not return it)" : "; the refund also failed, so the owner has been charged and the amount stays counted until PayPal accepts the refund"}` };
   return db.transaction(async (tx) => {
     await lockRoot(tx, s.rootId);
     const live = (await tx.query.spends.findFirst({ where: eq(spends.id, s.id) }))!;
@@ -456,8 +463,8 @@ async function refundOrPark(s: Spend, root: Root, why: string, payoutStatus: str
     if (refundId) {
       const [u] = await tx.update(spends).set({ status: "FAILED", reasons: [reason], refundId, settledAt: new Date(), ...(payoutStatus ? { payoutStatus } : {}) }).where(and(eq(spends.id, s.id), eq(spends.status, live.status))).returning();
       if (!u) return live;
-      await tx.update(blocks).set(inFlight ? { reservedMinor: sql`${blocks.reservedMinor} - ${s.amountMinor}` } : { spentMinor: sql`${blocks.spentMinor} - ${s.amountMinor}` }).where(inArray(blocks.id, s.chainIds));
-      await tx.update(roots).set({ capturedMinor: sql`${roots.capturedMinor} - ${s.amountMinor}` }).where(eq(roots.id, root.id));
+      if (inFlight) await tx.update(blocks).set({ reservedMinor: sql`${blocks.reservedMinor} - ${s.amountMinor}`, spentMinor: sql`${blocks.spentMinor} + ${s.amountMinor}` }).where(inArray(blocks.id, s.chainIds));
+      await tx.update(roots).set({ capturedMinor: sql`${roots.capturedMinor} - ${s.amountMinor}`, refundedMinor: sql`${roots.refundedMinor} + ${s.amountMinor}` }).where(eq(roots.id, root.id));
       return u;
     }
     if (live.status === "REFUND_DUE") return live;
@@ -467,6 +474,47 @@ async function refundOrPark(s: Spend, root: Root, why: string, payoutStatus: str
     if (inFlight) await tx.update(blocks).set({ reservedMinor: sql`${blocks.reservedMinor} - ${s.amountMinor}`, spentMinor: sql`${blocks.spentMinor} + ${s.amountMinor}` }).where(inArray(blocks.id, s.chainIds));
     return u;
   });
+}
+
+/**
+ * A payment that was captured and credited to an agent's balance has been refunded at PayPal on that agent's
+ * signature (lib/gateway/bank.ts). The owner's books follow: the owner is no longer charged for it. The
+ * amount stays used in every envelope on the path, because PayPal does not return a refunded capture to
+ * the hold. Only a PAID, held payment can end this way, and only once.
+ */
+export async function markRefundedByPayee(spendId: string, refundId: string, by: string, memo: string): Promise<Spend> {
+  const db = getDb();
+  const s = (await db.query.spends.findFirst({ where: eq(spends.id, spendId) }))!;
+  const root = (await db.query.roots.findFirst({ where: eq(roots.id, s.rootId) }))!;
+  const why: E.Violation = { code: "REFUNDED_BY_PAYEE", at: root.id, detail: `${by} gave this payment back${memo ? `: ${memo}` : ""}; PayPal refunded the capture to the owner` };
+  const out = await db.transaction(async (tx) => {
+    await lockRoot(tx, s.rootId);
+    const [u] = await tx.update(spends).set({ status: "FAILED", reasons: [why], refundId, payoutStatus: "REFUNDED" }).where(and(eq(spends.id, s.id), eq(spends.status, "PAID"))).returning();
+    if (!u) return (await tx.query.spends.findFirst({ where: eq(spends.id, s.id) }))!;
+    await tx.update(roots).set({ capturedMinor: sql`${roots.capturedMinor} - ${s.amountMinor}`, refundedMinor: sql`${roots.refundedMinor} + ${s.amountMinor}` }).where(eq(roots.id, root.id));
+    return u;
+  });
+  await trail(root, "paypal", "payment.refunded_by_payee", "OK", refundId, { spend: s.id, by, amount: formatMoney(s.amountMinor, s.currency), capture: s.captureId });
+  return out;
+}
+
+/**
+ * Has the payer disputed this payment at PayPal? Asks PayPal about the capture and records what it says.
+ * Returns null when PayPal could not be asked, which is different from "no dispute".
+ */
+export async function checkDispute(spendId: string): Promise<{ spend: Spend; dispute: DisputeFacts | null } | null> {
+  const db = getDb();
+  const s = await db.query.spends.findFirst({ where: eq(spends.id, spendId) });
+  if (!s?.captureId) return null;
+  const found = await disputesFor(getPayPal(), s.captureId).catch(() => null);
+  if (!found) return null;
+  const d = found[0] ?? null;
+  if (!d) return { spend: s, dispute: null };
+  if (s.disputeId === d.id && s.disputeStatus === d.status) return { spend: s, dispute: d };
+  const [u] = await db.update(spends).set({ disputeId: d.id, disputeStatus: d.status }).where(eq(spends.id, s.id)).returning();
+  const root = (await db.query.roots.findFirst({ where: eq(roots.id, s.rootId) }))!;
+  await trail(root, "paypal", s.disputeId ? "dispute.updated" : "dispute.opened", "INFO", d.id, { spend: s.id, capture: s.captureId, status: d.status, reason: d.reason, amount: d.amountMinor });
+  return { spend: u ?? s, dispute: d };
 }
 
 /** PayPal accepted the payout request but later failed or returned it. */
@@ -537,7 +585,7 @@ async function closeRoot(root: Root, reason: string, by: string): Promise<Root> 
     for (const p of open) await lapse(tx, p, { code: "REVOKED", at: root.id, detail: "the envelope was closed by its owner" });
     const inflight = await tx.select({ n: sql<number>`count(*)::int` }).from(spends).where(and(eq(spends.rootId, root.id), inArray(spends.status, ["RESERVED", "CAPTURED"])));
     if ((inflight[0]?.n ?? 0) > 0) throw new UserFacingError("A payment from this envelope is still in flight; try again in a moment.", 409);
-    const [u] = await tx.update(roots).set({ status: "CLOSED", closedAt: new Date(), closeReason: reason, releasedMinor: live.limitMinor - live.capturedMinor }).where(eq(roots.id, root.id)).returning();
+    const [u] = await tx.update(roots).set({ status: "CLOSED", closedAt: new Date(), closeReason: reason, releasedMinor: live.limitMinor - live.capturedMinor - live.refundedMinor }).where(eq(roots.id, root.id)).returning();
     await tx.update(blocks).set({ revokedAt: new Date(), revokedBy: by }).where(and(eq(blocks.id, root.id), sql`${blocks.revokedAt} is null`));
     return u!;
   });
@@ -804,7 +852,7 @@ export async function standing(hello: E.SignedHello): Promise<Standing> {
     try {
       const auth = await getAuthorization(getPayPal(), root.authorizationId);
       paypal.status = auth.status;
-      paypal.unusedMinor = Math.max(0, auth.amountMinor - root.capturedMinor);
+      paypal.unusedMinor = Math.max(0, auth.amountMinor - root.capturedMinor - root.refundedMinor);
       if (auth.status !== "CREATED" && auth.status !== "PARTIALLY_CAPTURED") reasons.push({ code: "ROOT_NOT_FUNDED", at: root.id, detail: `PayPal reports the hold as ${auth.status}` });
       else available = Math.min(available, paypal.unusedMinor);
     } catch (e) {
@@ -1010,14 +1058,15 @@ export async function treasury(principal: string) {
     principal, mode: paypalMode(), ownerName: rootRows[0]!.principalName,
     totals: {
       envelopes: rootRows.length, open: open.length,
-      heldNowMinor: open.reduce((n, r) => n + r.limitMinor - r.capturedMinor, 0),
+      heldNowMinor: open.reduce((n, r) => n + r.limitMinor - r.capturedMinor - r.refundedMinor, 0),
       spentMinor: rootRows.reduce((n, r) => n + r.capturedMinor, 0),
+      refundedMinor: rootRows.reduce((n, r) => n + r.refundedMinor, 0),
       setAsideMinor: ss.filter((x) => x.status === "PROMISED").reduce((n, x) => n + x.amountMinor, 0),
       releasedMinor: rootRows.reduce((n, r) => n + (r.releasedMinor ?? 0), 0),
       payments: paid.length, refused: ss.filter((x) => x.status === "DENIED").length,
       agents: new Set(bs.map((b) => b.holder)).size,
     },
-    envelopes: rootRows.map((r) => ({ id: r.id, title: r.title, status: r.status, limitMinor: r.limitMinor, capturedMinor: r.capturedMinor, releasedMinor: r.releasedMinor, authorizationId: r.authorizationId, createdAt: r.createdAt.toISOString() })),
+    envelopes: rootRows.map((r) => ({ id: r.id, title: r.title, status: r.status, limitMinor: r.limitMinor, capturedMinor: r.capturedMinor, refundedMinor: r.refundedMinor, releasedMinor: r.releasedMinor, authorizationId: r.authorizationId, createdAt: r.createdAt.toISOString() })),
     agents,
     /** Money set aside that names this owner as the key that releases it: waiting for the owner's signature. */
     approvals: ss.filter((x) => x.status === "PROMISED" && (x.signed.request as E.PromiseRequest).releaseBy === principal).map((x) => ({ id: x.id, rootId: x.rootId, rootTitle: rootById.get(x.rootId)!.title, agent: x.leafLabel, payee: x.payee, who: nameOf.get(x.payee)?.label ?? null, purpose: x.purpose, memo: x.memo, agentNote: x.agentNote, amountMinor: x.amountMinor, expiresAt: x.promiseExpiresAt!.toISOString() })),
@@ -1081,6 +1130,7 @@ export async function reconcile(spendId: string) {
   const pp = getPayPal();
   const held = isHeld(s);
   const entry = held ? await db.query.ledger.findFirst({ where: and(eq(ledger.agent, s.payeeAgent!), eq(ledger.kind, "income"), eq(ledger.ref, s.id)) }) : null;
+  const disputed = await checkDispute(s.id);
   const [signatureOk, chainVerdict, cap, po, auth] = await Promise.all([
     verifyReceipt(s.receipt),
     E.verifyChain(s.signed.chain, new Date(s.signed.request.at)),
@@ -1091,12 +1141,14 @@ export async function reconcile(spendId: string) {
   const checks = [
     { name: "Receipt is signed by the gateway", ok: signatureOk },
     { name: "Authority chain verifies back to the principal's key", ok: chainVerdict.ok && chainVerdict.principal === root.principal },
-    { name: "PayPal capture exists for exactly this amount", ok: Boolean(cap && cap.amountMinor === s.amountMinor && cap.currency === s.currency && ["COMPLETED", "PENDING", "PARTIALLY_REFUNDED"].includes(cap.status)), detail: cap ? `${cap.id} · ${cap.status} · ${formatMoney(cap.amountMinor, cap.currency)}` : "not found" },
+    { name: "PayPal capture exists for exactly this amount", ok: Boolean(cap && cap.amountMinor === s.amountMinor && cap.currency === s.currency && ["COMPLETED", "PENDING", "PARTIALLY_REFUNDED", ...(s.refundId ? ["REFUNDED"] : [])].includes(cap.status)), detail: cap ? `${cap.id} · ${cap.status} · ${formatMoney(cap.amountMinor, cap.currency)}` : "not found" },
     { name: "PayPal capture carries this spend's id", ok: Boolean(cap && (cap.invoiceId === s.id || cap.invoiceId === null)), detail: cap?.invoiceId ?? "invoice_id not returned" },
     held
       ? { name: "Credited once to the account the agent signed for", ok: Boolean(entry && entry.deltaMinor === s.amountMinor && s.receipt.paidTo?.held?.ledgerEntry === entry.id), detail: entry ? `ledger entry ${entry.id} · ${formatMoney(entry.deltaMinor, s.currency)} · no payout: the money stays in the agent's balance` : "not found" }
       : { name: "PayPal payout went to the payee the agent signed for", ok: Boolean(po && po.receiver?.toLowerCase() === (s.payoutTo ?? s.payee)), detail: po ? `${po.batchId} · ${po.itemStatus ?? po.batchStatus} · ${po.receiver}` : "not found" },
     { name: "The hold belongs to this envelope", ok: Boolean(auth && (auth.customId === root.id || auth.customId === null)), detail: auth ? `${auth.id} · ${auth.status}` : "not found" },
+    // PayPal's Disputes API, asked about this capture. Left out when PayPal could not be asked: silence is not "no dispute".
+    ...(disputed ? [{ name: "PayPal holds no dispute against this capture", ok: !disputed.dispute, detail: disputed.dispute ? `${disputed.dispute.id} · ${disputed.dispute.status}${disputed.dispute.reason ? ` · ${disputed.dispute.reason}` : ""}` : "none" }] : []),
   ];
   return { spend: s, receipt: s.receipt, checks, ok: checks.every((c) => c.ok) };
 }

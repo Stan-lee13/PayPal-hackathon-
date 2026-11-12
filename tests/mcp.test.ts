@@ -97,10 +97,10 @@ d("MCP server over stdio (simulated PayPal)", () => {
 
     const tools = (await mcp.rpc("tools/list")).result!.tools!;
     const names = tools.map((t) => t.name).sort();
-    expect(names).toEqual(["envelope_accept", "envelope_balance", "envelope_card_cancel", "envelope_card_issue", "envelope_card_list", "envelope_check_agent", "envelope_introduce", "envelope_keep", "envelope_pay", "envelope_promise", "envelope_receipt", "envelope_show", "envelope_split", "envelope_transfer"]);
+    expect(names).toEqual(["envelope_accept", "envelope_balance", "envelope_card_cancel", "envelope_card_issue", "envelope_card_list", "envelope_check_agent", "envelope_introduce", "envelope_keep", "envelope_pay", "envelope_promise", "envelope_receipt", "envelope_refund", "envelope_show", "envelope_split", "envelope_transfer"]);
     const by = Object.fromEntries(tools.map((t) => [t.name, t]));
     for (const n of ["envelope_show", "envelope_balance", "envelope_card_list", "envelope_check_agent", "envelope_introduce", "envelope_receipt"]) expect(by[n]!.annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false });
-    for (const n of ["envelope_pay", "envelope_keep", "envelope_accept", "envelope_transfer", "envelope_card_cancel"]) expect(by[n]!.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true });
+    for (const n of ["envelope_pay", "envelope_keep", "envelope_accept", "envelope_transfer", "envelope_refund", "envelope_card_cancel"]) expect(by[n]!.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true });
     for (const n of ["envelope_split", "envelope_promise", "envelope_card_issue"]) expect(by[n]!.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false });
     // there is no tool that seals, closes or revokes: authority comes from a person
     expect(names.some((n) => /seal|close|revoke|freeze/.test(n))).toBe(false);

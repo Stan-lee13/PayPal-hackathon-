@@ -1,6 +1,6 @@
 # Red team report
 
-What was attacked, what broke, what was fixed, and what is still open. Written 11 November 2026.
+What was attacked, what broke, what was fixed, and what is still open. Written 11 November 2026; the section "12 November" and the open list were updated the next day.
 
 Three sources:
 
@@ -51,6 +51,34 @@ New code, attacked as it was written (`tests/paypal-rail.test.ts`):
 
 Found on the real sandbox and not by any test: PayPal refuses to cancel an unclaimed payout while its batch is still closing (`BATCH_NOT_COMPLETED`). The first version treated that as final. It now says to try again and changes nothing. After that, PayPal's sandbox answered every cancel with `INTERNAL_SERVICE_ERROR`, so the recall has not completed there.
 
+## 12 November: the books against PayPal's own, and the in-browser copy
+
+New code (reserves, PayPal's statement, refunds by the paid agent, disputes) and one piece of old code that turned out to be wrong. The numbering continues from the table above.
+
+| # | Fault | What it would have cost | Found by | Test |
+|---|---|---|---|---|
+| 16 | After a refund or a recall the books gave the budget back at every level. PayPal does not: it counts a refunded capture against the hold for good | An agent told a payment would fit, and the capture then refused by PayPal; an envelope's page showing room that was not there | The real sandbox (`scripts/paypal-refund-capacity.ts`): a second capture after a full refund was refused with `MAX_CAPTURE_AMOUNT_EXCEEDED` | Expectations in `tests/bank.test.ts`, `tests/paypal-rail.test.ts` and `tests/sdk.test.ts` corrected to the true rule; in `evidence/sandbox-run.json` a refunded $6 is asked for again and refused by the gateway |
+| 17 | Reserves compared what agents are owed now with a balance PayPal had dated two hours earlier | A false "not covered" after any new income; a real shortfall could equally have been masked | Author, on the sandbox | `tests/books.test.ts`: the comparison is made at PayPal's dated moment, from the timestamped ledger |
+| 18 | Two arrivals finishing the same payment each wrote a line to the envelope's audit trail | No money. An audit trail that said "payout sent" several times for one payout | Author (left open the day before) | No dedicated test; only the arrival that finishes a payment now writes |
+| 19 | Pages that refresh themselves asked again on a timer without waiting for the last answer | Requests piling up behind a slow answer until the page appeared dead | Author, in the browser test | No dedicated test; `lib/client/poll.ts` starts the next request only when the last has answered |
+| 20 | In the in-browser copy, the multi-tab helper that ships with PGlite 0.5 kept its locks in the holding worker's memory. A tab that closed or reloaded while waiting was handed the lock later and never returned it; a transaction left open by a closed tab could be committed by the next tab's COMMIT; and its client sends one call before every query without checking the connection, so a query caught while the database moved to another tab was never answered and kept its turn for good | Every tab of the hosted copy frozen until all were closed; half of an abandoned change written with someone else's | Author, when the browser test hung with a second tab open | `scripts/tabs-stress.mjs` (passes; its last step fails every time without the fix); `scripts/e2e.mjs` keeps a second tab open to the end and passed 15 of 15 runs in this mode, where it had failed about one run in two |
+
+How 20 was fixed (`lib/local/pg-worker.ts`, `lib/db/driver.browser.ts`, `lib/local/locks.ts`): the turn at the database is a Web Lock, which the browser gives back the moment its tab goes away; whatever a tab that is gone left open is rolled back before anyone else's statement runs; a statement from a tab that does not hold the turn is refused; a read interrupted by the database moving to another tab is asked again, and a change is reported as not done rather than repeated; the client waits to be connected before it sends anything, and no longer makes the three calls about file imports and exports that the stock client makes around every query (nothing here uses them, and one of them was the call that could go unanswered). That last cause was found only by running the whole browser test repeatedly with a second tab left open: reloading the holding tab ninety times with an idle second tab never showed it. The helper also saved the whole database to IndexedDB after every protocol message, about six times a query; it is now saved once, when a write has finished and before its tab is told so. With two tabs open an envelope page went from 2–7 s to under 0.1 s. This copy is the simulator: no PayPal money was ever at stake in it.
+
+Attacks on the new code (`tests/books.test.ts`, `tests/sdk.test.ts`):
+
+| Attack | Result |
+|---|---|
+| The payer's agent, or a stranger, signs a refund of money another agent earned | `NOT_THE_HOLDER`. Nothing recorded against the payment or the account |
+| A refund when the money has been spent, when the account is frozen, or for a payment that was paid out instead of credited to a balance | Refused (`INSUFFICIENT_BALANCE`; `ACCOUNT_FROZEN`; `NOT_THE_HOLDER` or `NOT_REFUNDABLE`). No call to PayPal |
+| The same refund presented again | One debit and one refund at PayPal: the ledger row and PayPal's idempotency key are both keyed by the payment |
+| PayPal refuses the refund | The money goes back into the balance once (`PAYPAL_REFUND_FAILED`) |
+| PayPal cannot be reached during the refund | The debit stands, the answer is "pending", and the sweep finishes it with the same idempotency key |
+| The refunded amount asked for again from the same envelope | `OVER_ENVELOPE_LIMIT` |
+| A payout made from the gateway's PayPal account outside the books | Reserves reports "not covered", short by exactly that amount |
+| A record whose amount differs from PayPal's statement | Reported as "amount differs"; the comparison as a whole is marked not ok |
+| A dispute opened at PayPal against a capture | Shown on the payment; evidence sent once; sending it moves no money |
+
 ## What was tried and held
 
 From the attack corpus, all refused with no capture or payout caused:
@@ -74,9 +102,11 @@ From the reviewer's notes, areas examined with nothing found: the approval thres
 ## Reproducing
 
 ```bash
-npm test                              # 101 tests on the simulator
+npm test                              # 109 tests on the simulator
 npx tsx scripts/attack-suite.ts       # the corpus; rewrites docs/evidence/attack-suite.json
-npx vitest run tests/settlement.test.ts tests/review-findings.test.ts tests/replay-encoding.test.ts
+npx vitest run tests/settlement.test.ts tests/review-findings.test.ts tests/replay-encoding.test.ts tests/books.test.ts
+npx tsx scripts/paypal-refund-capacity.ts   # on the real sandbox: a refunded capture does not reopen the hold
+node scripts/tabs-stress.mjs          # two tabs on the in-browser copy (see the file's header for how to start it)
 ```
 
 To see a fault come back, revert its fix and run the matching test. For the replay bug: make `unb64u` in `lib/envelope/core.ts` accept any spelling again and `tests/replay-encoding.test.ts` fails with a second payment.
@@ -88,9 +118,15 @@ These are known and not fixed.
 | Risk | Why it is still there |
 |---|---|
 | A receipt is signed when the capture is made and the payout is requested. It records PayPal's payout status at that moment and is not withdrawn if the payout later fails. | The receipt page and the proof graph ask PayPal live, which is the remedy. A signed correction would be better. |
-| Settlement does not run by itself on this repository's deployments. | A sweep endpoint and a verified webhook receiver now exist and are tested on the simulator. No scheduler calls the first and no webhook is registered for the second. No genuine PayPal event has been received. |
+| Settlement by itself is set up and has not been seen to run. | `vercel.json` schedules the sweep daily and a verified webhook receiver exists; both are tested on the simulator. The hosted copy has no database for them to work on, no webhook is registered for the sandbox app, and no genuine PayPal event has been received. |
+| Dispute evidence has never been sent to the real PayPal. | Finding a dispute and answering it ran on the simulator only. On the sandbox PayPal was asked and held none. What PayPal makes of the evidence is unknown. |
+| A record that disagrees with PayPal's statement has only been produced on the simulator. | On the sandbox all 28 records were found on PayPal's statement with the same amount and none with a different one. There was no mismatch to catch. <!-- STATEMENT-CHECK --> |
+| Reserves are weak evidence on the sandbox. | The sandbox account holds test money from earlier runs, so it always covers; and PayPal's figure is about two hours old, so a newer shortfall is not seen until PayPal's next figure. The shortfall case is tested on the simulator. |
+| PayPal's fees are not charged to anyone. | PayPal takes a fee from the gateway's account on every capture and payout, and payees are credited and paid in full, so each payment leaves the account short by its fees. The statement check reads them from PayPal ($24.69 on the 28 sandbox records: $514.00 came in, $458.00 went out, $6.00 was refunded, and $25.31 was left at PayPal against $50.00 owed to agents) and a test shows reserves short by exactly that amount when nobody funds it. Pricing them in is a product decision that has not been made. |
+| A refund is all or nothing, and only while the money is in the balance. | No partial refunds; nothing for money the agent has already spent. The payer's own route is a dispute at PayPal. |
+| The dispute evidence is public to whoever has the payment's id. | Like the receipt. It contains the signed chain and the payee's address as the agent signed it. A real deployment would send it to PayPal and show it only to the parties. |
 | The webhook receiver trusts PayPal's verification call. | It does not verify the certificate chain itself. Because an event can only cause a read of PayPal, a wrongly accepted event could not move money. |
-| Recall covers payments from an envelope only. | A payout from an agent's balance that goes unclaimed still waits for PayPal to return it. |
+| Recall covers payments from an envelope only, and has not completed on the sandbox. | A payout from an agent's balance that goes unclaimed still waits for PayPal to return it. On the sandbox PayPal answered every cancel with an error. |
 | An envelope's page, its proof graph and an agent's page are readable by anyone who has the id or key. The books page lists every account's balance. | Ids are random and unlisted, and keys are how counterparties find an agent. A real deployment would put the books behind operator sign-in and let an agent choose what its page shows. |
 | The shared demo agent (translator-agent and its card) can be driven by any visitor of the site. | It is one agent for every visitor by design, and it only pays fixed demo destinations. The check that the call comes from a browser page is not authentication. |
 | The gateway holds its own signing key and the demo agents' keys. With `ENVELOPE_KEY_SECRET` set they are sealed at rest; whoever has both the database and the environment has them. | A managed key service is the fix. |

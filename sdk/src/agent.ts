@@ -13,7 +13,7 @@ import * as E from "../../lib/envelope/core";
 import { EnvelopeError, refuseLocally } from "./errors";
 import { Gateway, type GatewayOptions } from "./gateway";
 import { toMinor, type Amount } from "./money";
-import type { AccountOpened, AgentProfile, Balance, Card, ChargeOutcome, EnvelopeState, FreezeResult, PromiseNote, PaymentStatus, PromiseOutcome, Recalled, ReceiptResponse, Reference, RevokeResult, RootState, SpendOutcome, SpendStatus, Standing, TransferOutcome } from "./types";
+import type { AccountOpened, AgentProfile, Balance, Card, ChargeOutcome, EnvelopeState, FreezeResult, PromiseNote, PaymentStatus, PromiseOutcome, Recalled, ReceiptResponse, RefundOutcome, Reference, RevokeResult, RootState, SpendOutcome, SpendStatus, Standing, TransferOutcome } from "./types";
 import { decodeToken, encodeToken, verifyPromiseNote, verifyReceipt, verifyReference, verifyStanding, type Verification } from "./verify";
 
 const KEY = /^[A-Za-z0-9_-]{43}$/;
@@ -346,6 +346,15 @@ export class Agent extends Party {
    */
   async transfer(p: { amount: Amount; payee: string; purpose?: string; memo?: string }): Promise<TransferOutcome> {
     return this.gateway.sendTransfer(await E.signTransfer(this.key, { amount: toMinor(p.amount), payee: text(p.payee, "payee", 127), purpose: optional(p.purpose, "purpose", 60), memo: optional(p.memo, "memo", 200) }));
+  }
+  /**
+   * Give one payment back in full. Only for a payment that was credited to this agent's balance and is
+   * still there: the balance is debited, and PayPal refunds the capture to the owner who paid.
+   * A refund returns the owner's money. It does not make that part of their envelope spendable again:
+   * PayPal counts a refunded capture against the hold for good.
+   */
+  async refund(spendId: string, p: { memo?: string } = {}): Promise<RefundOutcome> {
+    return this.gateway.refund(await E.signRefund(this.key, text(spendId, "spend id", 60), optional(p.memo, "memo", 140) ?? ""));
   }
   /** Send money home to the owner's PayPal address. */
   async withdraw(p: { amount: Amount; memo?: string }): Promise<TransferOutcome> {

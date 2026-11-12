@@ -1,6 +1,7 @@
 "use client";
 
 import { api, gatewayInBrowser } from "@/lib/client/api";
+import { usePoll } from "@/lib/client/poll";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { accountNumber, fingerprint, signAccept, signRead, signRevoke, type Caps, type KeyPair } from "@/lib/envelope/core";
@@ -10,10 +11,10 @@ import { PayPalRail } from "@/components/paypal-rail";
 import { Figure, Flap, Meter, Postmark, Sigil, SpendStamp, Stamp, usd } from "@/components/stationery";
 
 type BlockT = { id: string; parentId: string | null; depth: number; holder: string; holderLabel: string; caps: Caps; spentMinor: number; reservedMinor: number; revokedAt: string | null };
-type SpendT = { id: string; leafLabel: string; amountMinor: number; payee: string; purpose: string; memo: string; agentNote: string | null; status: string; reasons: Array<{ code: string; detail: string }>; captureId: string | null; payoutBatchId: string | null; payoutStatus: string | null; createdAt: string; hasReceipt: boolean; promiseExpiresAt: string | null; delivery: { by: string; work: string; note: string } | null; releaseBy: string | null; signed?: never };
+type SpendT = { id: string; leafLabel: string; amountMinor: number; payee: string; purpose: string; memo: string; agentNote: string | null; status: string; reasons: Array<{ code: string; detail: string }>; captureId: string | null; payoutBatchId: string | null; payoutStatus: string | null; refundId: string | null; disputeId: string | null; disputeStatus: string | null; createdAt: string; hasReceipt: boolean; promiseExpiresAt: string | null; delivery: { by: string; work: string; note: string } | null; releaseBy: string | null; signed?: never };
 type Data = {
   mode: string; demoAgents: boolean;
-  root: { id: string; principal: string; principalName: string; title: string; limitMinor: number; capturedMinor: number; releasedMinor: number | null; status: string; authorizationId: string | null; paypalOrderId: string | null; authorizationExpiresAt: string | null; closeReason: string | null; createdAt: string };
+  root: { id: string; principal: string; principalName: string; title: string; limitMinor: number; capturedMinor: number; refundedMinor: number; releasedMinor: number | null; status: string; authorizationId: string | null; paypalOrderId: string | null; authorizationExpiresAt: string | null; closeReason: string | null; createdAt: string };
   blocks: BlockT[]; spends: SpendT[];
   /** Payees that are agents' accounts: who they are. */
   payees: Record<string, { label: string; key: string; owner: string }>;
@@ -35,18 +36,14 @@ export function EnvelopeView({ id }: { id: string }) {
   const [lines, setLines] = useState<Array<{ text: string; tone: "info" | "good" | "bad" }>>([]);
   const [err, setErr] = useState<string | null>(null);
   const [recallNote, setRecallNote] = useState<Record<string, string>>({});
-  const timer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const load = useCallback(async () => {
     const r = await api(`/api/envelopes/${id}`);
     if (r.status === 404) { setMissing(true); return; }
     if (r.ok) setD(r.json);
   }, [id]);
-  useEffect(() => {
-    void load(); void principalKey(false).then(setMe);
-    timer.current = setInterval(() => { if (document.visibilityState === "visible") void load(); }, 3000);
-    return () => { if (timer.current) clearInterval(timer.current); };
-  }, [load]);
+  useEffect(() => { void principalKey(false).then(setMe); }, []);
+  usePoll(load, 3000, id);
 
   if (missing) return <p className="sheet p-6 text-sm">No such envelope. <Link className="link" href="/console">Seal one</Link>.</p>;
   if (!d) return <p className="label py-10">Fetching the envelope…</p>;
@@ -109,7 +106,7 @@ export function EnvelopeView({ id }: { id: string }) {
   }
   const recalled = (s: SpendT) => s.reasons[0]?.code === "RECALLED_BY_OWNER";
   const waiting = spends.filter((s) => s.status === "PROMISED" && s.releaseBy === root.principal);
-  const held = open ? root.limitMinor - root.capturedMinor : 0;
+  const held = open ? root.limitMinor - root.capturedMinor - root.refundedMinor : 0;
   /** A payee as people should read it: an agent's name when it is an account, the address otherwise. */
   const Payee = ({ p, tag }: { p: string; tag?: boolean }) => {
     const a = d.payees?.[p];
@@ -180,7 +177,8 @@ export function EnvelopeView({ id }: { id: string }) {
             <div><Figure minor={held} className="text-[clamp(1.7rem,3.6vw,2.5rem)] text-blue" /><p className="mt-1.5 text-xs leading-snug text-ink-2">still held, not charged</p></div>
             <div><Figure minor={root.releasedMinor ?? 0} className="text-[clamp(1.7rem,3.6vw,2.5rem)] text-ink-3" /><p className="mt-1.5 text-xs leading-snug text-ink-2">released back by PayPal</p></div>
           </div>
-          <div className="mt-4 text-ink"><Meter spent={root.capturedMinor} freed={root.releasedMinor ?? 0} of={root.limitMinor} label={`${usd(root.capturedMinor)} captured of ${usd(root.limitMinor)}`} /></div>
+          <div className="mt-4 text-ink"><Meter spent={root.capturedMinor + root.refundedMinor} freed={root.releasedMinor ?? 0} of={root.limitMinor} label={`${usd(root.capturedMinor)} captured of ${usd(root.limitMinor)}`} /></div>
+          {root.refundedMinor > 0 && <p className="mt-3 text-xs text-ink-2" data-testid="refunded"><span className="money text-ink">{usd(root.refundedMinor)}</span> was captured and then refunded to {isOwner ? "you" : "the owner"}. PayPal does not return a refunded amount to the hold, so it is not spendable again from this envelope.</p>}
           <p className="mt-3 text-xs text-ink-2">Each spend is a partial capture of this one authorization; PayPal itself refuses to capture beyond it. Closing the envelope voids the rest. {d.mode === "sandbox" ? "Sandbox: the hold is on PayPal's test card." : ""}</p>
         </section>
 
@@ -239,11 +237,12 @@ export function EnvelopeView({ id }: { id: string }) {
                     <p className="min-w-0 text-[.95rem]"><span className="mono mr-2 text-[.7rem] text-ink-3">{hhmm(s.createdAt)}</span><span className="title">{s.leafLabel}</span> <span className="text-ink-3">→</span> <Payee p={s.payee} /></p>
                     <Figure minor={s.amountMinor} className={`shrink-0 text-[1.35rem] ${s.status === "DENIED" ? "text-ink-3 line-through decoration-red decoration-2" : ""}`} />
                   </div>
-                  <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">{recalled(s) ? <Stamp tone="grey" land>Recalled · refunded</Stamp> : <SpendStamp status={s.status} land />}<span className="text-xs text-ink-2">{s.purpose}{s.memo ? ` · ${s.memo}` : ""}{s.status === "PROMISED" && s.promiseExpiresAt ? ` · held for this payee until ${hhmm(s.promiseExpiresAt)} UTC` : ""}</span></p>
+                  <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">{recalled(s) ? <Stamp tone="grey" land>Recalled · refunded</Stamp> : s.reasons[0]?.code === "REFUNDED_BY_PAYEE" ? <Stamp tone="grey" land>Refunded by the payee</Stamp> : <SpendStamp status={s.status} land />}{s.disputeId && <Stamp tone="red" flat>Disputed at PayPal</Stamp>}<span className="text-xs text-ink-2">{s.purpose}{s.memo ? ` · ${s.memo}` : ""}{s.status === "PROMISED" && s.promiseExpiresAt ? ` · held for this payee until ${hhmm(s.promiseExpiresAt)} UTC` : ""}</span></p>
                   {s.delivery && <p className="mono mt-2 text-[.7rem] leading-snug text-green">released by {s.delivery.by === root.principal ? "the owner" : blocks.find((b) => b.holder === s.delivery!.by)?.holderLabel ?? fingerprint(s.delivery.by)}&rsquo;s signature{s.delivery.work ? ` · work ${s.delivery.work.slice(0, 12)}…` : ""}</p>}
                   {s.agentNote && <p className="mt-2 font-serif text-[.9rem] italic leading-snug text-ink-2">Agent: “{s.agentNote}”</p>}
                   {s.reasons.length > 0 && <ul className="mono mt-2 space-y-0.5 text-[.72rem] leading-snug text-red">{s.reasons.map((r, i) => <li key={i}><b>{r.code}</b> · {r.detail}</li>)}</ul>}
                   {s.captureId && <p className="mono mt-2 text-[.68rem] text-ink-2">capture {s.captureId} · {s.payoutStatus === "HELD_IN_ACCOUNT" ? "credited to the agent\u2019s balance, no payout" : <>payout {s.payoutBatchId}{s.payoutStatus ? ` (${s.payoutStatus})` : ""}</>}</p>}
+                  {s.disputeId && <p className="mono mt-2 text-[.7rem] leading-snug text-red">PayPal dispute {s.disputeId} · {(s.disputeStatus ?? "open").replace(/_/g, " ").toLowerCase()} · the gateway answers with this payment&rsquo;s signed chain of authority</p>}
                   {s.hasReceipt && <Link className="link mt-1.5 inline-block text-[.8rem]" href={`/r/${s.id}`}>Receipt & authority chain →</Link>}
                   {s.status === "UNCLAIMED" && isOwner && (
                     <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5">

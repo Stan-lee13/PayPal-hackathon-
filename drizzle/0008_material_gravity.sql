@@ -1,0 +1,1 @@
+ALTER TABLE "roots" ADD COLUMN "refunded_minor" integer DEFAULT 0 NOT NULL;

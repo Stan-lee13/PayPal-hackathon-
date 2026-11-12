@@ -26,6 +26,12 @@ export const roots = pgTable("roots", {
   authorizationId: text("authorization_id").unique(),
   authorizationExpiresAt: ts("authorization_expires_at"),
   capturedMinor: integer("captured_minor").notNull().default(0),
+  /**
+   * Captured and then refunded to the owner. PayPal does not give a refunded amount back to the hold
+   * (checked on the sandbox: a capture of it is refused with MAX_CAPTURE_AMOUNT_EXCEEDED), so what is left
+   * of the hold is limit − captured − refunded, and the owner was charged `capturedMinor`.
+   */
+  refundedMinor: integer("refunded_minor").notNull().default(0),
   /** What PayPal released back to the principal when the envelope was closed. */
   releasedMinor: integer("released_minor"),
   closedAt: ts("closed_at"),
@@ -101,6 +107,9 @@ export const spends = pgTable("spends", {
   payoutTransactionId: text("payout_transaction_id"),
   payoutStatus: text("payout_status"),
   refundId: text("refund_id"),
+  /** A dispute PayPal holds against this payment's capture, when there is one, and PayPal's status for it as last read. */
+  disputeId: text("dispute_id"),
+  disputeStatus: text("dispute_status"),
   receipt: jsonb("receipt").$type<Receipt>(),
   /** When the payee is an agent's account: that agent's key, and the PayPal address fixed at admission. */
   payeeAgent: text("payee_agent"),
@@ -178,7 +187,7 @@ export const cards = pgTable("cards", {
 export const ledger = pgTable("ledger", {
   id: bigserial("id", { mode: "number" }).primaryKey(),
   agent: text("agent").notNull(),
-  kind: text("kind", { enum: ["income", "transfer_in", "transfer_out", "payout", "withdrawal", "reversal"] }).notNull(),
+  kind: text("kind", { enum: ["income", "transfer_in", "transfer_out", "payout", "withdrawal", "reversal", "refund", "refund_reversal"] }).notNull(),
   /** The spend or transfer this entry belongs to. */
   ref: text("ref").notNull(),
   deltaMinor: integer("delta_minor").notNull(),

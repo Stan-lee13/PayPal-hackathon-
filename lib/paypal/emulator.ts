@@ -13,10 +13,11 @@ import { toDecimalString, toMinor } from "../money";
 
 type Money = { currency_code: string; value: string };
 type SimAuth = { id: string; order_id: string; status: "CREATED" | "PARTIALLY_CAPTURED" | "CAPTURED" | "VOIDED"; amount: Money; custom_id: string; expiration_time: string; create_time: string; captured: number };
-type SimCapture = { id: string; authorization_id: string; status: "COMPLETED" | "PENDING" | "DECLINED" | "REFUNDED"; amount: Money; invoice_id?: string; custom_id: string };
+type SimCapture = { id: string; authorization_id: string; status: "COMPLETED" | "PENDING" | "DECLINED" | "REFUNDED"; amount: Money; invoice_id?: string; custom_id: string; refund_id?: string };
 type SimPayout = { batch_id: string; sender_batch_id: string; item_id: string; transaction_id: string; item_status: "SUCCESS" | "UNCLAIMED" | "RETURNED" | "FAILED"; receiver: string; amount: { currency: string; value: string } };
 export type SimEvent = { id: string; event_type: string; create_time: string; resource_type: string; resource: Record<string, unknown> };
-type Sim = { events?: SimEvent[]; auths: Record<string, SimAuth>; captures: Record<string, SimCapture>; payouts: Record<string, SimPayout>; idem: Record<string, { status: number; body: unknown }>; calls: string[]; failNext: string | null; failLeft?: number; nextCapture?: "PENDING" | null; refuseRefunds?: boolean };
+type SimDispute = { dispute_id: string; status: string; reason: string; dispute_life_cycle_stage: string; create_time: string; dispute_amount: Money; capture_id: string; evidence?: string };
+type Sim = { disputes?: Record<string, SimDispute>; events?: SimEvent[]; auths: Record<string, SimAuth>; captures: Record<string, SimCapture>; payouts: Record<string, SimPayout>; idem: Record<string, { status: number; body: unknown }>; calls: string[]; failNext: string | null; failLeft?: number; nextCapture?: "PENDING" | null; refuseRefunds?: boolean; fees?: boolean };
 
 function state(): Sim {
   return simState<Sim>("paypal", () => ({ auths: {}, captures: {}, payouts: {}, idem: {}, calls: [], failNext: null }));
@@ -42,6 +43,35 @@ export async function simEvents(): Promise<SimEvent[]> { return withSimState(() 
 /** Tests: PayPal changes its mind about a payout later (claimed, returned after 30 days, failed) and reports it. */
 export async function simSetPayout(batchId: string, status: SimPayout["item_status"]) { await withSimState(() => { const s = state(); const po = s.payouts[batchId]; if (po) { po.item_status = status; emit(s, ITEM_EVENT[status], "payouts_item", itemResource(po)); } }); }
 
+/** Tests: the payer opens a dispute against a capture, as they could in PayPal's Resolution Center. */
+export async function simOpenDispute(captureId: string, reason = "UNAUTHORISED"): Promise<string | null> {
+  return withSimState(() => {
+    const s = state(); const c = s.captures[captureId];
+    if (!c) return null;
+    const d: SimDispute = { dispute_id: id("PP-D-"), status: "WAITING_FOR_SELLER_RESPONSE", reason, dispute_life_cycle_stage: "INQUIRY", create_time: new Date().toISOString(), dispute_amount: c.amount, capture_id: captureId };
+    (s.disputes ??= {})[d.dispute_id] = d;
+    emit(s, "CUSTOMER.DISPUTE.CREATED", "dispute", { dispute_id: d.dispute_id, status: d.status, reason, disputed_transactions: [{ seller_transaction_id: captureId }] });
+    return d.dispute_id;
+  });
+}
+export async function simDispute(disputeId: string) { return withSimState(() => structuredClone(state().disputes?.[disputeId] ?? null)); }
+const pubDispute = (d: SimDispute) => ({ dispute_id: d.dispute_id, status: d.status, reason: d.reason, dispute_life_cycle_stage: d.dispute_life_cycle_stage, create_time: d.create_time, dispute_amount: d.dispute_amount, disputed_transactions: [{ seller_transaction_id: d.capture_id }] });
+/**
+ * Fees, when switched on (simChargeFees). The figures copy what the sandbox charged this account on
+ * 11 November 2026: 2.59% + $0.49 on a card capture; 2% on a payout that was delivered; a flat $0.25
+ * on one held unclaimed. They are not PayPal's price list. Off by default: the simulator then charges
+ * nothing, and the Accounts page says so.
+ */
+const captureFee = (s: Sim, minor: number) => (s.fees ? Math.round(minor * 0.0259 + 49) : 0);
+const payoutFee = (s: Sim, po: SimPayout) => (!s.fees ? 0 : po.item_status === "SUCCESS" ? Math.round(toMinor(po.amount.value, po.amount.currency) * 0.02) : 25);
+/** The simulated account: every completed capture came in, every refund and every payout not returned went out, less any fees. A refund does not return the capture's fee. */
+function simBalance(s: Sim, currency: string): number {
+  let n = 0;
+  for (const c of Object.values(s.captures)) if (c.amount.currency_code === currency && (c.status === "COMPLETED" || c.status === "REFUNDED")) n += (c.status === "COMPLETED" ? toMinor(c.amount.value, currency) : 0) - captureFee(s, toMinor(c.amount.value, currency));
+  for (const po of Object.values(s.payouts)) if (po.amount.currency === currency && po.item_status !== "RETURNED" && po.item_status !== "FAILED") n -= toMinor(po.amount.value, currency) + payoutFee(s, po);
+  return n;
+}
+
 /** Tests: make the next call whose path contains `fragment` fail with a 500. */
 export async function simFailNext(fragment: string | null, times = 1) { await withSimState(() => { state().failNext = fragment; state().failLeft = times; }); }
 /** Tests: the next capture comes back PENDING (PayPal is still reviewing it) and stays so until simSetCapture. */
@@ -49,6 +79,8 @@ export async function simNextCapturePending() { await withSimState(() => { state
 export async function simSetCapture(id: string, status: "COMPLETED" | "DECLINED") { await withSimState(() => { const c = state().captures[id]; if (c) c.status = status; }); }
 /** Tests: PayPal refuses every refund until switched off. */
 export async function simRefuseRefunds(on: boolean) { await withSimState(() => { state().refuseRefunds = on; }); }
+/** Tests: charge fees on captures and payouts from now on, as PayPal does (see captureFee above). */
+export async function simChargeFees(on: boolean) { await withSimState(() => { state().fees = on; }); }
 /** Tests: mutating calls the simulator executed (not idempotent replays), e.g. to prove nothing was captured twice. */
 export async function simCalls(): Promise<string[]> { return withSimState(() => [...state().calls]); }
 export async function simAuthorization(authId: string) { return withSimState(() => structuredClone(state().auths[authId] ?? null)); }
@@ -128,6 +160,7 @@ function route(input: string, init: RequestInit): Response {
     if (c.status === "REFUNDED") return err(422, "UNPROCESSABLE_ENTITY", "CAPTURE_FULLY_REFUNDED", "The capture has already been fully refunded.");
     c.status = "REFUNDED";
     const refund = { id: id("SIMREF"), status: "COMPLETED" };
+    c.refund_id = refund.id;
     emit(s, "PAYMENT.CAPTURE.REFUNDED", "refund", { ...refund, amount: c.amount, invoice_id: c.invoice_id, custom_id: c.custom_id });
     return reply(201, refund);
   });
@@ -156,6 +189,40 @@ function route(input: string, init: RequestInit): Response {
     emit(s, "PAYMENT.PAYOUTS-ITEM.CANCELED", "payouts_item", itemResource(po));
     return reply(200, itemResource(po));
   });
+  if (p === "/v1/reporting/balances" && method === "GET") {
+    const cur = url.searchParams.get("currency_code") ?? "USD";
+    const v = toDecimalString(Math.max(0, simBalance(s, cur)), cur);
+    return reply(200, { balances: [{ currency: cur, total_balance: { currency_code: cur, value: v }, available_balance: { currency_code: cur, value: v }, withheld_balance: { currency_code: cur, value: toDecimalString(0, cur) } }], account_id: "SIMULATED", as_of_time: new Date().toISOString() });
+  }
+  if (p === "/v1/reporting/transactions" && method === "GET") {
+    // Unlike PayPal's, this statement does not lag. A refunded capture stays listed, followed by its refund.
+    const now = new Date().toISOString();
+    const fee = (minor: number, currency: string) => (minor ? { fee_amount: { currency_code: currency, value: `-${toDecimalString(minor, currency)}` } } : {});
+    const lines = [
+      ...Object.values(s.captures).filter((c) => c.status === "COMPLETED" || c.status === "REFUNDED").flatMap((c) => [
+        { transaction_info: { transaction_id: c.id, transaction_event_code: "T0006", transaction_initiation_date: now, transaction_amount: c.amount, ...fee(captureFee(s, toMinor(c.amount.value, c.amount.currency_code)), c.amount.currency_code), transaction_status: "S", invoice_id: c.invoice_id } },
+        ...(c.status === "REFUNDED" ? [{ transaction_info: { transaction_id: c.refund_id ?? `R${c.id}`, paypal_reference_id: c.id, transaction_event_code: "T1107", transaction_initiation_date: now, transaction_amount: { ...c.amount, value: `-${c.amount.value}` }, transaction_status: "S", invoice_id: c.invoice_id } }] : []),
+      ]),
+      // PayPal puts the sender's own item id on a payout's line; here that is the payment's or the transfer's id
+      ...Object.values(s.payouts).map((po) => ({ transaction_info: { transaction_id: po.transaction_id, transaction_event_code: "T0001", transaction_initiation_date: now, transaction_amount: { currency_code: po.amount.currency, value: `-${po.amount.value}` }, ...fee(payoutFee(s, po), po.amount.currency), transaction_status: po.item_status === "SUCCESS" ? "S" : "P", custom_field: po.sender_batch_id } })),
+    ];
+    return reply(200, { transaction_details: lines, total_pages: 1, page: 1 });
+  }
+  if (p === "/v1/customer/disputes" && method === "GET") {
+    const about = url.searchParams.get("disputed_transaction_id");
+    return reply(200, { items: Object.values(s.disputes ?? {}).filter((d) => !about || d.capture_id === about).map(pubDispute) });
+  }
+  if ((m = p.match(/^\/v1\/customer\/disputes\/([^/]+)$/)) && method === "GET") {
+    const d = s.disputes?.[m[1]!];
+    return d ? reply(200, pubDispute(d)) : err(404, "RESOURCE_NOT_FOUND", "INVALID_RESOURCE_ID", "Dispute not found.");
+  }
+  if ((m = p.match(/^\/v1\/customer\/disputes\/([^/]+)\/provide-evidence$/)) && method === "POST") {
+    const d = s.disputes?.[m[1]!];
+    if (!d) return err(404, "RESOURCE_NOT_FOUND", "INVALID_RESOURCE_ID", "Dispute not found.");
+    if (d.status !== "WAITING_FOR_SELLER_RESPONSE") return err(422, "UNPROCESSABLE_ENTITY", "ACTION_NOT_ALLOWED", "The dispute is not waiting for the seller.");
+    d.status = "UNDER_REVIEW"; d.evidence = "received"; s.calls.push(`${method} ${p}`);
+    return reply(200, { links: [] });
+  }
   if (p === "/v1/notifications/verify-webhook-signature" && method === "POST") {
     // Genuine = the stand-in signature, this simulator's webhook id, and an event it issued with its type and resource id untouched.
     const ev = body?.webhook_event;

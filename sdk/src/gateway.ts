@@ -3,9 +3,10 @@
  * to configure, because the gateway takes its orders from signatures, not from who is calling.
  * The gateway is the only thing that talks to PayPal; nothing in this file can reach PayPal.
  */
+import type { SignedRefund } from "../../lib/envelope/core";
 import type { Envelope, SignedAccept, SignedAccount, SignedCard, SignedCardCancel, SignedCharge, SignedFreeze, SignedHello, SignedKeep, SignedPromise, SignedRead, SignedRevoke, SignedSpend, SignedTransfer } from "../../lib/envelope/core";
 import { EnvelopeError } from "./errors";
-import type { AccountOpened, AgentProfile, Books, Card, ChargeOutcome, EnvelopeState, FreezeResult, GatewayKey, GatewayReason, PayPalTrail, PaymentStatus, PromiseOutcome, Recalled, ReceiptResponse, Reference, RevokeResult, RootState, SpendOutcome, Standing, TransferOutcome } from "./types";
+import type { AccountOpened, AgentProfile, Books, Card, ChargeOutcome, EnvelopeState, FreezeResult, GatewayKey, GatewayReason, PayPalTrail, Evidence, PaymentStatus, PromiseOutcome, Recalled, ReceiptResponse, RefundOutcome, StatementCheck, Reference, RevokeResult, RootState, SpendOutcome, Standing, TransferOutcome } from "./types";
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 export type GatewayOptions = {
@@ -104,7 +105,11 @@ export class Gateway {
   transfer(transferId: string): Promise<Record<string, unknown>> { return this.ok("GET", `/api/bank/transfers/${encodeURIComponent(transferId)}`); }
   /** Every call the gateway made to PayPal for one envelope: what was asked, PayPal's ids and what PayPal answered. */
   paypalTrail(rootId: string): Promise<PayPalTrail> { return this.ok("GET", `/api/envelopes/${encodeURIComponent(rootId)}/paypal`); }
-  /** Every balance, and whether the books add up. */
+  /** The gateway's captures and payouts against PayPal's own statement of its account. */
+  statement(): Promise<StatementCheck> { return this.ok("GET", "/api/bank/statement"); }
+  /** What the gateway would send PayPal if the payer disputed this payment. */
+  evidence(spendId: string): Promise<Evidence> { return this.ok("GET", `/api/spends/${encodeURIComponent(spendId)}/evidence`); }
+  /** Every balance, whether the books add up, and whether PayPal's reported balance covers what agents are owed. */
   books(): Promise<Books> { return this.ok("GET", "/api/bank"); }
 
   // ───────────────────────────── signed requests: the signature is the authority ─────────────────────────────
@@ -126,6 +131,8 @@ export class Gateway {
   }
   openAccount(signed: SignedAccount): Promise<AccountOpened> { return this.ok("POST", "/api/accounts", { signed }); }
   sendTransfer(signed: SignedTransfer): Promise<TransferOutcome> { return this.verdict("/api/bank/transfer", { signed }); }
+  /** A payee's refund of one payment it kept. PayPal refunds the capture to the owner. */
+  refund(signed: SignedRefund): Promise<RefundOutcome> { return this.verdict("/api/bank/refund", { signed }); }
   freeze(signed: SignedFreeze): Promise<FreezeResult> { return this.ok("POST", "/api/bank/freeze", { signed }); }
   issueCard(signed: SignedCard): Promise<Card> { return this.ok("POST", "/api/cards", { signed }); }
   charge(signed: SignedCharge): Promise<ChargeOutcome> { return this.verdict("/api/cards/charge", { signed }); }

@@ -5,10 +5,10 @@ Everything needed to fill in the Devpost form and check the entry before submitt
 ## Before you submit (only you can do these)
 
 1. **Make the GitHub repository public.** Stage One requires a public repository with a visible licence (MIT is in the repo).
-2. **Merge the open pull request (#8) into `main`.** It carries the SDK, the record of PayPal calls, recall, PayPal events and the Developers page. Vercel then builds the production site. With no settings at all it is the try-it copy: the whole gateway runs in the visitor's browser on a PayPal simulator. Put that URL in the Devpost "Try it out" field, and open it once in a private window to check it loads without a Vercel login.
-3. **Decide on the video, then upload it to YouTube as Public** and paste the link into Devpost. `docs/demo/envelope-demo.mp4` (2:49, synthetic narration) was recorded before the last round: it is accurate, but it does not show the PayPal panel, the SDK or the Developers page. A script for a new take is in `docs/DEMO_RUNBOOK.md`, section D. Do not touch the repository after the deadline: the rules say no commits and no README edits.
+2. **Merge the open pull request (#9) into `main`.** It carries refunds, reserves, the check against PayPal's statement, disputes, the scheduled sweep and the rebuilt in-browser database (pull request #8, already merged, carried the SDK, the record of PayPal calls, recall, PayPal events and the Developers page). Vercel then builds the production site. With no settings at all it is the try-it copy: the whole gateway runs in the visitor's browser on a PayPal simulator. Put its URL in the Devpost "Try it out" field (<https://envelope-paypal.vercel.app>; <https://kept-paypal.vercel.app> is the same site), and open it once in a private window to check it loads without a Vercel login.
+3. **Decide on the video, then upload it to YouTube as Public** and paste the link into Devpost. `docs/demo/envelope-demo.mp4` (2:49, synthetic narration) was recorded before the last two rounds: what it shows is accurate, but it does not show the PayPal panel, the SDK, the Developers page, refunds, reserves, the statement check or disputes. A script for a new take is in `docs/DEMO_RUNBOOK.md`, section D. Do not touch the repository after the deadline: the rules say no commits and no README edits.
 4. *Optional, for a hosted copy on the real sandbox:* in Vercel → Settings → Environment Variables add `DATABASE_URL` (any Postgres), `PAYPAL_CLIENT_ID` and `PAYPAL_CLIENT_SECRET` (sandbox app), then redeploy.
-4b. *Optional, so PayPal's own events finish settlements on that hosted copy:* register a webhook for the sandbox app pointing at `https://<your site>/api/paypal/webhook` and add its id as `PAYPAL_WEBHOOK_ID`. Nobody has done this yet, so no genuine PayPal event has been received.
+4b. *Optional, so PayPal's own events finish settlements on that hosted copy:* register a webhook for the sandbox app and add its id as `PAYPAL_WEBHOOK_ID` (steps in `docs/DEMO_RUNBOOK.md`, section E). Nobody has done this yet, so no genuine PayPal event has been received. A webhook pointed at the try-it copy, which has no database, cannot be applied there; it still fills PayPal's event feed, which a gateway holding the sandbox credentials reads through the sweep.
 5. *Optional, for a live model on the hosted copy:* add `AI_BASE_URL`, `AI_API_KEY` and `AI_MODEL` for any OpenAI-compatible endpoint. Without them the hosted copy offers the scripted agents and says no model is connected.
 
 ## Title
@@ -46,9 +46,12 @@ Envelope gives an agent something that behaves like an account of its own, built
 - **Card.** An agent issues a Xenoncard on its balance for one merchant: a cap per charge, a number of charges, a billing period, an expiry. The merchant charges it with its own key. A thief with the card's details gets nothing, an overcharge is declined, and after the last charge the card has ended. The agent, or its owner, can cancel it sooner.
 - **Trace.** The proof graph shows every record behind an envelope and checks every signature in your browser. Pick any payment and follow it back to the person who allowed it; a second page shows one payment only, which is what a payee can be given.
 - **See what PayPal did.** Every envelope's page lists each call the gateway made to PayPal for it: the hold, each capture, each payout, each release, with PayPal's own id for the call. Envelope decides who may ask; PayPal moves the money, and you can read exactly how.
-- **Recall.** A payout nobody claimed can be taken back by the owner: PayPal cancels it, the capture is refunded and the budget returns.
-- **Settle on PayPal's word.** PayPal's events are verified with PayPal and applied once, and even a genuine event only makes the gateway read the record from PayPal before anything changes.
-- **Build on it.** A TypeScript SDK, an MCP server with fourteen tools and a command line, all on the same code. An agent using them holds its own key and never a PayPal credential.
+- **Recall.** A payout nobody claimed can be taken back by the owner: PayPal cancels it and the capture is refunded to them. (Proven on the simulator; PayPal's sandbox answered the cancel with an error.)
+- **Give back.** An agent that was paid and will not do the work signs a refund of the whole payment while it still holds it. PayPal refunds the capture to the payer. Only the agent that was paid can do it. A refund returns the owner's money, not room in the envelope: PayPal does not return a refunded capture to the hold, and the books follow PayPal.
+- **Check the books against PayPal's own.** What agents are owed is compared with the balance PayPal reports for the gateway's account, at the moment PayPal dates it. Every capture and payout is looked up in PayPal's statement of that account.
+- **Answer a dispute.** Every receipt check asks PayPal whether the payer has disputed the capture. If they have, the gateway marks the payment and sends the evidence: the payer's own signature on the envelope and every signature between it and the payment. (Asked on the sandbox, where there was none; answering one is proven on the simulator.)
+- **Settle on PayPal's word.** PayPal's events are verified with PayPal and applied once, and even a genuine event only makes the gateway read the record from PayPal before anything changes. A daily sweep asks PayPal about everything unfinished.
+- **Build on it.** A TypeScript SDK, an MCP server with fifteen tools and a command line, all on the same code. An agent using them holds its own key and never a PayPal credential.
 - **Freeze.** The owner of an agent's account can freeze it with a signature. The agent cannot lift it and cannot swap in another owner.
 - **Accept.** Money set aside can name an agent whose signed acceptance of the work releases it. The fingerprint of the delivered work goes on the receipt.
 - **Approve.** The owner can require their own signature above an amount. Over it an agent can only ask; the money waits in the owner's inbox until they sign or decline.
@@ -74,15 +77,16 @@ Agents outside the app use the same gateway through a command line and an MCP se
 
 - **Protocol core** (`lib/envelope/core.ts`): a chain of Ed25519-signed blocks using WebCrypto. The same file runs in the browser, the gateway and the agent tools. Payments, promises, introductions, revocations and account openings are signed under different domains, so one can never be replayed as another.
 - **Gateway** (`lib/gateway/service.ts`): the only component with PayPal credentials. Under a per-envelope database lock it checks revocation, replay and the budget at every level, reserves the amount, and only then calls PayPal. Every PayPal call carries an idempotency key derived from the envelope or spend id.
-- **PayPal** (sandbox): Orders v2 with `intent: AUTHORIZE` for the hold, partial captures with `final_capture: false`, Payouts for the payee, void on close, refund if a payout cannot be delivered, and GET lookups for proof of funds and for reconciling receipts.
-- **One codebase, two places to run.** Every endpoint is a plain function (`lib/api/handlers.ts`). On a server it runs against Postgres. When the site has no database, the same functions run in the visitor's browser against Postgres compiled to WebAssembly (PGlite) and a PayPal simulator, so a deployment with no configuration is a working demo.
+- **PayPal** (sandbox): Orders v2 with `intent: AUTHORIZE` for the hold, partial captures with `final_capture: false`, Payouts for the payee, void on close, refund (by the agent that was paid, or when a payout cannot be delivered), and GET lookups for proof of funds and for reconciling receipts. Around that: payout item cancel for recall, webhook signature verification and the event feed for settlement, the Reporting API (balances, Transaction Search) to check the books against PayPal's own, and the Disputes API to find a dispute and send evidence. What ran on the real sandbox and what ran only on the simulator is listed in the README.
+- **One codebase, two places to run.** Every endpoint is a plain function (`lib/api/handlers.ts`). On a server it runs against Postgres. When the site has no database, the same functions run in the visitor's browser against Postgres compiled to WebAssembly (PGlite) and a PayPal simulator, so a deployment with no configuration is a working demo. Every tab of that copy shares one database; the tab sharing was rebuilt on Web Locks so that closing or reloading a tab cannot hold up the others.
 - **App**: Next.js 15, React 19, TypeScript, Tailwind v4, Drizzle. The interface is drawn as bank stationery: kraft envelopes, rubber stamps, till receipts, passports.
-- **Tests**: 101 automated tests on the simulator, including a corpus of 171 attacks in eleven categories. All 171 are refused and none causes a capture or a payout.
+- **Tests**: 109 automated tests on the simulator, including a corpus of 171 attacks in eleven categories. All 171 are refused and none causes a capture or a payout.
 
 ### Challenges we ran into
 
 - A flat spending limit does not compose across agents. Budgets had to be debited at every ancestor, under one lock, before PayPal is called.
 - A PayPal authorization is a hold, not escrow, and it expires. We say so everywhere, and we designed "set aside" as earmarked money the owner can still revoke, not as a guarantee to the payee.
+- PayPal's behaviour had to be learned, not assumed. A refunded capture does not give its room back to the hold: our books said it did until a probe on the sandbox had a capture refused. PayPal's reported balance is two hours old and its statement lags by up to three, so a check against them has to be made at PayPal's moment, not ours.
 - A hosted demo normally needs a database and secrets. We made the gateway itself portable so the hosted copy needs neither, and labelled that mode clearly as a simulator.
 - A model asked to red-team its own spending controls sometimes declines. In five runs it attacked in two (every attempt refused by the gateway) and declined in three, so the video uses a scripted attacker for that part and the documentation says so.
 
@@ -97,12 +101,13 @@ Agents outside the app use the same gateway through a command line and an MCP se
 - An agent that kept what it earned, paid another agent out of its balance with no PayPal call, was frozen by its owner, and withdrew through a real PayPal payout, on the real sandbox. The books balanced at the end.
 - A real model, told it needed a service for two months and that its owner would not share a bank card, issued itself a card for exactly that, and cancelled it when told the work was off. On the real sandbox; the merchant's later charge was declined.
 - A proof graph where any payment can be followed back to the owner's signature, with every signature checked by the reader's own browser.
-- Fifteen real faults found and fixed before submitting, by our own tests and by an independent reviewer told to break the money code, and written up with what is still open.
-- 83 real PayPal API calls behind three envelopes in one recorded run, every one on record with PayPal's debug id, and shown on the envelope's own page.
+- An agent that was paid gave the money back: a real PayPal refund of the capture on the sandbox, on the paid agent's signature, with the payer's own agent unable to force it.
+- Twenty real faults found and fixed before submitting, by our own tests, by the real sandbox, and by an independent reviewer told to break the money code, and written up with what is still open.
+- 53 real PayPal API calls on record behind three envelopes in the last recorded run, each with PayPal's debug id, and shown on the envelope's own page.
 - An SDK that reached a first payment on the real sandbox from a twenty-line program, with the receipt verified on the caller's machine.
 - An MCP server tested by speaking real MCP to it, with read tools and money-moving tools marked apart.
 - 171 of 171 attacks refused, with no money moved.
-- The whole thing can be tried in a browser with nothing to install or configure.
+- The whole thing can be tried in a browser with nothing to install or configure, in as many tabs as you like.
 
 ### What we learned
 
@@ -115,11 +120,12 @@ Three old ideas fit together well for agents: capability chains that can only be
 - Paying payees through PayPal's platform products so captured money never rests with the gateway.
 - Delivery-versus-payment for promises, so a payee holds more than earmarked money.
 - Xenoncard accepted outside this gateway: a merchant-side library, then a bridge to card-network tokens for merchants that only take cards.
-- Balances held by a licensed partner, with statements and a way to dispute a payment. After that, the things a bank adds on top: credit against a record, cards, interest. None of those is built, and none should be without a licence behind it.
+- Partial refunds, and a payer-side way to ask for one short of a PayPal dispute.
+- Balances held by a licensed partner, with statements. After that, the things a bank adds on top: credit against a record, cards, interest. None of those is built, and none should be without a licence behind it.
 
 ### Built with
 
-PayPal Orders v2, PayPal Payments v2 (authorize, capture, void, refund), PayPal Payouts, Next.js, React, TypeScript, Tailwind CSS, Drizzle ORM, PostgreSQL, PGlite, WebCrypto (Ed25519), Vitest, Playwright, Model Context Protocol, Claude Code.
+PayPal Orders v2, PayPal Payments v2 (authorize, capture, void, refund), PayPal Payouts, PayPal Reporting (balances, Transaction Search), PayPal Disputes, PayPal Webhooks (signature verification, event feed), Next.js, React, TypeScript, Tailwind CSS, Drizzle ORM, PostgreSQL, PGlite, WebCrypto (Ed25519), Vitest, Playwright, Model Context Protocol, Claude Code.
 
 ### AI tools disclosure
 
@@ -127,13 +133,13 @@ Claude Code (Anthropic) wrote the code, tests and documents under the author's d
 
 ## Testing instructions for judges
 
-**Fastest: the hosted copy.** Open the site. A red strip says the gateway is running in your browser on a simulator.
+**Fastest: the hosted copy.** Open <https://envelope-paypal.vercel.app> (also <https://kept-paypal.vercel.app>). A red strip says the gateway is running in your browser on a simulator.
 
 1. **Seal an envelope** (top right) → "Seal & hold $200.00 on PayPal".
 2. On the envelope's page press **Run the launch**. The ops agent splits; the localization agent sets $45 aside for translator-agent, payable when ops-agent signs for the delivered work, which it then does; the creative agent pays the designer.
 3. Press **Compromise the creative agent**: a new payee, an overspend and a forged bigger envelope are all denied, with the reason shown.
-4. Click **translator-agent** in the statement: an agent that holds no envelope and gets paid. The $45 is in its balance. Press **Pay proofreader-agent $12** (moves at once), **Compromised: drain to a stranger** (refused: over its owner's $30 cap), **Owner freezes it**, then **Withdraw $20 to its owner**. Under **Its card**, press **Subscribe to Lexica Pro with its card**: the card appears and the merchant charges the first period. Then **Merchant charges the next period** (declined: too soon), **Merchant overcharges $19** (declined), **A thief uses the card details** (declined), and **Agent cancels the card**. Open **Accounts** (top right) to see every balance and whether the books add up. Click an agent in "Who holds what" and use **Ask the gateway** for proof of funds.
-5. Open a **Receipt & authority chain**: checked against PayPal (simulated here) and re-verified in your browser.
+4. Click **translator-agent** in the statement: an agent that holds no envelope and gets paid. The $45 is in its balance. Press **Pay proofreader-agent $12** (moves at once), **Compromised: drain to a stranger** (refused: over its owner's $30 cap), **Owner freezes it**, then **Withdraw $20 to its owner**. Under **Its card**, press **Subscribe to Lexica Pro with its card**: the card appears and the merchant charges the first period. Then **Merchant charges the next period** (declined: too soon), **Merchant overcharges $19** (declined), **A thief uses the card details** (declined), and **Agent cancels the card**. Open **Accounts** (top right) to see every balance, whether the books add up, what agents are owed against what PayPal says the account holds, and **Compare with PayPal** to look each capture and payout up in PayPal's statement. To see a refund, press **Give its last payment back** on translator-agent's page before it has spent any of the $45 (on a fresh envelope, or before the other buttons). Click an agent in "Who holds what" and use **Ask the gateway** for proof of funds.
+5. Open a **Receipt & authority chain**: checked against PayPal (simulated here) and re-verified in your browser. The seventh check asks PayPal whether the payment is disputed; **Show what would be sent** shows the evidence the gateway would answer with.
 6. Press **Agent asks for a bigger payment**: it is over the $75 you asked to sign for, so it waits. **Sign & pay** or **Decline**.
 7. At the top of the envelope's page, open **Proof graph**. Every box is a record; ticks are signatures your browser checked. Click a **PayPal capture** and read "Back to the person" on the right; press **Ask PayPal now**.
 7a. Back on the envelope, read **What PayPal did for this envelope**: the hold, each capture and payout, each with PayPal's id. Open **Developers** in the top bar for the SDK, the MCP tools and the command line.
@@ -141,7 +147,7 @@ Claude Code (Anthropic) wrote the code, tests and documents under the author's d
 8. On an agent's passport, **Get a signed reference**: its record, signed and checked in your browser.
 9. **Close envelope & release the hold.**
 
-**On the real PayPal sandbox** (about five minutes): clone the repository and follow "Run it" in the README with a sandbox app's credentials. `npx tsx scripts/sandbox-run.ts` runs the whole flow with no browser, balances included, and prints PayPal's ids. `node scripts/e2e.mjs` drives the same flow in a browser.
+**On the real PayPal sandbox** (about five minutes): clone the repository and follow "Run it" in the README with a sandbox app's credentials. `npx tsx scripts/sandbox-run.ts` runs the whole flow with no browser, balances, a refund, reserves, the statement and disputes included, and prints PayPal's ids. `node scripts/e2e.mjs` drives the same flow in a browser.
 
 **With a real model**: see "Live agents" in the README. If you have Claude Code installed, `node scripts/claude-bridge.mjs` needs no API key.
 
@@ -167,13 +173,13 @@ Claude Code (Anthropic) wrote the code, tests and documents under the author's d
 | 2:36 | Numbers | 171 of 171 attacks refused; try it in the browser |
 | 2:43 | Close | End card |
 
-Not in the video: the owner's freeze and the withdrawal (both on the agent's page and in `docs/evidence/sandbox-run.json`), and a model issuing and cancelling a card by itself (`docs/evidence/card-run.md`). In the video the card's steps are scripted buttons and its billing period is 30 seconds. The video shows the model paying what it set aside itself. Payment released by a named agent's acceptance is shown by the "Run the launch" button and in `docs/evidence/sandbox-run.json`, not in the video.
+Not in the video, because it was recorded before they were built: the list of PayPal calls on an envelope, the SDK and Developers page, recall, refunds, reserves, the statement check and disputes. Also not in the video: the owner's freeze and the withdrawal (both on the agent's page and in `docs/evidence/sandbox-run.json`), and a model issuing and cancelling a card by itself (`docs/evidence/card-run.md`). In the video the card's steps are scripted buttons and its billing period is 30 seconds. The video shows the model paying what it set aside itself. Payment released by a named agent's acceptance is shown by the "Run the launch" button and in `docs/evidence/sandbox-run.json`, not in the video.
 
 ## Where this entry stands
 
 We read the code of 36 other entries (see `docs/DISCOVERY.md`). Honest reading:
 
-- **Stronger than this entry in places.** Several rivals are more complete products: hundreds of tests, CI, Disputes API evidence, PayPal partner onboarding, passkey approval, a fine-tuned model. Some have had hosted demos for weeks.
+- **Stronger than this entry in places.** Several rivals are more complete products: hundreds of tests, CI, PayPal partner onboarding, Vault, payer-present approval, passkey approval, a fine-tuned model. Some have had hosted demos for weeks.
 - **Shared with rivals.** Signed delegation chains (one rival, with AP2 SD-JWTs), agent passports, signed receipts verified in the browser, and one hold with partial captures for a single agent all exist elsewhere.
 - **Cards.** Cards for AI agents exist on Visa and Mastercard rails (Visa Intelligent Commerce, Mastercard Agent Pay, and issuers built on them). Xenoncard is not one of those and does not work at their merchants. What it does that a card number cannot: it is locked to one merchant's key, it carries its own count of charges and billing period, and its details are not a secret. A pattern search of the rival entries found no card or pull-payment mandate for agents.
 - **Balances.** Several rivals have allowance wallets or a ledger of what an agent spent. A pattern search of the same codebases found none where an agent keeps income captured from another agent's PayPal hold as a balance and pays a third agent from it on its own signature. That was a search by pattern, not a full read, so treat it as "not seen", not "does not exist".
@@ -185,8 +191,8 @@ A special award (Best Use of Agentic Commerce, Most Creative, Best Use of PayPal
 
 | Criterion | Strengths | Weaknesses a judge may raise |
 |---|---|---|
-| Technological implementation | Real sandbox: authorize, partial capture, payout, void, refund path, reconciliation. Ed25519 chains verified in three places. 101 tests and a 171-attack corpus. Gateway runs on a server or in a browser from the same code. | Xenoncard only works at merchants on this gateway, and network cards for agents already exist; fifteen faults were found in the last two days, which shows care and also how young the code is; no outside review; balances are stored value and need a licence in real life; a replay bug was found and fixed on the last day and there has been no outside security review; custodial gateway; test-card funding; no hold reauthorization; no webhooks; fewer tests than the largest entries. |
+| Technological implementation | Real sandbox: authorize, partial capture, payout, void, a refund by the paid agent, reported balance, reconciliation, and PayPal's own statement matched against the records with its fees read from each line; disputes were asked for there and none existed. Ed25519 chains verified in three places. 109 tests and a 171-attack corpus. Gateway runs on a server or in a browser from the same code. | Xenoncard only works at merchants on this gateway, and network cards for agents already exist; twenty faults were found in the last days, which shows care and also how young the code is; recall, PayPal events and dispute evidence are proven on the simulator only; PayPal's fees are measured and not yet charged to anyone; no outside review; balances are stored value and need a licence in real life; a replay bug was found and fixed on the last day and there has been no outside security review; custodial gateway; test-card funding; no hold reauthorization; no webhook registered, so no genuine PayPal event received; fewer tests than the largest entries. |
 | Design | A distinctive stationery system applied to every page; passports and receipts that carry real data. | Dense pages; phone layout only spot-checked. |
 | Potential impact | Addresses multi-agent delegation, payee trust and agent-to-agent payment with rails that exist today. | Needs PayPal platform products and compliance work before real money. |
 | Innovation | The combination listed above was not found in 36 rival codebases or in the prior art we read. | Each ingredient has prior art; the entry says so. |
-| Presentation | Narrated 2:49 video on the real sandbox with a real model; a hosted copy that needs no setup; evidence files with PayPal ids. | Synthetic narration; the hosted copy is a simulator unless credentials are added. |
+| Presentation | Narrated 2:49 video on the real sandbox with a real model; a hosted copy that needs no setup; evidence files with PayPal ids. | Synthetic narration; the video predates the last two rounds; the hosted copy is a simulator unless credentials are added. |

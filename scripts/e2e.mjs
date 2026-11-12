@@ -25,9 +25,11 @@ const page = await ctx.newPage();
 const logs = [];
 page.on("console", (m) => { if (m.type() === "error" || m.type() === "warning") logs.push(`[${m.type()}] ${m.text().slice(0, 400)}`); });
 page.on("pageerror", (e) => logs.push(`[pageerror] ${String(e).slice(0, 600)}`));
+if (process.env.E2E_DEBUG) { const t0 = Date.now(); page.on("console", (m) => console.log(`  ${((Date.now() - t0) / 1000).toFixed(1)}s ${m.text().slice(0, 240)}`)); }
 page.on("requestfailed", (r) => logs.push(`[requestfailed] ${r.url()} ${r.failure()?.errorText}`));
 const T = { timeout: 60000 };
 try {
+  const health0 = await (await fetch(`${BASE}/api/health`)).json().catch(() => ({}));
   await page.goto(`${BASE}/console`);
   console.log("gateway mode:", await page.evaluate(() => document.documentElement.dataset.gateway));
   await page.getByText(/Signed with your key [A-Za-z0-9_-]{6}…/).waitFor(T);
@@ -102,14 +104,25 @@ try {
   await page.goto(`${BASE}/bank`);
   await page.getByTestId("bank-checks").getByText("Books balance").waitFor(T);
   await page.getByTestId("bank-accounts").getByText("proofreader-agent").waitFor(T);
+  // the books against PayPal's own: its reported balance covers what agents are owed, and its statement agrees with ours
+  await page.getByTestId("bank-reserves").getByText("Covered at PayPal").waitFor(T);
+  if (health0.paypalMode === "simulated") {
+    await page.getByTestId("bank-statement").getByRole("button", { name: "Compare with PayPal" }).click();
+    await page.getByTestId("bank-statement").getByText("No disagreement.").waitFor(T);
+    await page.getByTestId("bank-position").getByText("Left at PayPal by these records").waitFor(T);
+  }
   if (OUT) await page.screenshot({ path: `${OUT}/local-3c-bank.png`, fullPage: true }).catch(() => {});
-  console.log("the books balance");
+  console.log("the books balance; PayPal's reported balance covers what agents are owed" + (health0.paypalMode === "simulated" ? "; PayPal's statement agrees with every capture and payout" : ""));
   await page.goto(envelopeUrl);
   await page.getByText("PayPal hold backing this envelope").waitFor(T);
   // receipt of the promise that was paid
   await page.getByRole("link", { name: "Receipt & authority chain →" }).last().click();
   await page.getByText("All checks pass").waitFor(T);
   await page.getByText("Signatures valid").waitFor(T);
+  // PayPal's Disputes API was asked about this capture, and the evidence the gateway would answer a dispute with can be read
+  await page.getByText("PayPal holds no dispute against this capture").waitFor(T);
+  await page.getByTestId("evidence-link").click();
+  await page.getByTestId("evidence").getByText(/This payment was made by software acting inside limits the payer signed/).waitFor(T);
   if (OUT) await page.screenshot({ path: `${OUT}/local-4-receipt.png`, fullPage: true }).catch(() => {});
   console.log("receipt verified");
   await page.goBack();
@@ -171,11 +184,13 @@ try {
   await page.getByTestId("reference").getByText("Signature checked in your browser.").waitFor(T);
   console.log("reference signed and verified");
   const p2 = await ctx.newPage();
+  if (process.env.E2E_DEBUG) p2.on("console", (m) => console.log(`  tab 2: ${m.text().slice(0, 240)}`));
   await p2.goto(`${BASE}/console`);
   await p2.getByText("Store launch budget").first().waitFor(T);
   await p2.getByText("can be paid").first().waitFor(T);
   if (OUT) await p2.screenshot({ path: `${OUT}/local-5-console.png`, fullPage: true }).catch(() => {});
   console.log("second tab: console lists the envelope and the receiving agent");
+  // The second tab stays open (and keeps polling) for the rest of the run: two tabs share one in-browser database.
   // What PayPal did, and a recall. The recall runs on the simulator only: PayPal's sandbox does not complete a cancel (see the README).
   const health = await (await fetch(`${BASE}/api/health`)).json().catch(() => ({}));
   if (health.paypalMode === "simulated") {
@@ -197,12 +212,34 @@ try {
     await rail.getByText("Cancelled an unclaimed payout").waitFor(T);
     await rail.getByText("Refunded a capture").waitFor(T);
     if (OUT) await page.screenshot({ path: `${OUT}/local-9-recall.png`, fullPage: true }).catch(() => {});
+    // a refund: translator-agent gives back the $45 it was just paid from this envelope; PayPal refunds the capture
+    const here = page.url();
+    await page.getByTestId("statement").getByRole("link", { name: /translator-agent/ }).first().click();
+    await page.getByTestId("bank-actions").getByRole("button", { name: "Give its last payment back" }).click();
+    await page.getByTestId("bank-result").getByText("Refunded by PayPal.").waitFor(T);
+    await page.goto(here);
+    await page.getByTestId("statement").getByText("Refunded by the payee").waitFor(T);
+    await page.getByTestId("refunded").getByText(/\$112\.00 was captured and then refunded/).waitFor(T);
+    await page.getByTestId("paypal-rail").getByText("Refunded a capture").first().waitFor(T);
+    console.log("refund: the agent that was paid gave $45 back; PayPal refunded the capture; the envelope shows $112 refunded and not spendable again");
     console.log("paypal record: hold, captures and payout listed; an unclaimed payout recalled by the owner: cancelled at PayPal, capture refunded");
   }
 } catch (e) {
   failed = true;
   console.log("FAILED:", String(e).slice(0, 500));
   if (OUT) await page.screenshot({ path: `${OUT}/local-fail.png`, fullPage: true }).catch(() => {});
+  // Where every open tab stood, and who held which browser lock: what is needed to tell a stuck in-browser database from a slow one.
+  for (const [i, p] of ctx.pages().entries()) {
+    const state = await Promise.race([
+      p.evaluate(async () => {
+        const q = await navigator.locks.query();
+        const f = (l) => `${l.name.replace(/^pglite-/, "").slice(0, 26)}@${(l.clientId ?? "").slice(0, 5)}`;
+        return `${location.pathname} · held ${q.held.map(f).join(", ") || "none"} · waiting ${q.pending.map(f).join(", ") || "none"} · text: ${document.body.innerText.slice(0, 90).replace(/\n+/g, " | ")}`;
+      }),
+      new Promise((r) => setTimeout(() => r("did not answer in 5 s"), 5000)),
+    ]).catch((x) => `could not be asked: ${String(x).slice(0, 80)}`);
+    console.log(`  tab ${i}: ${state}`);
+  }
 }
 const real = logs.filter((l) => !l.includes("_rsc=") && !l.includes("preloaded using"));
 if (real.length) console.log(real.slice(0, 25).join("\n"));

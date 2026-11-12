@@ -10,6 +10,7 @@ import { auditLog, roots } from "../db/schema";
 import { act, attachDemoAgents, BANK_ACTIONS, bankAct, createDemoAgents, DEMO_ACTIONS, demoHello, ensureCounterparty, hasDemoAgents, isBankDemoAgent, isDemoAgent, runTool, TOOL_AGENTS } from "../demo/agents";
 import * as E from "../envelope/core";
 import * as B from "../gateway/bank";
+import * as K from "../gateway/books";
 import { proof } from "../gateway/proof";
 import * as G from "../gateway/service";
 import * as S from "../gateway/settlement";
@@ -47,6 +48,12 @@ async function ownerAsks(body: unknown, principal: string): Promise<boolean> {
   return p.success && p.data.signed.by === principal && (await E.verifyReadSignature(p.data.signed as never, "treasury", principal));
 }
 const spendStatus = (s: string) => (s === "DENIED" ? 403 : s === "FAILED" ? 502 : s === "LAPSED" ? 409 : 200);
+
+async function sweepFor(headers: Record<string, string> | undefined): Promise<Output> {
+  const secret = process.env.CRON_SECRET;
+  if (secret && headers?.authorization !== `Bearer ${secret}`) return { status: 401, body: { error: "Not authorized." } };
+  return { body: await S.sweepUnfinished() };
+}
 
 /** When each unfinished payment was last put to PayPal because somebody looked at its envelope. */
 const lastAsked = new Map<string, number>();
@@ -103,6 +110,9 @@ export const handlers: Record<string, Handler> = {
     return { body: { id: s.id, status: s.status, delivered: s.status === "PAID", amountMinor: s.amountMinor, currency: s.currency, payee: s.payee, purpose: s.purpose, payoutStatus: s.payoutStatus, captureId: s.captureId, refundId: s.refundId, hasReceipt: Boolean(s.receipt), reasons: withMeaning(s.reasons) } };
   },
 
+  /** What the gateway would send PayPal if the payer disputed this payment: the signed chain of authority, in words and in full. */
+  "GET /api/spends/:id/evidence": async ({ params }) => ({ body: await K.evidence(params.id!) }),
+
   /** Every call the gateway made to PayPal for this envelope, and the events PayPal reported about it. */
   "GET /api/envelopes/:id/paypal": async ({ params }) => {
     const t = await S.paypalTrail(params.id!);
@@ -127,11 +137,9 @@ export const handlers: Record<string, Handler> = {
   },
 
   /** Move along everything unfinished. For a scheduler: with CRON_SECRET set, it must be presented as a bearer token. */
-  "POST /api/sweep": async ({ headers }) => {
-    const secret = process.env.CRON_SECRET;
-    if (secret && headers?.authorization !== `Bearer ${secret}`) return { status: 401, body: { error: "Not authorized." } };
-    return { body: await S.sweepUnfinished() };
-  },
+  "POST /api/sweep": async ({ headers }) => sweepFor(headers),
+  /** The same, for schedulers that can only GET (Vercel Cron). */
+  "GET /api/sweep": async ({ headers }) => sweepFor(headers),
 
   "GET /api/proof/:root": async ({ params }) => {
     const g = await proof(params.root!);
@@ -234,7 +242,15 @@ export const handlers: Record<string, Handler> = {
     return c ? { body: c } : { status: 404, body: { error: "No such card." } };
   },
   /** The books: every balance, and whether they add up. */
-  "GET /api/bank": async () => ({ body: await B.position() }),
+  "GET /api/bank": async () => ({ body: { ...(await B.position()), reserves: await K.reserves() } }),
+  /** PayPal's own statement of the gateway's account, compared line by line with the captures and payouts recorded here. */
+  "GET /api/bank/statement": async () => ({ body: await K.statement() }),
+  /** An agent that kept a payment gives it back: its balance is debited and PayPal refunds the capture to the owner. */
+  "POST /api/bank/refund": async ({ body }) => {
+    const b = z.object({ signed: z.object({ request: z.any(), sig: z.string() }) }).parse(body);
+    const r = await B.refund(b.signed as never);
+    return { status: r.status === "REFUNDED" ? 200 : r.status === "PENDING" ? 202 : r.status === "FAILED" ? 502 : 403, body: { ...r, reasons: withMeaning(r.reasons) } };
+  },
   "GET /api/bank/transfers/:id": async ({ params }) => {
     const t = await B.transferById(params.id!);
     return t ? { body: t } : { status: 404, body: { error: "No such transfer." } };
@@ -287,7 +303,7 @@ export const handlers: Record<string, Handler> = {
   "POST /api/gateway/revoke": async ({ body }) => {
     const { signed } = z.object({ signed: z.object({ request: z.any(), sig: z.string(), by: z.string() }) }).parse(body);
     const r = await G.revoke(signed as never);
-    return { body: { block: { id: r.block.id, revokedAt: r.block.revokedAt }, root: { status: r.root.status, capturedMinor: r.root.capturedMinor, releasedMinor: r.root.releasedMinor } } };
+    return { body: { block: { id: r.block.id, revokedAt: r.block.revokedAt }, root: { status: r.root.status, capturedMinor: r.root.capturedMinor, refundedMinor: r.root.refundedMinor, releasedMinor: r.root.releasedMinor } } };
   },
 
   /** The gateway's public key, so receipts, statements and promise notes can be checked offline. */

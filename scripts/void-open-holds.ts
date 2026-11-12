@@ -18,7 +18,7 @@ for (const r of open) {
   if (!r.authorizationId || r.authorizationId.startsWith("SIM")) continue;
   try {
     await voidAuthorization(getPayPal(), r.authorizationId, r.id);
-    await getDb().update(roots).set({ status: "CLOSED", closedAt: new Date(), closeReason: "voided by housekeeping", releasedMinor: r.limitMinor - r.capturedMinor }).where(eq(roots.id, r.id));
+    await getDb().update(roots).set({ status: "CLOSED", closedAt: new Date(), closeReason: "voided by housekeeping", releasedMinor: r.limitMinor - r.capturedMinor - r.refundedMinor }).where(eq(roots.id, r.id));
     console.log(r.id, r.authorizationId, "→", (await getAuthorization(getPayPal(), r.authorizationId)).status);
   } catch (e) { console.log(r.id, r.authorizationId, "could not be voided:", String(e).slice(0, 140)); }
 }

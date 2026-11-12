@@ -1,6 +1,6 @@
 # Implementation report
 
-What was researched, decided, built and proven in the round of work that ended on 11 November 2026 (pull request #8). Earlier rounds are in the git history and in [`RED_TEAM_REPORT.md`](RED_TEAM_REPORT.md).
+What was researched, decided, built and proven in the round of work that ended on 11 November 2026 (pull request #8), and in the shorter round that followed on 12 November (pull request #9), which has its own section at the end. Earlier rounds are in the git history and in [`RED_TEAM_REPORT.md`](RED_TEAM_REPORT.md).
 
 ## The question this round answered
 
@@ -60,11 +60,11 @@ The SDK was asked for outright and does not count against the limit of one.
 
 ### 3. Sweep
 
-`POST /api/sweep` reads the feed, then asks PayPal about every payment and transfer still in flight, and lapses promises that ran out. With `CRON_SECRET` set it requires that secret as a bearer token.
+`POST /api/sweep` reads the feed, then asks PayPal about every payment and transfer still in flight, and lapses promises that ran out. With `CRON_SECRET` set it requires that secret as a bearer token. (Since the next round it also answers `GET`, is scheduled daily in `vercel.json`, finishes pending refunds and checks disputes.)
 
 ### 4. Recall
 
-The owner of an envelope can take back a payout PayPal is holding unclaimed: PayPal cancels the item, the gateway refunds the capture, and the budget returns at every level. Only the owner's signature does it; the paying agent cannot.
+The owner of an envelope can take back a payout PayPal is holding unclaimed: PayPal cancels the item and the gateway refunds the capture to the owner. Only the owner's signature does it; the paying agent cannot. (As first built, the budget also returned at every level. That was wrong and was corrected in the next round: PayPal does not return a refunded capture to the hold, so the amount now stays used.)
 
 ### 5. The SDK
 
@@ -100,7 +100,7 @@ Found and left, with reasons:
 | Thing | Simulator | Real PayPal sandbox |
 |---|---|---|
 | Record of PayPal calls | `tests/paypal-rail.test.ts` | Yes: `evidence/sandbox-run.json`, `evidence/sdk-run.md` |
-| SDK | `tests/sdk.test.ts` (17) | Yes: `evidence/sdk-run.md` |
+| SDK | `tests/sdk.test.ts` (17 then, 18 now) | Yes: `evidence/sdk-run.md` |
 | MCP server and command line on the SDK | `tests/mcp.test.ts` (13), real MCP over stdio | The MCP server before the rebuild was driven by a model on the sandbox; not rerun since |
 | Sweep | Yes | Yes: ran, found nothing to move |
 | Webhook receiver | Yes: genuine, forged, edited, repeated, late | A forged event was rejected by PayPal. No genuine event has been received |
@@ -110,7 +110,7 @@ Found and left, with reasons:
 
 ## Numbers
 
-- 101 automated tests pass (63 before this round).
+- 101 automated tests passed at the end of this round (63 before it). After the next round: 109.
 - The attack corpus is unchanged at 171, all refused. New adversarial cases for recall and events are in `tests/paypal-rail.test.ts` so that figure, which the recorded video quotes, stays true.
 - Browser test: passes with a server gateway and with the in-browser gateway.
 
@@ -118,6 +118,75 @@ Found and left, with reasons:
 
 - No webhook is registered on the sandbox app, so no real PayPal event has been received.
 - Recall has not completed on the sandbox.
-- Vault, Disputes, payer-present approval, Transaction Search, Invoicing and reauthorization are not used. More than a dozen rivals use each of the first three.
+- Vault, Disputes, payer-present approval, Transaction Search, Invoicing and reauthorization were not used at the end of this round. More than a dozen rivals use each of the first three. (Disputes and Transaction Search were added in the next round.)
 - The SDK is not published. That needs the owner's decision.
 - The video was not re-recorded. The owner asked to say when.
+
+---
+
+## The round after: 12 November 2026 (pull request #9)
+
+### The question
+
+The owner's follow-up: rivals who use more PayPal products will look more integrated, so breadth matters as well as depth; and no open hole that could cost technical marks.
+
+The rule from the round before still applied ("do not add an API merely to increase the number of PayPal integrations"). So each addition had to answer a question the system could not answer before, with PayPal as the only party who could answer it:
+
+| Question nobody but PayPal can answer | PayPal API | What was built |
+|---|---|---|
+| Is the money agents are owed really there? | Reporting: balances | Reserves |
+| Does PayPal's own account statement agree with our records? | Reporting: Transaction Search | Statement match |
+| Can an agent that was paid give the money back to the payer? | Captures: refund (already used for failed payouts) | A refund signed by the paid agent |
+| Has the payer disputed a payment, and what do we say? | Disputes: list, show, provide evidence | Dispute check, mark and evidence |
+
+Left out again, for the same reasons as before: Vault and payer-present approval (need a buyer login in a browser), Invoicing (a new product surface), reauthorization (needs four days), order tracking.
+
+### What was built
+
+1. **Reserves** (`lib/gateway/books.ts`, `GET /api/bank`, the Accounts page). What agents are owed, plus refunds due to owners, against the balance PayPal reports for the gateway's account. PayPal dates its figure (about two hours old on the sandbox), so the comparison is made with what was owed at that moment, summed from the ledger.
+2. **Statement match** (`GET /api/bank/statement`, "Compare with PayPal" on the Accounts page, `scripts/statement-check.ts`). Every capture and payout recorded here is looked up by PayPal's transaction id in PayPal's statement of the account: listed, amount differs, or not listed yet.
+3. **Refund by the agent that was paid** (`envelope-refund/1`, `POST /api/bank/refund`, `agent.refund()` in the SDK, `refund` on the command line, `envelope_refund` in the MCP server, a button on the agent's page). In full, only while the money is still in its balance: the balance is debited and PayPal refunds the capture to the payer. The payer's side cannot force it.
+4. **Disputes** (`lib/gateway/books.ts`, `GET /api/spends/:id/evidence`). Every receipt reconciliation has a seventh check, "PayPal holds no dispute against this capture". The sweep asks PayPal for every dispute against the account, records one that is about a payment made here, and while PayPal is waiting for an answer sends the evidence: the payer's signature on the envelope and every signature between it and the payment. The receipt page shows that evidence.
+5. **Settlement on a schedule.** `vercel.json` has Vercel Cron call `/api/sweep` daily. The sweep also finishes refunds PayPal could not be reached for.
+6. **The in-browser copy, rebuilt underneath** (`lib/local/pg-worker.ts`, `lib/db/driver.browser.ts`, `lib/local/locks.ts`). See defect 5 below.
+
+### Defects found and fixed
+
+| # | Severity | Where | Fault | Fix | Test |
+|---|---|---|---|---|---|
+| 1 | High | `lib/gateway/service.ts`, `settlement.ts` | After a refund or a recall the books gave the budget back. PayPal does not: it counts a refunded capture against the hold for good. An agent could have been told a payment would fit and had the capture refused. Found only on the real sandbox (`scripts/paypal-refund-capacity.ts`) | The amount stays used at every level; the root records `refundedMinor`; closing releases limit − captured − refunded | Expectations corrected in `tests/bank.test.ts`, `tests/paypal-rail.test.ts`, `tests/sdk.test.ts`; seen on the sandbox in `evidence/sandbox-run.json` |
+| 2 | Medium | `lib/gateway/books.ts` (new code) | Reserves compared today's liabilities with PayPal's hours-old balance and raised a false alarm after any new income | Compared at PayPal's own dated moment, from the timestamped ledger | `tests/books.test.ts` |
+| 3 | Low | `lib/gateway/service.ts` settle | Two arrivals finishing the same payment each wrote an audit line (the item left open in the round before) | Only the arrival that finished it writes | No dedicated test; the concurrency tests in `tests/settlement.test.ts` still pass |
+| 4 | Medium | Pages that refresh themselves | They asked on a timer without waiting for the last answer, so slow answers piled up | `lib/client/poll.ts`: the next request starts only when the last has answered | Browser test timing; no dedicated test |
+| 5 | High, in the in-browser copy only | PGlite 0.5's multi-tab helper | Its locks lived in the holding worker's memory. A tab that closed or reloaded while waiting was handed the lock later and never returned it, freezing every tab; a transaction left open by a closed tab could be committed by the next tab's COMMIT; a call its client makes before every query was sent without checking the connection, so a query caught while the database moved between tabs was never answered. It also saved the whole database to IndexedDB after every protocol message, about six times a query | The locks are Web Locks; an abandoned transaction is rolled back before anyone else's statement; a statement from a tab without the turn is refused; a read interrupted by the database moving tabs is asked again; the client waits to be connected before sending and drops the unused calls; the database is saved once per finished write. With two tabs open an envelope page went from 2–7 s to under 0.1 s | `scripts/tabs-stress.mjs` (passes; its last step fails every time without the fix); `scripts/e2e.mjs` keeps a second tab open to the end and passed 15 of 15 runs in this mode, where it had failed about one run in two |
+
+### Proven, and where
+
+| Thing | Simulator | Real PayPal sandbox |
+|---|---|---|
+| Refund by the paid agent | `tests/books.test.ts`, `tests/sdk.test.ts`, browser test | Yes: capture `1XG96277EH6264408`, refund `4C249901ET649933V`, capture read back `REFUNDED` |
+| A refund does not reopen the hold | The gateway's own arithmetic refuses the next payment (tests) | Yes: authorization `0E653354WJ396544C`, refund `3FW098456W852262F`, second capture refused `MAX_CAPTURE_AMOUNT_EXCEEDED`; and in the main run a further $6 refused by the gateway |
+| Reserves | Yes, including a shortfall | Yes for the reading: $6114.08 as of 22:29:59 UTC on 11 November, covered. The account holds old test money, so this shows the call works, not that a shortfall would be caught there |
+| Statement match | Yes, including an amount that differs | Yes: all 28 records listed with the same amount, none with a different one; PayPal's fees read from the lines ($24.69) <!-- STATEMENT-CHECK --> |
+| Disputes | Yes: found, marked, answered once | Asked only: PayPal held none |
+| Scheduled sweep | n/a | The sweep ran from the script. The schedule has not been seen to fire |
+| Two tabs on the in-browser copy | `scripts/tabs-stress.mjs` | n/a (that copy is a simulator) |
+
+### Numbers
+
+- 109 automated tests pass (101 before this round): 7 in `tests/books.test.ts` are new, and one more in `tests/sdk.test.ts`.
+- PayPal's fees. The first real statement showed what the books had left out: PayPal charges the gateway's account on every capture and payout, and payees are credited in full. The statement check now reads the fee on each line and reports what the listed records left at PayPal; payouts from agents' balances are matched by the transfer id PayPal prints on the line, and refunds by their own id. Nothing charges the fees to anyone yet; that is said in the README's limits.
+- The attack corpus is unchanged at 171, all refused.
+- The MCP server has fifteen tools (six read, nine act); `envelope_refund` is the new one.
+- Nine migrations.
+- Last sandbox run: 53 PayPal calls recorded behind three envelopes: 3 holds, 7 partial captures, 5 payouts, 1 refund, 3 releases, 26 reads, 8 refused cancels.
+
+### Not done
+
+- No webhook is registered on the sandbox app, so no genuine PayPal event has been received.
+- Recall still has not completed on the sandbox.
+- On PayPal's real statement all 28 records were matched; a record that disagrees has only been produced on the simulator. <!-- STATEMENT-CHECK -->
+- No dispute evidence has been sent to the real PayPal.
+- Partial refunds; a refund of money that has already left the balance; recall for payouts made from a balance.
+- Vault, payer-present approval, Invoicing, order tracking and reauthorization.
+- The SDK is not published, and the video has not been re-recorded: it predates this round.

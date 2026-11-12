@@ -50,6 +50,20 @@
       "when": 1794431727853,
       "tag": "0006_handy_slipstream",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1794439464724,
+      "tag": "0007_quiet_vulture",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1794439636501,
+      "tag": "0008_material_gravity",
+      "breakpoints": true
     }
   ]
 }

@@ -1,6 +1,7 @@
 "use client";
 
 import { api } from "@/lib/client/api";
+import { usePoll } from "@/lib/client/poll";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { fingerprint, verifyDetached, type Caps } from "@/lib/envelope/core";
@@ -29,7 +30,7 @@ const period = (s: number) => (s === 0 ? "none" : s % 86400 === 0 ? `${s / 86400
 type Standing = { v: string; agent: string; agentLabel: string; account: string; sponsors: Sponsor[]; root: string; ask: { amount: number; currency: string; payee: string; purpose: string }; good: boolean; reasons: Array<{ code: string; detail: string }>; availableMinor: number; paypal: { mode: string; authorizationId: string | null; status: string | null; unusedMinor: number | null }; issuedAt: string; validUntil: string; gateway: string; sig: string };
 
 const STATE: Record<Account["state"], { text: string; tone: "green" | "red" | "grey" | "amber" }> = { LIVE: { text: "Live", tone: "green" }, REVOKED: { text: "Revoked", tone: "red" }, CLOSED: { text: "Closed", tone: "grey" }, EXPIRED: { text: "Expired", tone: "amber" } };
-const ENTRY: Record<string, string> = { income: "Paid in from", transfer_in: "Received from", transfer_out: "Paid to", payout: "Paid out by PayPal to", withdrawal: "Withdrawn to its owner at", reversal: "Put back: payout failed to" };
+const ENTRY: Record<string, string> = { income: "Paid in from", transfer_in: "Received from", transfer_out: "Paid to", payout: "Paid out by PayPal to", withdrawal: "Withdrawn to its owner at", reversal: "Put back: payout failed to", refund: "Refunded to the payer, via", refund_reversal: "Put back: PayPal refused the refund to" };
 const day = (iso: string) => new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
 const stamp = (iso: string) => `${new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" })} ${new Date(iso).toISOString().slice(11, 16)}`.replace(/ /g, "\u00A0");
 
@@ -60,11 +61,7 @@ export function AgentView({ agentKey }: { agentKey: string }) {
       if (live) setAsk({ payee: live.caps.payees?.[0] ?? "", purpose: live.caps.purposes?.[0] ?? "", amount: (Math.max(100, Math.min(live.caps.perPayment, live.availableMinor || live.caps.perPayment)) / 100).toFixed(2) });
     }
   }, [agentKey]);
-  useEffect(() => {
-    void load();
-    const t = setInterval(() => { if (document.visibilityState === "visible") void load(); }, 4000);
-    return () => clearInterval(t);
-  }, [load]);
+  usePoll(load, 4000, agentKey);
 
   const [moving, setMoving] = useState<string | null>(null);
   const [moved, setMoved] = useState<{ action?: string; narration: string; status: string; reasons: Array<{ code: string; meaning?: string; detail: string }> } | null>(null);
@@ -172,12 +169,13 @@ export function AgentView({ agentKey }: { agentKey: string }) {
                 <button type="button" className="btn btn-sm btn-ink" disabled={Boolean(moving)} onClick={() => bank("pay-proofreader")}>{moving === "pay-proofreader" ? "Signing…" : "Pay proofreader-agent $12"}</button>
                 <button type="button" className="btn btn-sm" disabled={Boolean(moving)} onClick={() => bank("withdraw")}>{moving === "withdraw" ? "Asking PayPal…" : "Withdraw $20 to its owner"}</button>
                 <button type="button" className="btn btn-sm" disabled={Boolean(moving)} onClick={() => bank("drain")}>{moving === "drain" ? "Signing…" : "Compromised: drain to a stranger"}</button>
+                <button type="button" className="btn btn-sm" disabled={Boolean(moving)} onClick={() => bank("refund")}>{moving === "refund" ? "Asking PayPal…" : "Give its last payment back"}</button>
                 <button type="button" className="btn btn-sm" disabled={Boolean(moving)} onClick={() => bank(p.balance!.frozen ? "unfreeze" : "freeze")}>{p.balance.frozen ? "Owner lifts the freeze" : "Owner freezes it"}</button>
               </div>
             )}
             {moved && !movedCard && (
               <p className="mt-3 text-sm" role="status" data-testid="bank-result">
-                <b className={moved.status === "DENIED" || moved.status === "FAILED" ? "text-red" : "text-green"}>{moved.status === "DENIED" ? "Refused." : moved.status === "BOOKED" ? "Moved." : moved.status === "FROZEN" ? "Frozen." : moved.status === "OPEN" ? "Open again." : moved.status === "FAILED" ? "Failed." : moved.status === "PAID" ? "Paid by PayPal." : "Sent to PayPal."}</b> {moved.narration}
+                <b className={moved.status === "DENIED" || moved.status === "FAILED" ? "text-red" : "text-green"}>{moved.status === "DENIED" ? "Refused." : moved.status === "BOOKED" ? "Moved." : moved.status === "FROZEN" ? "Frozen." : moved.status === "OPEN" ? "Open again." : moved.status === "FAILED" ? "Failed." : moved.status === "PAID" ? "Paid by PayPal." : moved.status === "REFUNDED" ? "Refunded by PayPal." : moved.status === "PENDING" ? "Debited; PayPal will be asked again." : "Sent to PayPal."}</b> {moved.narration}
                 {moved.reasons.length > 0 && <span className="mono mt-1 block text-[.72rem] text-red">{moved.reasons.map((r) => `${r.code} · ${r.detail}`).join("  ")}</span>}
               </p>
             )}

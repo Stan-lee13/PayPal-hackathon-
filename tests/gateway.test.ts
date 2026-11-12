@@ -66,7 +66,7 @@ d("gateway (simulated PayPal)", async () => {
 
     const rc = await G.reconcile(r.spend!.id);
     expect(rc.ok).toBe(true);
-    expect(rc.checks).toHaveLength(6);
+    expect(rc.checks).toHaveLength(7); // the seventh: PayPal holds no dispute against the capture
   });
 
   it("a child can never spend more than any ancestor has left, however the limits were handed out", async () => {

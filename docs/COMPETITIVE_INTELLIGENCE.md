@@ -54,18 +54,18 @@ A second pass on 11 November read 65 entries' code for which PayPal APIs they re
 
 | PayPal capability | Entries using it (of 65) | Envelope |
 |---|---|---|
-| Webhooks with signature verification | 34 | Built this round; proven on the simulator; the sandbox rejected a forged event |
+| Webhooks with signature verification | 34 | Built; proven on the simulator; the sandbox rejected a forged event; no webhook registered, so no genuine event received |
 | Vault (payer not present) | 18 | No |
-| Disputes | 18 | No |
+| Disputes | 18 | Built on 12 November: every receipt check and every sweep asks PayPal; a dispute is marked on the payment and answered with the signed chain of authority. Asked on the sandbox (none held); answering one is proven on the simulator only |
 | JS SDK buttons (the payer approves in PayPal) | 15 | No: the sandbox hold is placed on PayPal's test card |
 | PayPal's Agent Toolkit | 14 | No |
 | Order tracking | 11 | No |
-| Transaction Search | about 8 | No |
+| Transaction Search | about 8 | Built on 12 November, with PayPal's reported balance beside it: every capture, payout and refund is looked up in PayPal's statement of the account, and PayPal's fee is read from each line. On the sandbox all 28 records were found with the same amount, none with a different one <!-- STATEMENT-CHECK --> |
 | Hold reauthorization | 7 | No |
-| Their own MCP server | 22 | Yes, fourteen tools, tested over real MCP |
+| Their own MCP server | 22 | Yes, fifteen tools, tested over real MCP |
 | Their own SDK | 7, mostly generated | Yes, hand-written and run against the sandbox |
 
-The entries with the broadest PayPal use (second-key, mandate-gateway, chaperone, stood, cosign) call more PayPal products than Envelope does. Envelope's use is narrower and goes further into one lifecycle: partial captures of one hold across a tree of agents, payouts with their real delivery status, release, refund, cancellation, and a record of every call. A judge counting PayPal products will count more elsewhere. A judge asking whether PayPal is necessary to the product will find it is here.
+The entries with the broadest PayPal use (second-key, mandate-gateway, chaperone, stood, cosign) still call PayPal products Envelope does not: Vault, payer-present approval, order tracking, reauthorization. Envelope's use goes further into one lifecycle: partial captures of one hold across a tree of agents, payouts with their real delivery status, release, refund (by the agent that was paid, proven on the sandbox), cancellation, a record of every call, and the gateway's books checked against PayPal's reported balance, PayPal's statement and PayPal's disputes. A judge counting PayPal products will count more elsewhere. A judge asking whether PayPal is necessary to the product will find it is here.
 
 ## Where Envelope stands
 
@@ -78,7 +78,7 @@ The entries with the broadest PayPal use (second-key, mandate-gateway, chaperone
 3. Money set aside through the delegation tree and released by a named key's signature.
 4. A gateway that runs unchanged in the visitor's browser.
 
-**Where others are stronger:** test volume and CI; Disputes API evidence; hold reauthorization; webhooks; payer-present funding (Login with PayPal, vaulting); passkey or phone approval; merchant onboarding; weeks of polish on a hosted demo.
+**Where others are stronger:** test volume and CI; Disputes evidence actually exercised against PayPal; hold reauthorization; webhooks that have received real events; payer-present funding (Login with PayPal, vaulting); passkey or phone approval; merchant onboarding; weeks of polish on a hosted demo.
 
 ## The questions a judge will ask
 

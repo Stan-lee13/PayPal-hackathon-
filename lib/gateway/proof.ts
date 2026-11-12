@@ -107,6 +107,7 @@ export async function proof(rootId: string, onlySpend?: string) {
       ["Order", root.paypalOrderId ?? "none"],
       ["PayPal says now", hold ? hold.status : "could not be reached just now"],
       ["Captured from it so far", usd(root.capturedMinor)],
+      ...(root.refundedMinor > 0 ? [["Captured and refunded to the owner", `${usd(root.refundedMinor)} (PayPal does not return this to the hold)`] as [string, string]] : []),
       ...(root.releasedMinor !== null ? [["Released back when closed", usd(root.releasedMinor)] as [string, string]] : []),
       ["Environment", paypalMode() === "sandbox" ? "PayPal sandbox (real API, test money)" : "built-in simulator (no PayPal call is made)"],
       ["What it is", "an authorization: a hold on the owner's funding source. It is not escrow, and the owner can release it."],
