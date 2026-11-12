@@ -13,11 +13,11 @@ import { toDecimalString, toMinor } from "../money";
 
 type Money = { currency_code: string; value: string };
 type SimAuth = { id: string; order_id: string; status: "CREATED" | "PARTIALLY_CAPTURED" | "CAPTURED" | "VOIDED"; amount: Money; custom_id: string; expiration_time: string; create_time: string; captured: number };
-type SimCapture = { id: string; authorization_id: string; status: "COMPLETED" | "PENDING" | "DECLINED" | "REFUNDED"; amount: Money; invoice_id?: string; custom_id: string };
+type SimCapture = { id: string; authorization_id: string; status: "COMPLETED" | "PENDING" | "DECLINED" | "REFUNDED"; amount: Money; invoice_id?: string; custom_id: string; refund_id?: string };
 type SimPayout = { batch_id: string; sender_batch_id: string; item_id: string; transaction_id: string; item_status: "SUCCESS" | "UNCLAIMED" | "RETURNED" | "FAILED"; receiver: string; amount: { currency: string; value: string } };
 export type SimEvent = { id: string; event_type: string; create_time: string; resource_type: string; resource: Record<string, unknown> };
 type SimDispute = { dispute_id: string; status: string; reason: string; dispute_life_cycle_stage: string; create_time: string; dispute_amount: Money; capture_id: string; evidence?: string };
-type Sim = { disputes?: Record<string, SimDispute>; events?: SimEvent[]; auths: Record<string, SimAuth>; captures: Record<string, SimCapture>; payouts: Record<string, SimPayout>; idem: Record<string, { status: number; body: unknown }>; calls: string[]; failNext: string | null; failLeft?: number; nextCapture?: "PENDING" | null; refuseRefunds?: boolean };
+type Sim = { disputes?: Record<string, SimDispute>; events?: SimEvent[]; auths: Record<string, SimAuth>; captures: Record<string, SimCapture>; payouts: Record<string, SimPayout>; idem: Record<string, { status: number; body: unknown }>; calls: string[]; failNext: string | null; failLeft?: number; nextCapture?: "PENDING" | null; refuseRefunds?: boolean; fees?: boolean };
 
 function state(): Sim {
   return simState<Sim>("paypal", () => ({ auths: {}, captures: {}, payouts: {}, idem: {}, calls: [], failNext: null }));
@@ -56,11 +56,19 @@ export async function simOpenDispute(captureId: string, reason = "UNAUTHORISED")
 }
 export async function simDispute(disputeId: string) { return withSimState(() => structuredClone(state().disputes?.[disputeId] ?? null)); }
 const pubDispute = (d: SimDispute) => ({ dispute_id: d.dispute_id, status: d.status, reason: d.reason, dispute_life_cycle_stage: d.dispute_life_cycle_stage, create_time: d.create_time, dispute_amount: d.dispute_amount, disputed_transactions: [{ seller_transaction_id: d.capture_id }] });
-/** The simulated account: every completed capture came in, every refund and every payout not returned went out. */
+/**
+ * Fees, when switched on (simChargeFees). The figures copy what the sandbox charged this account on
+ * 11 November 2026: 2.59% + $0.49 on a card capture; 2% on a payout that was delivered; a flat $0.25
+ * on one held unclaimed. They are not PayPal's price list. Off by default: the simulator then charges
+ * nothing, and the Accounts page says so.
+ */
+const captureFee = (s: Sim, minor: number) => (s.fees ? Math.round(minor * 0.0259 + 49) : 0);
+const payoutFee = (s: Sim, po: SimPayout) => (!s.fees ? 0 : po.item_status === "SUCCESS" ? Math.round(toMinor(po.amount.value, po.amount.currency) * 0.02) : 25);
+/** The simulated account: every completed capture came in, every refund and every payout not returned went out, less any fees. A refund does not return the capture's fee. */
 function simBalance(s: Sim, currency: string): number {
   let n = 0;
-  for (const c of Object.values(s.captures)) if (c.amount.currency_code === currency && c.status === "COMPLETED") n += toMinor(c.amount.value, currency);
-  for (const po of Object.values(s.payouts)) if (po.amount.currency === currency && po.item_status !== "RETURNED" && po.item_status !== "FAILED") n -= toMinor(po.amount.value, currency);
+  for (const c of Object.values(s.captures)) if (c.amount.currency_code === currency && (c.status === "COMPLETED" || c.status === "REFUNDED")) n += (c.status === "COMPLETED" ? toMinor(c.amount.value, currency) : 0) - captureFee(s, toMinor(c.amount.value, currency));
+  for (const po of Object.values(s.payouts)) if (po.amount.currency === currency && po.item_status !== "RETURNED" && po.item_status !== "FAILED") n -= toMinor(po.amount.value, currency) + payoutFee(s, po);
   return n;
 }
 
@@ -71,6 +79,8 @@ export async function simNextCapturePending() { await withSimState(() => { state
 export async function simSetCapture(id: string, status: "COMPLETED" | "DECLINED") { await withSimState(() => { const c = state().captures[id]; if (c) c.status = status; }); }
 /** Tests: PayPal refuses every refund until switched off. */
 export async function simRefuseRefunds(on: boolean) { await withSimState(() => { state().refuseRefunds = on; }); }
+/** Tests: charge fees on captures and payouts from now on, as PayPal does (see captureFee above). */
+export async function simChargeFees(on: boolean) { await withSimState(() => { state().fees = on; }); }
 /** Tests: mutating calls the simulator executed (not idempotent replays), e.g. to prove nothing was captured twice. */
 export async function simCalls(): Promise<string[]> { return withSimState(() => [...state().calls]); }
 export async function simAuthorization(authId: string) { return withSimState(() => structuredClone(state().auths[authId] ?? null)); }
@@ -150,6 +160,7 @@ function route(input: string, init: RequestInit): Response {
     if (c.status === "REFUNDED") return err(422, "UNPROCESSABLE_ENTITY", "CAPTURE_FULLY_REFUNDED", "The capture has already been fully refunded.");
     c.status = "REFUNDED";
     const refund = { id: id("SIMREF"), status: "COMPLETED" };
+    c.refund_id = refund.id;
     emit(s, "PAYMENT.CAPTURE.REFUNDED", "refund", { ...refund, amount: c.amount, invoice_id: c.invoice_id, custom_id: c.custom_id });
     return reply(201, refund);
   });
@@ -186,12 +197,14 @@ function route(input: string, init: RequestInit): Response {
   if (p === "/v1/reporting/transactions" && method === "GET") {
     // Unlike PayPal's, this statement does not lag. A refunded capture stays listed, followed by its refund.
     const now = new Date().toISOString();
+    const fee = (minor: number, currency: string) => (minor ? { fee_amount: { currency_code: currency, value: `-${toDecimalString(minor, currency)}` } } : {});
     const lines = [
       ...Object.values(s.captures).filter((c) => c.status === "COMPLETED" || c.status === "REFUNDED").flatMap((c) => [
-        { transaction_info: { transaction_id: c.id, transaction_event_code: "T0006", transaction_initiation_date: now, transaction_amount: c.amount, transaction_status: "S", invoice_id: c.invoice_id } },
-        ...(c.status === "REFUNDED" ? [{ transaction_info: { transaction_id: `R${c.id}`, paypal_reference_id: c.id, transaction_event_code: "T1107", transaction_initiation_date: now, transaction_amount: { ...c.amount, value: `-${c.amount.value}` }, transaction_status: "S", invoice_id: c.invoice_id } }] : []),
+        { transaction_info: { transaction_id: c.id, transaction_event_code: "T0006", transaction_initiation_date: now, transaction_amount: c.amount, ...fee(captureFee(s, toMinor(c.amount.value, c.amount.currency_code)), c.amount.currency_code), transaction_status: "S", invoice_id: c.invoice_id } },
+        ...(c.status === "REFUNDED" ? [{ transaction_info: { transaction_id: c.refund_id ?? `R${c.id}`, paypal_reference_id: c.id, transaction_event_code: "T1107", transaction_initiation_date: now, transaction_amount: { ...c.amount, value: `-${c.amount.value}` }, transaction_status: "S", invoice_id: c.invoice_id } }] : []),
       ]),
-      ...Object.values(s.payouts).map((po) => ({ transaction_info: { transaction_id: po.transaction_id, transaction_event_code: "T0001", transaction_initiation_date: now, transaction_amount: { currency_code: po.amount.currency, value: `-${po.amount.value}` }, transaction_status: po.item_status === "SUCCESS" ? "S" : "P" } })),
+      // PayPal puts the sender's own item id on a payout's line; here that is the payment's or the transfer's id
+      ...Object.values(s.payouts).map((po) => ({ transaction_info: { transaction_id: po.transaction_id, transaction_event_code: "T0001", transaction_initiation_date: now, transaction_amount: { currency_code: po.amount.currency, value: `-${po.amount.value}` }, ...fee(payoutFee(s, po), po.amount.currency), transaction_status: po.item_status === "SUCCESS" ? "S" : "P", custom_field: po.sender_batch_id } })),
     ];
     return reply(200, { transaction_details: lines, total_pages: 1, page: 1 });
   }

@@ -46,9 +46,12 @@ const RAIL: Array<{ api: string; does: string; proven: "sandbox" | "simulator"; 
   { api: "Payouts · create", does: "Delivery to any PayPal address: a freelancer, a shop, or the owner of an agent that earned it.", proven: "sandbox" },
   { api: "Payouts · show", does: "Delivered, unclaimed or returned. Nothing is called paid until PayPal says it arrived.", proven: "sandbox" },
   { api: "Authorizations · void", does: "Closing an envelope gives back whatever was never spent.", proven: "sandbox" },
-  { api: "Captures · refund", does: "A payout that cannot be delivered is refunded to the owner, and the budget returns.", proven: "simulator", note: "no sandbox payout has failed" },
+  { api: "Captures · refund", does: "Money goes back to the owner: when a paid agent gives a payment back, or when a payout cannot be delivered. That part of the envelope stays used, as it does at PayPal.", proven: "sandbox", note: "an agent's refund ran on the sandbox; a refund after a failed payout only on the simulator" },
   { api: "Payouts item · cancel", does: "The owner recalls a payment nobody claimed, instead of waiting thirty days.", proven: "simulator", note: "PayPal's sandbox answered every cancel with a server error" },
   { api: "Webhooks · verify signature, event feed", does: "PayPal's own events finish a settlement. Each is verified with PayPal and applied once.", proven: "simulator", note: "the sandbox rejected a forged event; no real event has been received" },
+  { api: "Reporting · balances", does: "Is the money really there? What agents are owed is set against the balance PayPal itself reports for the account.", proven: "sandbox", note: "PayPal's figure is a couple of hours old, so the comparison is made at that moment" },
+  { api: "Reporting · transaction search", does: "A second source. Every capture, payout and refund recorded here is looked up in PayPal's own statement of the account, which is also where PayPal's fees show.", proven: "sandbox", note: "records are listed up to three hours late; a record that disagrees has only been produced on the simulator" },
+  { api: "Disputes · list, show, provide evidence", does: "If a payer disputes a payment at PayPal, the gateway finds it and answers with the payer's own signed chain of authority.", proven: "simulator", note: "the sandbox was asked and holds no dispute against this account" },
 ];
 
 const STOPS = [
@@ -189,9 +192,9 @@ export default function Home() {
               <div>
                 <p className="label">What PayPal does here</p>
                 <h2 id="rail" className="title mt-3 text-[2.2rem]">Without PayPal, an envelope is a signed promise. With it, it is money.</h2>
-                <p className="mt-4 text-ink-2">Envelope decides who may ask, for how much and for whom. PayPal does everything that touches money: it holds it, takes exactly what was approved, delivers it, and gives back the rest. The gateway keeps a record of its calls to PayPal, and each envelope&rsquo;s page shows its own.</p>
+                <p className="mt-4 text-ink-2">Envelope decides who may ask, for how much and for whom. PayPal does everything that touches money: it holds it, takes exactly what was approved, delivers it, refunds it, and gives back the rest. Then it is asked to check the gateway&rsquo;s own books: its balance, its statement and its disputes. The gateway keeps a record of its calls to PayPal, and each envelope&rsquo;s page shows its own.</p>
                 <p className="mt-7"><span className="figure text-[3.2rem] leading-none text-blue">{sum("total")}</span></p>
-                <p className="mt-2 text-sm text-ink-2">calls to the PayPal sandbox behind {rails.length} envelopes in the last recorded run: {sum("holds")} holds, {sum("captures")} partial captures, {sum("payouts")} payouts, {sum("voids")} releases, and {sum("asked")} times PayPal was simply asked. {sum("refused")} were refused by PayPal, and none of those moved money.</p>
+                <p className="mt-2 text-sm text-ink-2">calls to the PayPal sandbox behind {rails.length} envelopes in the last recorded run: {sum("holds")} holds, {sum("captures")} partial captures, {sum("payouts")} payouts, {sum("refunds")} refund{sum("refunds") === 1 ? "" : "s"}, {sum("voids")} releases, and {sum("asked")} times PayPal was simply asked. {sum("refused")} were refused by PayPal, and none of those moved money.</p>
               </div>
               <div role="table" aria-label="PayPal capabilities used">
                 <div role="row" className="label grid grid-cols-[1.15fr_2fr_auto] gap-4 border-b-[1.5px] border-ink pb-2">

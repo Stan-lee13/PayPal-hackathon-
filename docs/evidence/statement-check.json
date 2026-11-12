@@ -1,0 +1,287 @@
+{
+  "ranAt": "2026-11-12T01:19:49.516Z",
+  "paypalMode": "sandbox",
+  "window": {
+    "from": "2026-11-11T17:19:47.541Z",
+    "to": "2026-11-12T01:19:47.541Z"
+  },
+  "statement": {
+    "paypalLines": 222,
+    "ourRecords": 28,
+    "listedWithTheSameAmount": 13,
+    "amountDiffers": 0,
+    "notListedYet": 15,
+    "linesNotFromThisDatabase": 209,
+    "ok": true
+  },
+  "position": {
+    "cameIn": "$254.00",
+    "wentOut": "$229.00",
+    "refunded": "$0.00",
+    "paypalFees": "$12.02",
+    "leftAtPayPalByTheseRecords": "$12.98",
+    "note": "Agents and payees were credited and paid the full amounts; PayPal's fees fall on the gateway's operator and are not priced in."
+  },
+  "reserves": {
+    "owedToAgents": "$50.00",
+    "owedAtPayPalsMoment": "$25.00",
+    "paypalAvailable": "$6128.82",
+    "paypalAsOf": "2026-11-11T23:29:59Z",
+    "covered": true
+  },
+  "matches": [
+    {
+      "what": "capture",
+      "paypalId": "3P872370P5382862S",
+      "payment": "sp_Ka9AVpat3w20gTXo",
+      "recorded": "$7.00",
+      "onPayPalsStatement": null,
+      "paypalFee": null,
+      "verdict": "not listed yet"
+    },
+    {
+      "what": "payout",
+      "paypalId": "6L5289547W775474C",
+      "payment": "sp_Ka9AVpat3w20gTXo",
+      "recorded": "$7.00",
+      "onPayPalsStatement": null,
+      "paypalFee": null,
+      "verdict": "not listed yet"
+    },
+    {
+      "what": "capture",
+      "paypalId": "1XG96277EH6264408",
+      "payment": "sp_ixbA57u0teEGwF1Y",
+      "recorded": "$6.00",
+      "onPayPalsStatement": null,
+      "paypalFee": null,
+      "verdict": "not listed yet"
+    },
+    {
+      "what": "refund",
+      "paypalId": "4C249901ET649933V",
+      "payment": "sp_ixbA57u0teEGwF1Y",
+      "recorded": "$6.00",
+      "onPayPalsStatement": null,
+      "paypalFee": null,
+      "verdict": "not listed yet"
+    },
+    {
+      "what": "capture",
+      "paypalId": "16G58150JF6889350",
+      "payment": "sp_guvgrL3gqInmh_gO",
+      "recorded": "$50.00",
+      "onPayPalsStatement": null,
+      "paypalFee": null,
+      "verdict": "not listed yet"
+    },
+    {
+      "what": "capture",
+      "paypalId": "3UV50753FU3065535",
+      "payment": "pr_6sKBmkRqO7mGxdrG",
+      "recorded": "$72.00",
+      "onPayPalsStatement": null,
+      "paypalFee": null,
+      "verdict": "not listed yet"
+    },
+    {
+      "what": "payout",
+      "paypalId": "48N58187WD839851T",
+      "payment": "pr_6sKBmkRqO7mGxdrG",
+      "recorded": "$72.00",
+      "onPayPalsStatement": null,
+      "paypalFee": null,
+      "verdict": "not listed yet"
+    },
+    {
+      "what": "capture",
+      "paypalId": "4175992516786464D",
+      "payment": "sp_c_CWEDIK772Q-0oo",
+      "recorded": "$70.00",
+      "onPayPalsStatement": null,
+      "paypalFee": null,
+      "verdict": "not listed yet"
+    },
+    {
+      "what": "payout",
+      "paypalId": "28591076L22034749",
+      "payment": "sp_c_CWEDIK772Q-0oo",
+      "recorded": "$70.00",
+      "onPayPalsStatement": null,
+      "paypalFee": null,
+      "verdict": "not listed yet"
+    },
+    {
+      "what": "capture",
+      "paypalId": "29L90528EL922963P",
+      "payment": "pr_tv1Uf6329ThDezRw",
+      "recorded": "$10.00",
+      "onPayPalsStatement": null,
+      "paypalFee": null,
+      "verdict": "not listed yet"
+    },
+    {
+      "what": "payout",
+      "paypalId": "0GJ02217XM358173D",
+      "payment": "pr_tv1Uf6329ThDezRw",
+      "recorded": "$10.00",
+      "onPayPalsStatement": null,
+      "paypalFee": null,
+      "verdict": "not listed yet"
+    },
+    {
+      "what": "capture",
+      "paypalId": "9CU09333WW1343611",
+      "payment": "pr_U25MNKZKLyNwIW3M",
+      "recorded": "$45.00",
+      "onPayPalsStatement": null,
+      "paypalFee": null,
+      "verdict": "not listed yet"
+    },
+    {
+      "what": "payout",
+      "paypalId": "1KA102312M891623X",
+      "payment": "pr_U25MNKZKLyNwIW3M",
+      "recorded": "$45.00",
+      "onPayPalsStatement": null,
+      "paypalFee": null,
+      "verdict": "not listed yet"
+    },
+    {
+      "what": "capture",
+      "paypalId": "25824267XA001814R",
+      "payment": "sp_paZyE2V5AOykJhpV",
+      "recorded": "$7.00",
+      "onPayPalsStatement": "$7.00",
+      "paypalFee": "$0.67",
+      "verdict": "listed"
+    },
+    {
+      "what": "payout",
+      "paypalId": "1LA71510WW6257830",
+      "payment": "sp_paZyE2V5AOykJhpV",
+      "recorded": "$7.00",
+      "onPayPalsStatement": "$7.00",
+      "paypalFee": "$0.25",
+      "verdict": "listed"
+    },
+    {
+      "what": "capture",
+      "paypalId": "6JR10098RH963545L",
+      "payment": "sp_0RhT061vu_xSQU6y",
+      "recorded": "$50.00",
+      "onPayPalsStatement": "$50.00",
+      "paypalFee": "$1.79",
+      "verdict": "listed"
+    },
+    {
+      "what": "capture",
+      "paypalId": "8U011374FL074121T",
+      "payment": "pr_gYCopI6LiXOrrg9k",
+      "recorded": "$72.00",
+      "onPayPalsStatement": "$72.00",
+      "paypalFee": "$2.35",
+      "verdict": "listed"
+    },
+    {
+      "what": "payout",
+      "paypalId": "05H27871LV6246410",
+      "payment": "pr_gYCopI6LiXOrrg9k",
+      "recorded": "$72.00",
+      "onPayPalsStatement": "$72.00",
+      "paypalFee": "$0.25",
+      "verdict": "listed"
+    },
+    {
+      "what": "capture",
+      "paypalId": "6VC1065056420190P",
+      "payment": "sp_FOEI17hJ-Ca_lgw3",
+      "recorded": "$70.00",
+      "onPayPalsStatement": "$70.00",
+      "paypalFee": "$2.30",
+      "verdict": "listed"
+    },
+    {
+      "what": "payout",
+      "paypalId": "2HR109606X525791L",
+      "payment": "sp_FOEI17hJ-Ca_lgw3",
+      "recorded": "$70.00",
+      "onPayPalsStatement": "$70.00",
+      "paypalFee": "$0.25",
+      "verdict": "listed"
+    },
+    {
+      "what": "capture",
+      "paypalId": "8T4496284S3684747",
+      "payment": "pr_FNlt4yuwbcDVu0bU",
+      "recorded": "$10.00",
+      "onPayPalsStatement": "$10.00",
+      "paypalFee": "$0.75",
+      "verdict": "listed"
+    },
+    {
+      "what": "payout",
+      "paypalId": "8DM36342FD595270A",
+      "payment": "pr_FNlt4yuwbcDVu0bU",
+      "recorded": "$10.00",
+      "onPayPalsStatement": "$10.00",
+      "paypalFee": "$0.20",
+      "verdict": "listed"
+    },
+    {
+      "what": "capture",
+      "paypalId": "97Y42427GE2978340",
+      "payment": "pr_62TsLyfY5s-K1c5Z",
+      "recorded": "$45.00",
+      "onPayPalsStatement": "$45.00",
+      "paypalFee": "$1.66",
+      "verdict": "listed"
+    },
+    {
+      "what": "payout",
+      "paypalId": "31X0443029932312D",
+      "payment": "pr_62TsLyfY5s-K1c5Z",
+      "recorded": "$45.00",
+      "onPayPalsStatement": "$45.00",
+      "paypalFee": "$0.90",
+      "verdict": "listed"
+    },
+    {
+      "what": "payout",
+      "paypalId": "ALSQNCLQY5BFY",
+      "payment": "tr_qdwle4BURjGEvOKA",
+      "recorded": "$5.00",
+      "onPayPalsStatement": null,
+      "paypalFee": null,
+      "verdict": "not listed yet"
+    },
+    {
+      "what": "payout",
+      "paypalId": "GH2UG24UKEBBE",
+      "payment": "tr_zsQjO6ln8K2lUCaJ",
+      "recorded": "$20.00",
+      "onPayPalsStatement": null,
+      "paypalFee": null,
+      "verdict": "not listed yet"
+    },
+    {
+      "what": "payout",
+      "paypalId": "7DY45611N2037200W",
+      "payment": "tr_s6FYf4MZzvrLQrR5",
+      "recorded": "$5.00",
+      "onPayPalsStatement": "$5.00",
+      "paypalFee": "$0.25",
+      "verdict": "listed"
+    },
+    {
+      "what": "payout",
+      "paypalId": "1DA41509S5985144W",
+      "payment": "tr_I-h8YSH3KCr68vSr",
+      "recorded": "$20.00",
+      "onPayPalsStatement": "$20.00",
+      "paypalFee": "$0.40",
+      "verdict": "listed"
+    }
+  ],
+  "note": "Lines not from this database are other activity on the same sandbox account (earlier runs). A record not listed yet is within PayPal's stated lag, not an error."
+}

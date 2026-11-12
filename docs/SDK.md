@@ -76,12 +76,16 @@ Amounts are dollars as a string (`"45.00"`, `"45"`, `"45.5"`) or minor units sta
 | `reference(key)` | An agent's record, signed by the gateway |
 | `receipt(spendId)` | A receipt, its chain, and the gateway's comparison with PayPal made now |
 | `proof(rootId, spendId?)` | The proof graph of an envelope, or of one payment |
-| `card(id)`, `transfer(id)`, `books()` | A card, a transfer out of a balance, every balance and whether the books add up |
+| `card(id)`, `transfer(id)` | A card, a transfer out of a balance |
+| `books()` | Every balance, whether the books add up, and `reserves`: what agents are owed against the balance PayPal reports for the gateway's account (`covered` is `null` when PayPal could not be asked) |
+| `statement()` | The gateway's captures, payouts and refunds looked up in PayPal's own statement of its account: each `listed`, `amount differs` or `not listed yet` (PayPal's statement can lag by hours), with PayPal's fee on each line and a `position`: what came in, went out and was refunded, the fees, and what that leaves at PayPal |
+| `status(spendId)` | Where a payment stands now, in any state |
+| `evidence(spendId)` | What the gateway would send PayPal if the payer disputed this payment: the signed chain, in words and in full |
 | `paypalTrail(rootId)` | The gateway's record of its calls to PayPal for one envelope |
 | `request(method, path, body?)` | The raw call, if you need an endpoint not wrapped here |
 
 The signed submissions (`spend`, `promise`, `keep`, `accept`, `revoke`, `seal`, `openAccount`,
-`sendTransfer`, `freeze`, `issueCard`, `charge`, `cancelCard`, `treasury`, `recall`, …) are also on
+`sendTransfer`, `refund`, `freeze`, `issueCard`, `charge`, `cancelCard`, `treasury`, `recall`, …) are also on
 `Gateway`, taking an already-signed request. `Agent` and `Owner` are the convenient way to make those.
 
 ### `Agent`
@@ -100,6 +104,7 @@ The signed submissions (`spend`, `promise`, `keep`, `accept`, `revoke`, `seal`, 
 | `openAccount({ owner, settleTo, hold?, perPayment?, perDay? })` | Open an account that can be paid. Needs the owner's signature too. |
 | `balance()` | The account's balance and ledger |
 | `transfer({ amount, payee, purpose? })` / `withdraw({ amount })` | Send money from the balance: to another agent (on the ledger), to a PayPal address, or home to the owner |
+| `refund(spendId, { memo? })` | Give one payment back, in full. Only for a payment that was credited to this agent's balance and is still there: the balance is debited and PayPal refunds the capture to the owner who paid. Returns `REFUNDED` with PayPal's refund id, or `PENDING` if PayPal could not be reached (the gateway asks again). A refund returns the owner's money; it does not make that part of their envelope spendable again |
 | `issueCard({ merchant, label, perCharge, maxCharges, everyDays?, validDays? })` | Let one merchant charge the balance within limits. It ends by itself. |
 | `cards()` | The cards this agent has issued |
 | `reference()` | Its signed record, with a token to hand to anyone |
@@ -127,7 +132,7 @@ The signed submissions (`spend`, `promise`, `keep`, `accept`, `revoke`, `seal`, 
 | `close(rootId)` | Close an envelope. PayPal voids what was not spent. |
 | `freeze(agent, frozen?)` | Freeze or reopen an agent's account |
 | `treasury()`, `reconcile()`, `envelopes()` | The owner's books, checked against PayPal. Each read is signed, so only the owner gets them. |
-| `recall(spendId)` | Call back a payout PayPal is holding unclaimed. PayPal cancels the item and the capture is refunded. PayPal's sandbox has not completed a cancel; see the main README |
+| `recall(spendId)` | Call back a payout PayPal is holding unclaimed. PayPal cancels the item and the capture is refunded to the owner; the amount stays used in the envelope. PayPal's sandbox has not completed a cancel; see the main README |
 
 ### Functions
 
@@ -135,6 +140,9 @@ The signed submissions (`spend`, `promise`, `keep`, `accept`, `revoke`, `seal`, 
 gateway URL, no key). `verifyReceipt`, `verifyStanding`, `verifyPromiseNote`, `verifyReference`,
 `verifyTransferReceipt` (pure: no network). `fingerprint(text)` (SHA-256, for `accept({ work })`).
 `toMinor`, `formatMinor`. `protocol` is the whole protocol core (every `sign…` and `verify…`).
+
+Types for what the gateway answers are exported too, among them `RefundOutcome`, `Reserves`,
+`StatementCheck`, `Evidence`, `PayPalTrail`, `PaymentStatus` and `Recalled`.
 
 ## What a payment tells you
 
@@ -171,7 +179,9 @@ Every failure is an `EnvelopeError`.
 For a refusal on the merits, `outcome` is `"DENIED"` (nothing moved), `"FAILED"` (PayPal could not do
 it; nothing was paid) or `"LAPSED"` (the promise had already run out or been released). `reasons`
 carries stable codes such as `PAYEE_NOT_ALLOWED`, `OVER_ENVELOPE_LIMIT`, `OVER_PER_PAYMENT`,
-`REVOKED`, `NEEDS_OWNER_APPROVAL`, `ACCOUNT_FROZEN`, `OVER_CARD_LIMIT`, each with a sentence for people.
+`REVOKED`, `NEEDS_OWNER_APPROVAL`, `ACCOUNT_FROZEN`, `OVER_CARD_LIMIT`, `NOT_REFUNDABLE`,
+`PAYPAL_REFUND_FAILED`, each with a sentence for people. A payment that was later given back or
+recalled reads `REFUNDED_BY_PAYEE` or `RECALLED_BY_OWNER` in its `status()`.
 
 ```js
 try {
@@ -218,15 +228,16 @@ Both are thin fronts on the SDK and keep an agent's key and envelope in `./.enve
 ENVELOPE_AGENT=ops-agent GATEWAY=http://localhost:3000 npx tsx scripts/mcp.ts     # MCP over stdio
 claude mcp add envelope -e ENVELOPE_AGENT=ops-agent -- npx tsx scripts/mcp.ts     # in Claude Code
 npx tsx scripts/agent.ts pay --as ops-agent --amount 45 --payee a@x --purpose translation
+npx tsx scripts/agent.ts refund --as translator <payment id> --memo "cannot take this on"   # by the agent that was paid
 ```
 
-The MCP server offers 14 tools, each marked with MCP annotations:
+The MCP server offers 15 tools, each marked with MCP annotations:
 
 | Group | Tools | Annotation |
 |---|---|---|
 | Read: look and check | `envelope_show`, `envelope_balance`, `envelope_card_list`, `envelope_introduce`, `envelope_check_agent`, `envelope_receipt` | `readOnlyHint: true` |
 | Act: reversible or bounded | `envelope_split`, `envelope_promise`, `envelope_card_issue` | `readOnlyHint: false`, `destructiveHint: false` |
-| Act: moves money or cannot be undone | `envelope_pay`, `envelope_keep`, `envelope_accept`, `envelope_transfer`, `envelope_card_cancel` | `destructiveHint: true` |
+| Act: moves money or cannot be undone | `envelope_pay`, `envelope_keep`, `envelope_accept`, `envelope_transfer`, `envelope_refund`, `envelope_card_cancel` | `destructiveHint: true` |
 
 `ENVELOPE_MCP_READ_ONLY=1` serves the read group only. There is no tool to seal, close, revoke or
 freeze: those belong to a person. A refusal by the gateway comes back with `isError: true` and the
@@ -238,9 +249,11 @@ reason codes in the text. The transport is stdio; there is no HTTP transport.
 npx vitest run tests/sdk.test.ts tests/mcp.test.ts
 ```
 
-- `tests/sdk.test.ts` (17 tests): the SDK against the gateway's real handlers on the PayPal simulator.
+- `tests/sdk.test.ts` (18 tests): the SDK against the gateway's real handlers on the PayPal simulator.
 - `tests/mcp.test.ts` (13 tests): the MCP server as a separate process over stdio, speaking JSON-RPC
   to a local HTTP gateway, and 34 command-line invocations with their output checked.
 
 These run on the simulator. The example program has also been run against the real PayPal sandbox:
-[`evidence/sdk-run.md`](evidence/sdk-run.md).
+[`evidence/sdk-run.md`](evidence/sdk-run.md). That run predates `refund`, `statement` and `evidence`,
+which have run through the SDK on the simulator only; the refund itself ran on the sandbox through
+the gateway's own code (`evidence/sandbox-run.json`).

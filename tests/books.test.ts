@@ -173,6 +173,29 @@ d("the books against PayPal's (simulated PayPal)", async () => {
     expect(bad.matches.find((m) => m.verdict === "amount differs")).toMatchObject({ spend: a.spend!.id, amountMinor: 4000, listedMinor: 5000 });
   });
 
+  it("PayPal's fees, a refund and a payout from a balance are all found on its statement; unfunded fees show as a shortfall in reserves", async () => {
+    const w = await world();
+    await sim.simChargeFees(true);
+    try {
+      const a = await w.earn(5000);                         // captured into the agent's balance
+      const b = await w.earn(600);
+      const back = await B.refund(await E.signRefund(w.wr, b.spend!.id));   // given back: PayPal refunds the capture
+      expect(back.status).toBe("REFUNDED");
+      const out = await B.transfer(await E.signTransfer(w.wr, { kind: "withdraw", amount: 2000 }));   // a withdrawal: a payout from the balance
+      expect(out.transfer?.payoutItemId).toBeTruthy();
+      const st = await K.statement();
+      expect(st).toMatchObject({ ours: 4, listed: 4, differs: 0, notListedYet: 0, ok: true });
+      expect(st.matches.map((m) => m.what).sort()).toEqual(["capture", "capture", "payout", "refund"]);
+      expect(st.matches.find((m) => m.what === "refund")).toMatchObject({ paypalId: back.refundId, spend: b.spend!.id, amountMinor: 600, verdict: "listed" });
+      expect(st.matches.find((m) => m.what === "payout")).toMatchObject({ spend: out.transfer!.id, amountMinor: 2000, feeMinor: 40, verdict: "listed" });
+      expect(st.matches.find((m) => m.spend === a.spend!.id)).toMatchObject({ what: "capture", feeMinor: 179 });   // 2.59% + $0.49 of $50.00
+      // $50.00 and $6.00 came in, $6.00 was refunded, $20.00 went out; fees were $1.79, $0.65 (kept by PayPal on the refunded capture) and $0.40
+      expect(st.position).toEqual({ inMinor: 5600, outMinor: 2000, refundedMinor: 600, feesMinor: 284, netMinor: 2716 });
+      // the agent is owed $30.00; PayPal holds $27.16: short by exactly the fees, which nobody has funded
+      expect(await fresh()).toMatchObject({ owed: { totalMinor: 3000 }, paypal: { availableMinor: 2716 }, covered: false, surplusMinor: -284 });
+    } finally { await sim.simChargeFees(false); }
+  });
+
   it("a dispute at PayPal shows on the payment, and the gateway answers it once with the signed chain of authority", async () => {
     const w = await world();
     const a = await w.earn(5000);

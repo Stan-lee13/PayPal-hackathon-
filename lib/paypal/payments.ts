@@ -160,7 +160,8 @@ export async function getBalance(pp: PayPalClient, currency: string): Promise<Ba
   return { currency, totalMinor: minor(b.total_balance), availableMinor: minor(b.available_balance), withheldMinor: minor(b.withheld_balance), asOf: r.as_of_time ?? null, accountId: r.account_id ?? null };
 }
 
-export type StatementLine = { id: string; code: string; at: string; amountMinor: number; currency: string; status: string | null; invoiceId: string | null; reference: string | null };
+/** One line of PayPal's statement. `amountMinor` is signed (money out is negative); `feeMinor` is what PayPal charged on it (negative if it gave a fee back). */
+export type StatementLine = { id: string; code: string; at: string; amountMinor: number; feeMinor: number; currency: string; status: string | null; invoiceId: string | null; customField: string | null; reference: string | null };
 /**
  * PayPal's own statement of the gateway's account (Transaction Search). It is a second source, independent of the
  * calls that made the transactions. PayPal says it can lag by up to three hours, and one query spans at most 31 days.
@@ -174,7 +175,9 @@ export async function listTransactions(pp: PayPalClient, start: Date, end: Date)
     for (const d of r.transaction_details ?? []) {
       const t = d.transaction_info;
       if (!t?.transaction_id || !t.transaction_amount?.value) continue;
-      out.push({ id: t.transaction_id, code: String(t.transaction_event_code ?? ""), at: String(t.transaction_initiation_date ?? ""), amountMinor: toMinor(String(t.transaction_amount.value).replace(/^-/, ""), t.transaction_amount.currency_code) * (String(t.transaction_amount.value).startsWith("-") ? -1 : 1), currency: t.transaction_amount.currency_code, status: t.transaction_status ?? null, invoiceId: t.invoice_id ?? null, reference: t.paypal_reference_id ?? null });
+      out.push({ id: t.transaction_id, code: String(t.transaction_event_code ?? ""), at: String(t.transaction_initiation_date ?? ""), amountMinor: toMinor(String(t.transaction_amount.value).replace(/^-/, ""), t.transaction_amount.currency_code) * (String(t.transaction_amount.value).startsWith("-") ? -1 : 1), currency: t.transaction_amount.currency_code, status: t.transaction_status ?? null, invoiceId: t.invoice_id ?? null, customField: t.custom_field ?? null, reference: t.paypal_reference_id ?? null,
+        // PayPal writes a fee it charged as a negative amount
+        feeMinor: t.fee_amount?.value ? toMinor(String(t.fee_amount.value).replace(/^-/, ""), t.fee_amount.currency_code ?? t.transaction_amount.currency_code) * (String(t.fee_amount.value).startsWith("-") ? 1 : -1) : 0 });
     }
     if (page >= (r.total_pages ?? 1)) break;
   }

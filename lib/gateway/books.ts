@@ -13,7 +13,7 @@
  */
 import { and, desc, eq, gt, inArray, isNotNull, lte, sql } from "drizzle-orm";
 import { getDb } from "../db";
-import { accounts, ledger, roots, spends, type Spend } from "../db/schema";
+import { accounts, ledger, roots, spends, transfers } from "../db/schema";
 import * as E from "../envelope/core";
 import { UserFacingError } from "../errors";
 import { formatMoney } from "../money";
@@ -70,39 +70,65 @@ export async function reserves(currency = "USD") {
 // PayPal's statement
 // ---------------------------------------------------------------------------
 
-export type StatementMatch = { paypalId: string; what: "capture" | "payout" | "refund"; spend: string; amountMinor: number; verdict: "listed" | "amount differs" | "not listed yet"; listedMinor: number | null };
+export type StatementMatch = {
+  paypalId: string; what: "capture" | "payout" | "refund";
+  /** The payment (sp_…, pr_…) or, for a payout from an agent's balance, the transfer (tr_…) this line belongs to. */
+  spend: string;
+  amountMinor: number; listedMinor: number | null;
+  /** What PayPal charged on this line, from its statement. Null until the line is listed. */
+  feeMinor: number | null;
+  verdict: "listed" | "amount differs" | "not listed yet";
+};
 
 /**
  * Compare what this gateway recorded with PayPal's own statement of the account for the last `hours`.
- * A capture is looked for under its PayPal transaction id and must carry the same amount; a payout
- * under the transaction id PayPal gave it. PayPal's statement can lag by up to three hours, so a recent
- * transaction that is missing is "not listed yet", not an error. A line PayPal lists that is not ours
- * is counted as other activity on the account.
+ *
+ * A capture and a refund are looked for under their PayPal ids and must carry the same amount. A payout
+ * is looked for under the transaction id PayPal gave it or, for a payout from an agent's balance, under
+ * the transfer's id, which PayPal prints on the line. PayPal's statement can lag by up to three hours,
+ * so a recent transaction that is missing is "not listed yet", not an error. A line PayPal lists that is
+ * not ours is counted as other activity on the account.
+ *
+ * The statement is also the only place PayPal's fees appear. Agents and payees are credited and paid the
+ * full amounts, so the fees fall on whoever operates the gateway; `position` says what the listed records
+ * left at PayPal once they are taken off.
  */
 export async function statement(hours = 72) {
   const db = getDb();
   const end = new Date(), start = new Date(end.getTime() - Math.min(hours, 24 * 30) * 3600_000);
   const lines = await listTransactions(getPayPal(), start, end);
   const byId = new Map(lines.map((l) => [l.id, l]));
-  const ours = await db.select().from(spends).where(and(isNotNull(spends.captureId), gt(spends.createdAt, start))).orderBy(desc(spends.createdAt)).limit(300);
+  // a payout's line carries the sender's item id; PayPal also lists the hold it took and released around it, which are not the payout
+  const payoutBySender = new Map(lines.filter((l) => l.customField && l.amountMinor < 0 && l.code.startsWith("T00")).map((l) => [l.customField!, l]));
   const matches: StatementMatch[] = [];
   const seen = new Set<string>();
-  const look = (paypalId: string, what: StatementMatch["what"], s: Spend) => {
-    const l = byId.get(paypalId);
-    if (l) seen.add(l.id);
-    matches.push({ paypalId, what, spend: s.id, amountMinor: s.amountMinor, listedMinor: l ? Math.abs(l.amountMinor) : null, verdict: !l ? "not listed yet" : Math.abs(l.amountMinor) === s.amountMinor && l.currency === s.currency ? "listed" : "amount differs" });
+  const position = { inMinor: 0, outMinor: 0, refundedMinor: 0, feesMinor: 0, netMinor: 0 };
+  const look = (l: (typeof lines)[number] | undefined, paypalId: string, what: StatementMatch["what"], record: { id: string; amountMinor: number; currency: string }) => {
+    if (l) {
+      seen.add(l.id);
+      position[what === "capture" ? "inMinor" : what === "payout" ? "outMinor" : "refundedMinor"] += Math.abs(l.amountMinor);
+      position.feesMinor += l.feeMinor;
+      position.netMinor += l.amountMinor - l.feeMinor;
+    }
+    matches.push({ paypalId: l?.id ?? paypalId, what, spend: record.id, amountMinor: record.amountMinor, listedMinor: l ? Math.abs(l.amountMinor) : null, feeMinor: l ? l.feeMinor : null, verdict: !l ? "not listed yet" : Math.abs(l.amountMinor) === record.amountMinor && l.currency === record.currency ? "listed" : "amount differs" });
   };
-  for (const s of ours) {
-    look(s.captureId!, "capture", s);
-    if (s.payoutTransactionId) look(s.payoutTransactionId, "payout", s);
+  const paid = await db.select().from(spends).where(and(isNotNull(spends.captureId), gt(spends.createdAt, start))).orderBy(desc(spends.createdAt)).limit(300);
+  for (const s of paid) {
+    look(byId.get(s.captureId!), s.captureId!, "capture", s);
+    if (s.payoutTransactionId) look(byId.get(s.payoutTransactionId), s.payoutTransactionId, "payout", s);
+    if (s.refundId) look(byId.get(s.refundId), s.refundId, "refund", s);
   }
+  const sent = await db.select().from(transfers).where(and(isNotNull(transfers.payoutItemId), gt(transfers.createdAt, start))).orderBy(desc(transfers.createdAt)).limit(200);
+  for (const t of sent) look(payoutBySender.get(t.id), t.payoutItemId!, "payout", t);
   const count = (v: StatementMatch["verdict"]) => matches.filter((m) => m.verdict === v).length;
   return {
     mode: paypalMode(), from: start.toISOString(), to: end.toISOString(),
     paypalLines: lines.length, ours: matches.length, listed: count("listed"), differs: count("amount differs"), notListedYet: count("not listed yet"),
     otherActivity: lines.filter((l) => !seen.has(l.id)).length,
     ok: count("amount differs") === 0,
-    matches: matches.slice(0, 120),
+    /** For the records PayPal lists: what came in, went out and was refunded, what PayPal charged, and what that leaves at PayPal. */
+    position,
+    matches: matches.slice(0, 160),
   };
 }
 

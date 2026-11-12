@@ -100,6 +100,24 @@ await step("a third tab closes while B is mid-request, five times; B answers eve
   }
 });
 
+// 6. The tab holding the database is reloaded while the other tab is in the middle of its own requests. The other tab's
+//    worker takes the database over mid-request; both tabs must come back. (Before the fix a query caught by the move
+//    could wait for good, holding the turn, and neither tab answered again.)
+await step("the tab holding the database is reloaded 12 times while the other is mid-request; both come back every time", async () => {
+  const pair = [b, await ctx.newPage()]; watch(pair[1], "D");
+  await pair[1].goto(`${BASE}/bank`); await pair[1].getByTestId("bank-reserves").waitFor(T);
+  let holder = 0; // b has held the database since A closed
+  for (let i = 0; i < 12; i++) {
+    const other = pair[1 - holder];
+    void other.goto(`${BASE}/console`).catch(() => {});
+    await other.waitForTimeout(60 + 45 * i); // catch the other tab at a different point of its requests each time
+    await pair[holder].goto(`${BASE}/bank`);
+    await pair[holder].getByTestId("bank-reserves").waitFor(T);
+    await other.getByText(/is translator-agent, an agent owned by Bea/).waitFor(T);
+    holder = 1 - holder; // the other tab's worker holds the database now
+  }
+});
+
 await browser.close();
 console.log(fails.length ? `\nFAILED: ${fails.join(" | ")}` : "\nALL OK");
 process.exit(fails.length ? 1 : 0);

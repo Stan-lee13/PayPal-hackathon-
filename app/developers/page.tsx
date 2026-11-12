@@ -83,6 +83,7 @@ const ACTS = [
   ["envelope_keep", "Pay what was set aside"],
   ["envelope_accept", "Sign that work was delivered, which releases its payment"],
   ["envelope_transfer", "Send money from its balance"],
+  ["envelope_refund", "Give back a payment it was paid. PayPal refunds the payer"],
   ["envelope_card_issue", "Let one merchant charge its balance, within limits"],
   ["envelope_card_cancel", "End a card"],
 ];
@@ -138,7 +139,7 @@ export default function Developers() {
         <section className="mt-14 grid grid-cols-[minmax(0,1fr)] gap-x-10 gap-y-8 border-t-[1.5px] border-ink pt-8 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.35fr)]" aria-labelledby="mcp">
           <div className="min-w-0">
             <p className="label">MCP server</p>
-            <h2 id="mcp" className="title mt-3 text-[2rem]">Hand any model fourteen tools and a budget.</h2>
+            <h2 id="mcp" className="title mt-3 text-[2rem]">Hand any model fifteen tools and a budget.</h2>
             <p className="mt-4 text-ink-2">The server runs beside the model, holds the agent&rsquo;s key on that machine and speaks MCP over stdio. Tools that only read are marked as such; tools that move money are marked too, so a client can ask a person first.</p>
             <pre className="code mt-5 overflow-x-auto p-4 text-[.72rem] leading-relaxed">{MCP_CONFIG}</pre>
             <p className="mt-3 text-sm text-ink-2"><span className="mono">ENVELOPE_MCP_READ_ONLY=1</span> serves only the reading tools.</p>
@@ -174,7 +175,7 @@ export default function Developers() {
             <Link className="btn btn-ink" href="/console">Seal an envelope and try it →</Link>
             <Link className="btn" href="/spec">Read the protocol</Link>
           </div>
-          <p className="mt-6 max-w-3xl text-sm text-ink-3">Sandbox only. The SDK has 17 tests against the gateway on the PayPal simulator, and its example program has run against the real PayPal sandbox (docs/evidence/sdk-run.md). The MCP server and command line have 13 tests that speak the real MCP protocol over stdio on the simulator; an earlier version of the MCP server was driven by a language model on the sandbox.</p>
+          <p className="mt-6 max-w-3xl text-sm text-ink-3">Sandbox only. The SDK has 18 tests against the gateway on the PayPal simulator, and its example program has run against the real PayPal sandbox (docs/evidence/sdk-run.md). The MCP server and command line have 13 tests that speak the real MCP protocol over stdio on the simulator; an earlier version of the MCP server was driven by a language model on the sandbox.</p>
         </section>
       </main>
     </>

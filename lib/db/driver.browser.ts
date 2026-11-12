@@ -9,7 +9,10 @@
  *   - it waits to be connected to the current holder before sending anything, where the stock client
  *     posts into a channel nobody is listening on yet and then waits for an answer that cannot come.
  * The holder saves to IndexedDB itself when a write has finished, so this client does not ask it to
- * after every query, and it does not ask about file exports (COPY to a blob), which nothing here uses.
+ * after every query. Nor does it make the three calls about file imports and exports (COPY to or from
+ * a blob) that the stock client makes around every query: nothing here uses them, and one of them is
+ * sent without checking the connection, which is how a query could be left waiting for good after
+ * the database moved to another tab.
  */
 import { PGliteWorker } from "@electric-sql/pglite/worker";
 import { drizzle } from "drizzle-orm/pglite";
@@ -29,7 +32,10 @@ class SharedDatabase extends PGliteWorker {
   override async execProtocol(message: Uint8Array) { await this.waitReady; return super.execProtocol(message); }
   override async execProtocolStream(message: Uint8Array) { await this.waitReady; return super.execProtocolStream(message); }
   override async execProtocolRaw(message: Uint8Array) { await this.waitReady; return super.execProtocolRaw(message); }
+  override async execProtocolRawStream(message: Uint8Array, options: { onRawData: (data: Uint8Array) => void }) { await this.waitReady; return super.execProtocolRawStream(message, options); }
+  override async dumpDataDir(compression?: Parameters<PGliteWorker["dumpDataDir"]>[0]) { await this.waitReady; return super.dumpDataDir(compression); }
   override async syncToFs() { /* saved by the holder: lib/local/pg-worker.ts */ }
+  override async _handleBlob() { /* nothing is ever read from a blob */ }
   override async _getWrittenBlob() { return undefined; }
   override async _cleanupBlob() { /* nothing is ever written to a blob */ }
 }

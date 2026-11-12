@@ -13,7 +13,7 @@ type Books = {
   checks: Array<{ name: string; ok: boolean }>;
   reserves: { owed: { balancesMinor: number; refundsDueMinor: number; totalMinor: number; atPayPalsTimeMinor: number }; paypal: { availableMinor: number; asOf: string | null } | null; covered: boolean | null; surplusMinor: number | null };
 };
-type Statement = { paypalLines: number; ours: number; listed: number; differs: number; notListedYet: number; otherActivity: number; ok: boolean; from: string; matches: Array<{ paypalId: string; what: string; spend: string; amountMinor: number; listedMinor: number | null; verdict: string }> };
+type Statement = { paypalLines: number; ours: number; listed: number; differs: number; notListedYet: number; otherActivity: number; ok: boolean; from: string; position: { inMinor: number; outMinor: number; refundedMinor: number; feesMinor: number; netMinor: number }; matches: Array<{ paypalId: string; what: string; spend: string; amountMinor: number; listedMinor: number | null; feeMinor: number | null; verdict: string }> };
 const hm = (iso: string) => `${new Date(iso).toISOString().slice(11, 16)} UTC`;
 
 export function BankView() {
@@ -101,15 +101,25 @@ export function BankView() {
               <p className="label">PayPal&rsquo;s own statement</p>
               <button type="button" className="btn btn-sm" onClick={compare} disabled={st === "asking"}>{st === "asking" ? "Asking PayPal…" : "Compare with PayPal"}</button>
             </div>
-            {st === null && <p className="mt-3 text-xs leading-relaxed text-ink-2">Every capture and payout recorded here, looked up in PayPal&rsquo;s statement of the account (Transaction Search): a second source, separate from the calls that moved the money.</p>}
+            {st === null && <p className="mt-3 text-xs leading-relaxed text-ink-2">Every capture, payout and refund recorded here, looked up in PayPal&rsquo;s statement of the account (Transaction Search): a second source, separate from the calls that moved the money, and the only place PayPal&rsquo;s fees appear.</p>}
             {st === "failed" && <p className="mt-3 text-sm text-red" role="alert">PayPal could not be asked for its statement just now.</p>}
             {st && typeof st === "object" && (
               <div className="mt-3" aria-live="polite">
                 <p className="text-[.92rem]"><b className={st.ok ? "text-green" : "text-red"}>{st.ok ? "No disagreement." : `${st.differs} record${st.differs === 1 ? "" : "s"} disagree.`}</b> {st.listed} of {st.ours} of our records are on PayPal&rsquo;s statement with the same amount{st.notListedYet > 0 ? `; ${st.notListedYet} not listed yet (PayPal's statement can lag by up to three hours)` : ""}.</p>
+                {st.listed > 0 && (
+                  <dl className="mt-3 space-y-1.5 text-[.88rem]" data-testid="bank-position">
+                    <div className="leader"><dt>Came in (captures)</dt><i /><dd className="money">{usd(st.position.inMinor)}</dd></div>
+                    <div className="leader"><dt>Went out (payouts)</dt><i /><dd className="money">−{usd(st.position.outMinor)}</dd></div>
+                    {st.position.refundedMinor > 0 && <div className="leader"><dt>Refunded</dt><i /><dd className="money">−{usd(st.position.refundedMinor)}</dd></div>}
+                    <div className="leader"><dt>PayPal&rsquo;s fees</dt><i /><dd className="money text-red">−{usd(st.position.feesMinor)}</dd></div>
+                    <div className="leader border-t border-dashed border-ink pt-1.5"><dt>Left at PayPal by these records</dt><i /><dd className="money text-blue">{usd(st.position.netMinor)}</dd></div>
+                  </dl>
+                )}
+                {st.listed > 0 && <p className="mt-2 text-xs leading-relaxed text-ink-2">{st.position.feesMinor > 0 ? "Agents and payees are credited and paid the full amounts, so PayPal\u2019s fees fall on whoever runs the gateway. They are not priced in yet." : d.mode === "simulated" ? "The simulator charges no fees. On the sandbox PayPal\u2019s statement shows one on every capture and payout, and whoever runs the gateway carries them." : "PayPal lists no fee on these records."}</p>}
                 <p className="mono mt-2 text-[.68rem] leading-relaxed text-ink-3">PayPal lists {st.paypalLines} line{st.paypalLines === 1 ? "" : "s"} since {hm(st.from)} on {new Date(st.from).toISOString().slice(5, 10)}; {st.otherActivity} are not from this ledger.</p>
                 {st.matches.length > 0 && (
                   <ul className="mono mt-3 max-h-56 space-y-1 overflow-y-auto border-t border-rule pt-2 text-[.7rem] leading-snug">
-                    {st.matches.slice(0, 40).map((m) => <li key={`${m.what}${m.paypalId}`} className="leader"><span>{m.what} {m.paypalId}</span><i /><span className={m.verdict === "listed" ? "text-green" : m.verdict === "amount differs" ? "text-red" : "text-ink-3"}>{usd(m.amountMinor)} · {m.verdict}</span></li>)}
+                    {st.matches.slice(0, 40).map((m) => <li key={`${m.what}${m.paypalId}${m.spend}`} className="leader"><span>{m.what} {m.paypalId}</span><i /><span className={m.verdict === "listed" ? "text-green" : m.verdict === "amount differs" ? "text-red" : "text-ink-3"}>{usd(m.amountMinor)}{m.feeMinor ? ` · fee ${usd(m.feeMinor)}` : ""} · {m.verdict}</span></li>)}
                   </ul>
                 )}
               </div>

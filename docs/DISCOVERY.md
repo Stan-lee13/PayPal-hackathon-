@@ -91,7 +91,7 @@ What was built in response, the same day:
 - A corpus of 90 attacks with counted results.
 - The parts of the "agent account" idea that no rival's code had: money set aside through the delegation tree, and agents that receive.
 
-Not built, and listed as limits: hold reauthorization, human step-up approval, Disputes evidence, merchant onboarding, vaulted funding, webhooks.
+Not built at that point, and listed then as limits: hold reauthorization, human step-up approval, Disputes evidence, merchant onboarding, vaulted funding, webhooks. (Built since: owner approval above a threshold, webhook verification, and dispute detection with evidence. The current list is in the README's "Honest limits".)
 
 ## Decision
 

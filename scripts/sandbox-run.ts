@@ -226,7 +226,7 @@ log("reserves: what agents are owed against the balance PayPal reports for the g
 });
 const stmt = await K.statement(6);
 log("PayPal's own statement (Transaction Search), last six hours, against the captures and payouts recorded here", {
-  paypalLines: stmt.paypalLines, ourRecords: stmt.ours, listedWithTheSameAmount: stmt.listed, amountDiffers: stmt.differs, notListedYet: stmt.notListedYet, linesNotFromThisDatabase: stmt.otherActivity,
+  paypalLines: stmt.paypalLines, ourRecords: stmt.ours, listedWithTheSameAmount: stmt.listed, amountDiffers: stmt.differs, notListedYet: stmt.notListedYet, linesNotFromThisDatabase: stmt.otherActivity, paypalFeesOnListedRecords: usd(stmt.position.feesMinor),
   note: "PayPal says its statement can lag by up to three hours, so records made in this run are usually not listed yet; scripts/statement-check.ts asks again later",
 });
 const swept = await S.sweepUnfinished();

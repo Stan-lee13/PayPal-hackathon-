@@ -187,7 +187,10 @@ export type Reserves = {
 /** The gateway's records against PayPal's own statement of its account. PayPal's statement can lag by hours. */
 export type StatementCheck = {
   mode: string; from: string; to: string; paypalLines: number; ours: number; listed: number; differs: number; notListedYet: number; otherActivity: number; ok: boolean;
-  matches: Array<{ paypalId: string; what: "capture" | "payout" | "refund"; spend: string; amountMinor: number; listedMinor: number | null; verdict: "listed" | "amount differs" | "not listed yet" }>;
+  /** For the records PayPal lists: what came in, went out and was refunded, the fees PayPal charged, and what that leaves at PayPal. */
+  position: { inMinor: number; outMinor: number; refundedMinor: number; feesMinor: number; netMinor: number };
+  /** `spend` is the payment's id or, for a payout from an agent's balance, the transfer's. `feeMinor` is PayPal's fee on the line, once listed. */
+  matches: Array<{ paypalId: string; what: "capture" | "payout" | "refund"; spend: string; amountMinor: number; listedMinor: number | null; feeMinor: number | null; verdict: "listed" | "amount differs" | "not listed yet" }>;
 };
 /** What the gateway sends PayPal if a payer disputes a payment: the signed chain of authority, in words and in full. */
 export type Evidence = {

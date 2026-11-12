@@ -181,6 +181,13 @@ An account opening may carry `"mode": "hold"` and `"perPayment": <minor units>`.
   "sig": "<signature by the owner>", "by": "<owner key>" }
 ```
 
+```json
+{ "request": { "v": "envelope-refund/1", "from": "<agent key>", "spend": "sp_… or pr_…", "memo": "", "nonce": "n_…", "at": "…" },
+  "sig": "<signature by `from`, domain envelope-refund/1>" }
+```
+
+A refund names one payment and is signed by the agent that was paid. It carries no amount: a refund is of the whole payment.
+
 A completed transfer has a receipt signed by the gateway under `envelope-transfer-receipt/1`: the request and its signature, the paying account, where the money went (an account here, or a PayPal address with the payout batch id), and the balance after.
 
 ### Card, charge and cancellation
@@ -240,7 +247,7 @@ No server is involved. A block that widens anything is simply invalid: every ver
 10. `POST /v1/payments/payouts` to the payee, `sender_batch_id` = spend id.
 11. Reservation → spent at every level; the gateway signs the receipt.
 
-Failures: a definite refusal by PayPal releases the reservation (and refunds the capture if the payout was refused). A timeout or 5xx leaves the reservation in place; presenting the same signed request again resumes from where it stopped, with the same idempotency keys. A payout PayPal later fails or returns is refunded and the budget restored.
+Failures: a definite refusal by PayPal releases the reservation (and refunds the capture if the payout was refused). A timeout or 5xx leaves the reservation in place; presenting the same signed request again resumes from where it stopped, with the same idempotency keys. A payout PayPal later fails or returns is refunded to the owner; the amount stays used in the envelope (see "A refund does not reopen the hold" below).
 
 ### Revoking
 
@@ -288,7 +295,8 @@ The gateway and PayPal cannot commit together, so each step is safe to repeat an
 
 - **One capture, counted once.** A request may arrive many times at once. Every arrival gets the same capture back from PayPal (one idempotency key). Only the arrival that records the capture id adds it to the envelope's books.
 - **A capture PayPal has not completed.** If PayPal answers a capture with `PENDING`, the gateway records it and pays nobody. When asked again it reads the capture: `COMPLETED` continues to the payout; anything else fails the payment, returns the budget and removes the capture from the books.
-- **A payout that cannot be made or delivered.** The capture is refunded to the owner and the budget returns. If PayPal refuses the refund, the payment becomes `REFUND_DUE`: the capture stays in the books and the budget stays used, and each later look tries the refund again.
+- **A payout that cannot be made or delivered.** The capture is refunded to the owner. If PayPal refuses the refund, the payment becomes `REFUND_DUE`: the capture stays in the books and the budget stays used, and each later look tries the refund again.
+- **A refund does not reopen the hold.** A refund returns the owner's money. It does not make that part of the envelope spendable again: PayPal counts a refunded capture against the authorization for good. So after any refund (a payout that failed, a recall, a payee giving a payment back) the amount stays used in every envelope on the path, the root records it as `refundedMinor` rather than `capturedMinor`, and closing releases `limit − captured − refunded`. Checked on the sandbox with `scripts/paypal-refund-capacity.ts`: after a capture was refunded in full, a second capture of the same authorization that would only fit if the refund had freed room was refused with `MAX_CAPTURE_AMOUNT_EXCEEDED`. A capture PayPal *declines* is different: it never completed, so its budget does return.
 - **A refused payout request is not proof that no payout exists.** Before refunding, the gateway re-reads its own record; if another arrival of the same request has recorded a payout, or PayPal's refusal says the request is a duplicate, it does not refund.
 - **Revoked in between.** A payment that was admitted but not yet captured is checked again before the capture; if any envelope on its path was revoked or the root closed, it fails and nothing is captured.
 - **What is recorded.** A refusal is stored against an envelope only when the request is signed by the key that holds the envelope it presents, and every block of that chain is really signed by the holder above it, back to the root this gateway sealed. A chain that breaks the rules (a child wider than its parent) but is genuinely signed is recorded; a chain with a bad signature, a broken link or another root is refused and forgotten. For an account the signer must be the account's key, and for a card its merchant.
@@ -304,7 +312,7 @@ The gateway and PayPal cannot commit together, so each step is safe to repeat an
 3. **An event is a hint, never the truth.** The gateway finds the payment, transfer or hold the event names (by the payment id it put in `invoice_id` and `sender_item_id`, by capture id, by payout batch id, or by authorization id) and reads that record from PayPal by id. What PayPal answers then is what changes the books. A forged, edited, stale or replayed event can therefore cause a read and nothing else.
 4. A hold PayPal reports voided or lapsed while its envelope is open closes the envelope. A capture refunded or reversed outside the gateway while its payment stands is written to the envelope's audit trail for the owner.
 
-**Sweep.** `POST /api/sweep` reads the event feed, asks PayPal about every payment and transfer still in flight, and lapses promises that ran out. With `CRON_SECRET` set it must be presented as a bearer token.
+**Sweep.** `POST /api/sweep` (or `GET`, which is what a scheduler such as Vercel Cron sends) reads the event feed, asks PayPal about every payment and transfer still in flight, finishes refunds whose debit is on the ledger but which PayPal has not yet confirmed, asks PayPal for the disputes against the account, and lapses promises that ran out. With `CRON_SECRET` set it must be presented as a bearer token. The repository's `vercel.json` schedules it once a day on a deployment that has a database.
 
 **Recall.** A payout PayPal holds as `UNCLAIMED` can be taken back by the envelope's owner:
 
@@ -313,7 +321,7 @@ The gateway and PayPal cannot commit together, so each step is safe to repeat an
               "sig": "<signature by `by`>", "by": "<owner key>" } }
 ```
 
-sent to `POST /api/spends/{id}/recall`. The gateway reads PayPal's current word first; if the payout is still unclaimed it asks PayPal to cancel the item, and once PayPal reports it returned, the usual path for a payout that did not arrive runs: the capture is refunded, the budget returns at every level, and the payment records `RECALLED_BY_OWNER`. If PayPal will not cancel, nothing changes. Only the owner's key can do this; the agent that paid cannot.
+sent to `POST /api/spends/{id}/recall`. The gateway reads PayPal's current word first; if the payout is still unclaimed it asks PayPal to cancel the item, and once PayPal reports it returned, the usual path for a payout that did not arrive runs: the capture is refunded to the owner, the amount stays used at every level (a refund does not reopen the hold), and the payment records `RECALLED_BY_OWNER`. If PayPal will not cancel, nothing changes. Only the owner's key can do this; the agent that paid cannot.
 
 **Looking up a payment.** `GET /api/spends/{id}/status` answers for a payment in any state (refused, set aside, in flight, unclaimed, paid, refunded) after asking PayPal. `GET /api/spends/{id}` returns the receipt and exists only once PayPal has captured.
 
@@ -346,7 +354,28 @@ Freeze. Only the key in the account's `owner` field can freeze or unfreeze. A fr
 
 Owner. A later account opening can change the label, settlement address, mode and cap, and needs both signatures again. It is refused if it names a different owner key, so an agent cannot give itself a new owner to escape a cap or a freeze.
 
-The books. At any time: the sum of balances equals the sum of ledger rows; that sum equals income minus payouts and withdrawals plus reversals; transfers between accounts sum to zero. `GET /api/bank` reports the three checks.
+Giving a payment back. `POST /api/bank/refund` with a signed `envelope-refund/1`. The gateway checks, in order:
+
+1. shape; the signature by `from` under the refund domain; `at` within 5 minutes;
+2. the payment exists and `from` is the agent it paid (otherwise `NOT_THE_HOLDER`, and nothing is recorded against the payment or the account);
+3. the payment is `PAID`, was credited to that agent's balance and has a capture (otherwise `NOT_REFUNDABLE`: a payment that was paid out to a PayPal address cannot be refunded from a balance);
+4. under the account's lock: the account is not frozen and the balance covers the whole payment.
+
+Then one `refund` row debits the balance, and after the transaction commits the gateway asks PayPal to refund the capture (`POST /v2/payments/captures/{id}/refund`, idempotency key from the payment's id). When PayPal confirms, the payment becomes `FAILED` with reason `REFUNDED_BY_PAYEE` and the refund id, and the owner's books move the amount from captured to refunded. If PayPal refuses, one `refund_reversal` row puts the money back and the answer is `PAYPAL_REFUND_FAILED`. If PayPal cannot be reached the debit stands, the answer is `PENDING`, and the sweep asks again; the same idempotency key means it cannot refund twice. The payer cannot force a refund: only the paid agent's key can sign one. There are no partial refunds.
+
+The books. At any time: the sum of balances equals the sum of ledger rows; that sum equals income minus payouts, withdrawals and refunds, plus reversals; transfers between accounts sum to zero. `GET /api/bank` reports the three checks.
+
+Reserves. `GET /api/bank` also carries `reserves`: what agents are owed (balances, plus refunds due to owners) against the balance PayPal reports for the gateway's account (`GET /v1/reporting/balances`). PayPal's figure is dated (`as_of_time`, about two hours old on the sandbox), so `covered` compares it with what was owed at that same moment, summed from the ledger, whose every row carries its time. `covered` is `null` when PayPal could not be asked.
+
+Fees. PayPal charges the gateway's account a fee on each capture and each payout, and nothing in the protocol passes it on: a payee is credited or paid the amount the agent signed for. The fee appears only on PayPal's statement, so `GET /api/bank/statement` reads it from there, per line, and returns a `position` for the records PayPal lists: what came in, what went out, what was refunded, the fees, and what that leaves at PayPal. The difference between that and what agents are owed is the operator's to fund. A refund does not bring the capture's fee back.
+
+PayPal's statement. `GET /api/bank/statement` reads PayPal's own statement of the account (Transaction Search, `GET /v1/reporting/transactions`) and looks up every capture and payout recorded here by PayPal's transaction id. Each gets a verdict: `listed` (same amount), `amount differs`, or `not listed yet` (PayPal says its statement can lag by up to three hours). Lines PayPal lists that are not from this ledger are counted as other activity. It is a second source, separate from the calls that moved the money.
+
+### Disputes
+
+A payer who disputes a capture does so at PayPal. The gateway asks PayPal about disputes two ways (`GET /v1/customer/disputes`): for one capture, as the seventh check of every receipt reconciliation ("PayPal holds no dispute against this capture"); and for the whole account, in the sweep. A dispute about a capture made here is recorded on the payment (its id and PayPal's status) and on the envelope's audit trail, and the envelope's page marks the payment "Disputed at PayPal". While PayPal reports `WAITING_FOR_SELLER_RESPONSE`, the sweep answers with the payment's evidence (`POST /v1/customer/disputes/{id}/provide-evidence`, as notes of at most 2000 characters).
+
+The evidence is public by the payment's id, like its receipt: `GET /api/spends/{id}/evidence` returns the signed request, the whole chain back to the payer's own signature, the receipt, the PayPal ids, a summary in words, and links to the pages that re-run the checks. It shows the payment was inside limits the payer signed. It does not show that what was bought was any good. Sending evidence moves no money, and the gateway decides nothing about a dispute: PayPal does.
 
 ### Cards
 
@@ -389,10 +418,14 @@ Nothing is reserved, so the answer can go stale; it is valid for five minutes. I
 | Pay an agent | Payout to the account's settlement address | One agent's spending becomes another agent's income without either holding PayPal credentials. |
 | Check | Show authorization details | A payee learns from PayPal, through the gateway, that the hold is live before doing any work. |
 | Recall | Cancel an unclaimed payout item, then refund the capture | Money that never arrived does not stay out of the owner's hands for thirty days. |
+| Give back | Refund the capture, on the paid agent's signature | An agent that will not do the work returns the fee to the payer through PayPal, not through a promise. |
+| Reserves | Reporting: balances | What agents are owed is compared with a figure the gateway did not produce. |
+| Statement | Reporting: Transaction Search | Each capture and payout is looked up in PayPal's own statement of the account. |
+| Dispute | Disputes: list, show, provide evidence | A disputed payment is found without waiting to be told, and answered with the payer's own signature. |
 | Settle | Webhook signature verification; the event feed | A payment finishes when PayPal says so, without anyone opening a page; nothing PayPal did not send is believed. |
 | Receipt | capture id, payout batch and item ids | Any PayPal transaction can be traced to its chain of authority, and re-checked with PayPal's own GET endpoints. |
 
-Verified in the PayPal sandbox on 2026-11-11: 12 partial captures of one authorization all completed; an over-capture was refused (`MAX_CAPTURE_AMOUNT_EXCEEDED`); void after partial captures returned `VOIDED`. See `docs/evidence/sandbox-run.json`.
+Verified in the PayPal sandbox on 2026-11-11: 12 partial captures of one authorization all completed; an over-capture was refused (`MAX_CAPTURE_AMOUNT_EXCEEDED`); void after partial captures returned `VOIDED`; a refunded capture did not return capacity to its authorization. See `docs/evidence/sandbox-run.json`.
 
 An authorization is a hold placed by PayPal on the payer's funding source. It is not an escrow service, lasts at most 29 days, and is honoured for 3; envelopes are limited to 28 days.
 

@@ -109,6 +109,7 @@ try {
   if (health0.paypalMode === "simulated") {
     await page.getByTestId("bank-statement").getByRole("button", { name: "Compare with PayPal" }).click();
     await page.getByTestId("bank-statement").getByText("No disagreement.").waitFor(T);
+    await page.getByTestId("bank-position").getByText("Left at PayPal by these records").waitFor(T);
   }
   if (OUT) await page.screenshot({ path: `${OUT}/local-3c-bank.png`, fullPage: true }).catch(() => {});
   console.log("the books balance; PayPal's reported balance covers what agents are owed" + (health0.paypalMode === "simulated" ? "; PayPal's statement agrees with every capture and payout" : ""));
@@ -183,6 +184,7 @@ try {
   await page.getByTestId("reference").getByText("Signature checked in your browser.").waitFor(T);
   console.log("reference signed and verified");
   const p2 = await ctx.newPage();
+  if (process.env.E2E_DEBUG) p2.on("console", (m) => console.log(`  tab 2: ${m.text().slice(0, 240)}`));
   await p2.goto(`${BASE}/console`);
   await p2.getByText("Store launch budget").first().waitFor(T);
   await p2.getByText("can be paid").first().waitFor(T);
@@ -226,6 +228,18 @@ try {
   failed = true;
   console.log("FAILED:", String(e).slice(0, 500));
   if (OUT) await page.screenshot({ path: `${OUT}/local-fail.png`, fullPage: true }).catch(() => {});
+  // Where every open tab stood, and who held which browser lock: what is needed to tell a stuck in-browser database from a slow one.
+  for (const [i, p] of ctx.pages().entries()) {
+    const state = await Promise.race([
+      p.evaluate(async () => {
+        const q = await navigator.locks.query();
+        const f = (l) => `${l.name.replace(/^pglite-/, "").slice(0, 26)}@${(l.clientId ?? "").slice(0, 5)}`;
+        return `${location.pathname} · held ${q.held.map(f).join(", ") || "none"} · waiting ${q.pending.map(f).join(", ") || "none"} · text: ${document.body.innerText.slice(0, 90).replace(/\n+/g, " | ")}`;
+      }),
+      new Promise((r) => setTimeout(() => r("did not answer in 5 s"), 5000)),
+    ]).catch((x) => `could not be asked: ${String(x).slice(0, 80)}`);
+    console.log(`  tab ${i}: ${state}`);
+  }
 }
 const real = logs.filter((l) => !l.includes("_rsc=") && !l.includes("preloaded using"));
 if (real.length) console.log(real.slice(0, 25).join("\n"));
