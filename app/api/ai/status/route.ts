@@ -7,6 +7,16 @@ export const maxDuration = 60;
 
 const SAMPLE: MissionContext = { owner: "Ada", title: "Store launch budget", limitUsd: 200, perPaymentUsd: 80, payees: [{ payee: "acct:aqzv-spat-kyrk", who: "translator-agent, an agent owned by Bea" }, { payee: "designer@example.com", who: "" }], purposes: ["design", "translation"], brief: "Launch the store in French and Yoruba: get the store strings translated and a banner set designed. Spend as little as the quotes require." };
 
+let checked: { at: number; key: string; ok: boolean; reason: string } | null = null;
+/** One tiny request to the model, at most every ten minutes when it works and every two when it does not. Per server instance. */
+async function works(cfg: NonNullable<ReturnType<typeof modelConfig>>): Promise<{ ok: boolean; reason: string }> {
+  const key = `${cfg.url} ${cfg.model}`;
+  if (checked && checked.key === key && Date.now() - checked.at < (checked.ok ? 600_000 : 120_000)) return checked;
+  const r = await chat(cfg, { messages: [{ role: "user", content: "Reply with the single word: ready" }], maxTokens: 8 });
+  checked = { at: Date.now(), key, ok: r.ok, reason: r.ok ? "" : r.error.slice(0, 160) };
+  return checked;
+}
+
 /**
  * Is a model connected to this copy? Never returns a key.
  *   ?probe=1        also sends the model one tiny request
@@ -16,7 +26,11 @@ export async function GET(req: Request) {
   const cfg = modelConfig(req);
   if (!cfg) return json({ available: false, reason: "No model is configured for this copy." });
   const probe = new URL(req.url).searchParams.get("probe");
-  if (!probe) return json({ available: true, via: cfg.via, model: cfg.model });
+  if (!probe) {
+    // Configured is not the same as working (a gateway can refuse the account). Ask the model one word, and remember the answer for a while.
+    const w = await works(cfg);
+    return json(w.ok ? { available: true, via: cfg.via, model: cfg.model } : { available: false, via: cfg.via, model: cfg.model, reason: `A model is configured but did not answer: ${w.reason}` });
+  }
   if (!allow(`probe:${clientIp(req)}`, 8, 600_000)) return json({ error: "Too many probes." }, 429);
   if (probe !== "mission") {
     const r = await chat(cfg, { messages: [{ role: "user", content: "Reply with the single word: ready" }], maxTokens: 8 });
