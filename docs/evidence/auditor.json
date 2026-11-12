@@ -1,0 +1,137 @@
+{
+  "what": "The auditor: PayPal's Agent Toolkit (@paypal/agent-toolkit 1.11.0) cut down to its read tools, run inside the gateway. The toolkit holds no credential; the gateway's PayPal client carries its requests and carries only GETs on listed paths.",
+  "ranAt": "2026-11-12T05:56:46.216Z",
+  "paypal": "sandbox",
+  "by": "fixed procedure",
+  "toolkitToolsInPackage": 47,
+  "toolkitToolsTheAuditorHas": [
+    "list_transactions",
+    "list_disputes",
+    "get_dispute",
+    "get_order",
+    "get_refund"
+  ],
+  "steps": [
+    {
+      "read": "envelope_books",
+      "through": "envelope",
+      "args": {},
+      "ok": true,
+      "brief": "13 agent accounts hold $50.00 in total.\nholds: Every balance equals the sum of its ledger entries\nholds: Balances equal money captured from PayPal holds into accounts, minus money paid out or refunded\nholds: Transfers between accounts net to zero\nPayPal reports $6,141.15 available; the gateway owed $50.00 at that moment: covered, with $6,091.15 over."
+    },
+    {
+      "read": "envelope_statement",
+      "through": "envelope",
+      "args": {},
+      "ok": true,
+      "brief": "34 records of the gateway looked up on PayPal's statement (566 lines): 28 listed with the same amount, 0 where the amount differs, 6 not listed yet. 538 lines on the account are not the gateway's.\nListed records: $514.00 captured in, $458.00 paid out, $6.00 refunded, $24.69 in PayPal fees, leaving $25.31 at PayPal.\nNOT LISTED YET: capture 2JR858984A069893V of payment sp_ohYDQ-B4EaybPnzU, recorded $7.00\nNOT LISTED YET: payout 1R08984287879632M of payment sp_ohYDQ-B4EaybPnzU, recorded $7.00\nNOT LISTED YET: capture 0B786346AS217003F of payment sp_t-lF3Zfo83CwRZxu, recorded $6.00\nNOT LISTED YET: refund 0SA80919WM509970A of payment sp_t-lF3Zfo83CwRZxu, recorded $6.00\nNOT LISTED YET: capture 1US29419BV064010D of payment sp_UsvruL0ZCsh61Quq, recorded $8.00\nNOT LISTED YET: payout 1JN92645MB6289737 of payment sp_UsvruL0ZCsh61Quq, recorded $8.00"
+    },
+    {
+      "read": "list_transactions",
+      "through": "paypal-agent-toolkit",
+      "args": {
+        "start_date": "2026-11-09T05:56:44Z",
+        "page_size": 500
+      },
+      "ok": true,
+      "brief": "PayPal lists 482 transactions; money in less money out is $4,662.50, and PayPal charged $270.65 in fees.\n5SM70753YD9596202 T1503 -$1.25 status S\n84U4348808185492X T1105 $1.25 status S ref probe-1794381077\n0JW56189YS204074K T0005 $2.00 fee $0.54 status S ref probe-2MT45726J2414291U-1\n00C40131CK820063K T0005 $2.00 fee $0.54 status S ref probe-2MT45726J2414291U-2\n4A904138T2083903K T0005 $2.00 fee $0.54 status S ref probe-2MT45726J2414291U-3\n79783869CV9617522 T0005 $2.00 fee $0.54 status S ref probe-2MT45726J2414291U-4\n83339135H07335721 T0005 $2.00 fee $0.54 status S ref probe-2MT45726J2414291U-5\n0GE36853C9424402X T0005 $2.00 fee $0.54 status S ref probe-2MT45726J2414291U-6\n51R02701VY0135606 T0005 $2.00 fee $0.54 status S ref probe-2MT45726J2414291U-7\n45G40543U35390317 T0005 $2.00 fee $0.54 status S ref probe-2MT45726J2414291U-8\n3CB746856U518245P T0005 $2.00 fee $0.54 status S ref probe-2MT45726J2414291U-9\n2W000116TG4217038 T0005 $2.00 fee $0.54 status S ref probe-2MT45726J2414291U-10\n7UW95154V5779615L T0005 $2.00 fee $0.54 status S ref probe-2MT45726J2414291U-11\n9S146469V6238173A T0005 $2.00 fee $0.54 status S ref probe-2MT45726J2414291U-12\n… and 468 more"
+    },
+    {
+      "read": "list_transactions",
+      "through": "paypal-agent-toolkit",
+      "args": {
+        "start_date": "2026-11-09T05:56:44Z",
+        "page_size": 500,
+        "transaction_status": "P"
+      },
+      "ok": true,
+      "brief": "PayPal lists 84 transactions; money in less money out is -$4,133.50, and PayPal charged $21.00 in fees.\n6SM97625NA197193V T0001 -$1.00 fee $0.25 status P ref probe-1794381077\n91360630DX414170W T0001 -$45.00 fee $0.25 status P ref sp_OzhLtHBEd8QTrZ_J\n6R273616TA145510G T0001 -$70.00 fee $0.25 status P ref sp_H_8iQObO0joNMFSt\n75698751K9245272X T0001 -$45.00 fee $0.25 status P ref sp_ppy2jv9UPmTpJAGy\n7A843450L0040580Y T0001 -$45.00 fee $0.25 status P ref sp_dUKMI9S2L9zSPf7x\n9XX918957J154274H T0001 -$70.00 fee $0.25 status P ref sp_tK_nopCLRAJk1Hik\n1Y0064079U0444620 T0001 -$5.00 fee $0.25 status P ref sp_Y8xKV6G750dJlw-9\n8SE7046452457572Y T0001 -$5.00 fee $0.25 status P ref sp_rqtffesqcQqcMXhb\n3W424382T4658800S T0001 -$67.00 fee $0.25 status P ref sp_PmnoBSlmL-K4C0WR\n8LX3857880268363T T0001 -$67.00 fee $0.25 status P ref sp_DAXkrX28wsRAECUr\n2MV81257TC7595451 T0001 -$9.50 fee $0.25 status P ref sp_xvasvh4yasF0Y8et\n9SK68781HS2646619 T0001 -$4.00 fee $0.25 status P ref sp_f5hZvqN-g011vjDt\n9D636948LM173710X T0001 -$67.00 fee $0.25 status P ref sp_4aeHmrSbnyNkc2iK\n44G1007862111145N T0001 -$67.00 fee $0.25 status P ref sp_ZaCHjvpZAb_Dg956\n… and 70 more"
+    },
+    {
+      "read": "envelope_unsettled",
+      "through": "envelope",
+      "args": {},
+      "ok": true,
+      "brief": "payment sp_Ka9AVpat3w20gTXo is UNCLAIMED (payout UNCLAIMED): $7.00\npayment pr_6sKBmkRqO7mGxdrG is UNCLAIMED (payout UNCLAIMED): $72.00\npayment sp_c_CWEDIK772Q-0oo is UNCLAIMED (payout UNCLAIMED): $70.00\npayment sp_paZyE2V5AOykJhpV is UNCLAIMED (payout UNCLAIMED): $7.00\npayment pr_gYCopI6LiXOrrg9k is UNCLAIMED (payout UNCLAIMED): $72.00\npayment sp_FOEI17hJ-Ca_lgw3 is UNCLAIMED (payout UNCLAIMED): $70.00\ntransfer tr_qdwle4BURjGEvOKA is UNCLAIMED: $5.00\ntransfer tr_s6FYf4MZzvrLQrR5 is UNCLAIMED: $5.00"
+    },
+    {
+      "proposal": "recall_payout",
+      "target": "sp_Ka9AVpat3w20gTXo",
+      "stands": true,
+      "why": "The payout of payment sp_Ka9AVpat3w20gTXo has not been claimed. Recalling it returns the money to the owner instead of waiting thirty days.",
+      "signer": "the envelope's owner"
+    },
+    {
+      "proposal": "recall_payout",
+      "target": "pr_6sKBmkRqO7mGxdrG",
+      "stands": true,
+      "why": "The payout of payment pr_6sKBmkRqO7mGxdrG has not been claimed. Recalling it returns the money to the owner instead of waiting thirty days.",
+      "signer": "the envelope's owner"
+    },
+    {
+      "proposal": "recall_payout",
+      "target": "sp_c_CWEDIK772Q-0oo",
+      "stands": true,
+      "why": "The payout of payment sp_c_CWEDIK772Q-0oo has not been claimed. Recalling it returns the money to the owner instead of waiting thirty days.",
+      "signer": "the envelope's owner"
+    },
+    {
+      "proposal": "recall_payout",
+      "target": "sp_paZyE2V5AOykJhpV",
+      "stands": true,
+      "why": "The payout of payment sp_paZyE2V5AOykJhpV has not been claimed. Recalling it returns the money to the owner instead of waiting thirty days.",
+      "signer": "the envelope's owner"
+    },
+    {
+      "proposal": "recall_payout",
+      "target": "pr_gYCopI6LiXOrrg9k",
+      "stands": true,
+      "why": "The payout of payment pr_gYCopI6LiXOrrg9k has not been claimed. Recalling it returns the money to the owner instead of waiting thirty days.",
+      "signer": "the envelope's owner"
+    },
+    {
+      "read": "list_disputes",
+      "through": "paypal-agent-toolkit",
+      "args": {},
+      "ok": true,
+      "brief": "PayPal lists no disputes on this account."
+    },
+    {
+      "kind": "report",
+      "text": "5 things need a person.\nThe books add up, and PayPal's balance covers what agents are owed with $6091.15 over.\n28 of the gateway's 34 records are on PayPal's statement with the same amount (6 not listed yet); 28 of them were found again through PayPal's Agent Toolkit, same amounts. PayPal charged $24.69 in fees.\n2 payments are still moving at PayPal; the gateway's sweep follows them.\nPayPal lists no dispute about this gateway's payments.",
+      "by": "procedure"
+    }
+  ],
+  "requestsTheToolkitBuilt": [
+    {
+      "method": "GET",
+      "path": "/v1/reporting/transactions",
+      "sent": true,
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/v1/reporting/transactions",
+      "sent": true,
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/v1/customer/disputes",
+      "sent": true,
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/v2/payments/captures/0AB12345CD678901E/refund",
+      "sent": false,
+      "status": 403
+    }
+  ],
+  "writeAttempt": {
+    "tool": "create_refund",
+    "byName": "\"create_refund\" is not a tool the auditor has. It can read and it can propose; it cannot pay, refund, capture, void, sign or change a record.",
+    "withTheNameCheckRemoved": "Envelope's gateway does not send POST /v2/payments/captures/0AB12345CD678901E/refund for the auditor. It carries reads only; nothing was sent to PayPal.",
+    "sentToPayPal": false
+  }
+}

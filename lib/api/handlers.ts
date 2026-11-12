@@ -11,6 +11,7 @@ import { act, attachDemoAgents, BANK_ACTIONS, bankAct, createDemoAgents, DEMO_AC
 import * as E from "../envelope/core";
 import * as B from "../gateway/bank";
 import * as K from "../gateway/books";
+import * as A from "../gateway/auditor";
 import { proof } from "../gateway/proof";
 import * as G from "../gateway/service";
 import * as S from "../gateway/settlement";
@@ -353,6 +354,34 @@ export const handlers: Record<string, Handler> = {
     if (!(await ownerOfRootAsks(b.owner, b.rootId))) return NOT_OWNER;
     const r = await runTool(b.rootId, b.agent, b.tool, b.args);
     return { body: { text: r.text, status: r.status, reasons: withMeaning(r.reasons) } };
+  },
+
+  // ---- The auditor: an agent on the operator's side that can read and propose, and nothing else ----
+
+  /** What the auditor can call: PayPal's own Agent Toolkit, cut down to its read tools, and the gateway's books. */
+  "GET /api/auditor": async ({ headers }) => {
+    const may = A.auditorMayAsk(headers);
+    return { body: { mode: paypalMode(), locked: may !== "yes", keyConfigured: may !== "unconfigured", proposals: A.PROPOSAL_KINDS, tools: await A.auditorTools() } };
+  },
+  /** One read. A tool the auditor does not have is refused here, before anything is asked of PayPal. */
+  "POST /api/auditor/read": async ({ body, headers }) => {
+    const may = A.auditorMayAsk(headers);
+    if (may !== "yes") return { status: may === "no" ? 401 : 503, body: { error: may === "no" ? "The auditor's reads show the operator's PayPal account. Present the operator's key." : "No operator key is configured (AUDITOR_SECRET), so the auditor is switched off on this gateway." } };
+    const b = z.object({ tool: z.string().min(1).max(60), args: z.record(z.string(), z.unknown()).default({}) }).parse(body);
+    const r = await A.auditorRead(b.tool, b.args);
+    return { status: r.refused ? 403 : 200, body: r };
+  },
+  /** Does a proposal stand on the records, and whose signature would it take? Checks; changes nothing. */
+  "POST /api/auditor/check": async ({ body, headers }) => {
+    if (A.auditorMayAsk(headers) !== "yes") return { status: 401, body: { error: "Present the operator's key." } };
+    const b = z.object({ kind: z.string().min(1).max(40), target: z.string().min(1).max(80) }).parse(body);
+    return { body: await A.checkProposal(b.kind, b.target) };
+  },
+  /** DEMO, simulator only: a payer disputes the latest payment, as they could in PayPal's Resolution Center. The gateway is not told. */
+  "POST /api/demo/dispute": async () => {
+    if (paypalMode() !== "simulated") return { status: 409, body: { error: "A dispute can be staged only on the simulator. On PayPal a payer opens one in the Resolution Center." } };
+    const r = await A.stageDispute();
+    return r ? { body: r } : { status: 409, body: { error: "There is no settled payment to dispute yet. Seal an envelope and let an agent pay first." } };
   },
 
   /** DEMO: have a built-in agent introduce itself to a payee. The result is checked through the public standing endpoint. */

@@ -213,6 +213,25 @@ d("MCP server over stdio (simulated PayPal)", () => {
     } finally { ro.stop(); }
   });
 
+  it("served to an auditor, it offers PayPal's toolkit reads and the books through the gateway, and nothing that moves money", async () => {
+    const before = (await gateway.envelope(rootId)).root.capturedMinor;
+    const au = client({ ENVELOPE_ROLE: "auditor", GATEWAY: http.url }); // no agent name, no key folder
+    try {
+      const tools = (await au.rpc("tools/list")).result!.tools!;
+      expect(tools.map((t) => t.name).sort()).toEqual(["envelope_books", "envelope_payment", "envelope_statement", "envelope_unsettled", "get_dispute", "get_order", "get_refund", "list_disputes", "list_transactions", "propose"]);
+      expect(tools.every((t) => t.annotations?.readOnlyHint === true)).toBe(true);
+      expect(tools.find((t) => t.name === "list_transactions")!.description).toContain("[PayPal Agent Toolkit, through the gateway] List transactions from PayPal");
+      const tx = await au.call("list_transactions", { page_size: 100 });
+      expect(tx).toMatchObject({ isError: false, text: expect.stringMatching(/^PayPal lists \d+ transactions/) });
+      expect((await au.call("envelope_books")).text).toContain("holds: Every balance equals the sum of its ledger entries");
+      // the toolkit's own writes, and this server's spending tools, are simply not there
+      for (const name of ["create_refund", "pay_order", "create_order", "envelope_pay", "envelope_split"]) expect((await au.call(name, {})).rpcError, name).toMatchObject({ code: -32602 });
+      expect((await au.call("propose", { kind: "refund_payment", target: rootId })).text).toMatch(/^DOES NOT STAND\. The auditor can propose/);
+      expect((await au.call("propose", { kind: "close_envelope", target: rootId })).text).toMatch(/^STANDS\..*It takes the envelope's owner; the auditor cannot do it\./);
+      expect((await gateway.envelope(rootId)).root).toMatchObject({ status: "ACTIVE", capturedMinor: before });
+    } finally { au.stop(); }
+  });
+
   it("never wrote a private key or anything that looks like a PayPal credential, to the client or to the gateway", async () => {
     const out = mcp.transcript.join("\n") + mcp.stderr();
     expect(mcp.transcript.length).toBeGreaterThan(15);

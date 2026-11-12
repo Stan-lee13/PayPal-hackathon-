@@ -200,6 +200,10 @@ function route(input: string, init: RequestInit): Response {
     emit(s, "PAYMENT.CAPTURE.REFUNDED", "refund", { ...refund, amount: c.amount, invoice_id: c.invoice_id, custom_id: c.custom_id });
     return reply(201, refund);
   });
+  if ((m = p.match(/^\/v2\/payments\/refunds\/([^/]+)$/)) && method === "GET") {
+    const c = Object.values(s.captures).find((x) => x.refund_id === m![1]);
+    return c ? reply(200, { id: c.refund_id, status: "COMPLETED", amount: c.amount, invoice_id: c.invoice_id, custom_id: c.custom_id }) : err(404, "RESOURCE_NOT_FOUND", "INVALID_RESOURCE_ID", "Refund not found.");
+  }
   if (p === "/v1/payments/payouts" && method === "POST") return mutate(() => {
     const sbid = body?.sender_batch_header?.sender_batch_id;
     const it = body?.items?.[0];

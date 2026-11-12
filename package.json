@@ -17,6 +17,7 @@
     "e2e": "node scripts/e2e.mjs",
     "agent": "tsx scripts/agent.ts",
     "mcp": "tsx scripts/mcp.ts",
+    "auditor": "tsx scripts/auditor.ts",
     "sdk:build": "node sdk/build.mjs",
     "sdk:pack": "npm pack ./sdk --pack-destination ./sdk",
     "example": "node sdk/build.mjs && node examples/hire-an-agent/index.mjs"
@@ -26,6 +27,7 @@
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.16",
+    "@paypal/agent-toolkit": "^1.11.0",
     "drizzle-orm": "^0.45.4",
     "next": "^15.5.29",
     "postgres": "^3.4.9",

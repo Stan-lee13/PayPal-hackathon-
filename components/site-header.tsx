@@ -11,6 +11,7 @@ export function SiteHeader() {
         <Link className="btn btn-quiet btn-sm hidden !text-[.84rem] md:inline-flex" href="/developers">Developers</Link>
         <Link className="btn btn-quiet btn-sm !text-[.84rem]" href="/bank">Accounts</Link>
         <Link className="btn btn-quiet btn-sm !text-[.84rem]" href="/treasury">Treasury</Link>
+        <Link className="btn btn-quiet btn-sm hidden !text-[.84rem] sm:inline-flex" href="/auditor">Auditor</Link>
         <Link className="btn btn-sm !min-h-[34px] !px-3 !text-[.84rem]" href="/console">Seal an envelope</Link>
       </nav>
     </header>
