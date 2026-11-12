@@ -26,6 +26,19 @@ A strip along the bottom rings the next control to press. It moves on when the g
 
 Then open a second tab: same data, and neither tab waits. `scripts/tour-check.mjs` walks the tour in a real browser; it passed on the in-browser copy.
 
+## Finding your way
+
+Every page is in the menu at the top (on a phone, the menu is the navigation) and in the map at the foot of every page. Both are drawn from one list, [`lib/site-map.ts`](lib/site-map.ts), so a page cannot exist without a way to reach it.
+
+| | |
+|---|---|
+| **Start** | Seal an envelope (`/console`) · the two-minute tour (`/?tour=1`) |
+| **The money** | Treasury (`/treasury`) · Accounts (`/bank`) · Cards (`/cards`) |
+| **The checks** | Auditor (`/auditor`) · the books against PayPal (`/bank#statement`) · a payment's receipt and proof graph, from its envelope |
+| **Build** | Developers (`/developers`) · Protocol (`/spec`) |
+
+Cards have a page of their own: every card agents have issued, and, when there is none yet, the three steps that get one. [`scripts/mobile-check.mjs`](scripts/mobile-check.mjs) walks every page at phone width, issues a card, and fails if any page scrolls sideways or the menu misses a page.
+
 ## What is proven where
 
 Every row below is taken from the two longer tables further down ("What PayPal does here" and "What has actually run"), which give the ids.
@@ -393,6 +406,7 @@ Or call the gateway directly: `POST /api/gateway/spend` with `{ signed, note }` 
 - **The auditor's model-driven path has run with a real model twice, and that is all.** The fixed procedure ran on the sandbox. Claude Haiku, through the local Claude Code bridge, ran the audit once on the sandbox and once on the Auditor page against the simulator. Tests drive the model path with a stand-in model that makes chosen tool calls. The same model was also run once against a payment whose memo gives the auditor orders ([`auditor-memo.json`](docs/evidence/auditor-memo.json)): it ignored the memo, proposed only answering the dispute, and reported the memo to the person reading. The hosted copy's own model has not been watched running the audit. On the hosted copy "Let a model audit" appears only when a model is connected. Finding and answering a dispute through the auditor ran on the simulator only, because the sandbox holds no dispute against this account.
 - **The auditor is open on the simulator and keyed on real PayPal.** Its reads show the whole PayPal account, including lines that are not the gateway's. On the simulator anyone can run it, like the rest of the demo. Against real PayPal it needs the operator's key, and one shared key is all there is: no per-person sign-in.
 - **PayPal's Cryptocurrency On/Off Ramp is not used.** It was switched on for the sandbox app, and `GET /v1/crypto/configurations` answered there (read only; nothing was created). PayPal documents it as a limited-release partner service in which a person buys crypto into their own wallet, or sells from it, on PayPal's own pages in a browser. It does not fit an agent paying from a hold. Details: [`docs/FINANCIAL_FRONTIER_ROADMAP.md`](docs/FINANCIAL_FRONTIER_ROADMAP.md).
+- **Dependency advisories are open.** `npm audit --omit=dev` reports 14 (2 moderate, 12 high): `next` 15 with its nested `postcss`, and twelve that came in with PayPal's Agent Toolkit. The fixes on offer are a major version of Next and a downgrade of the toolkit, so nothing was changed. See [`docs/EXTERNAL_REVIEW.md`](docs/EXTERNAL_REVIEW.md), which also says what an outside review found and which of its findings applied to this code.
 - **No sponsor tool is used.** Not AG Grid, APIMatic's context plugin, Bryntum, Channel3 or Render.
 - **Prior art and rivals.** Attenuating capability chains are not new (macaroons, Biscuit, UCAN, L402, ERC-7710, AP2, 2026 IETF drafts), and agent identity is a crowded field. We read the code of 36 other entries to this hackathon, and on 12 November looked again at the strongest we could find on GitHub (Devpost's gallery is not published): several ship signed delegation chains, agent passports, signed receipts or hold-and-capture budgets, and some are more complete products than this one, with wider PayPal use and far more tests. An earlier version of this file said no other entry put one PayPal hold behind a whole tree of agents. That no longer holds as written: an entry called Writ describes an orchestrator handing out narrower sub-mandates, checked at every level, where "the whole tree shares one hold", with an Ed25519-signed passport. We read its README, its pages and its passport route, and not its enforcement engine. What we still did not find in the entries we read: a payee's proof of funds that carries PayPal's live word and its honor period; budgets debited at every ancestor under one lock; agents that earn, hold a balance and issue a card only one merchant can charge; books reconciled against PayPal's own statement and fees; and a gateway that runs in the browser. "Not found in what we read" is all that claims. See [`docs/COMPETITIVE_INTELLIGENCE.md`](docs/COMPETITIVE_INTELLIGENCE.md) and [`docs/DISCOVERY.md`](docs/DISCOVERY.md). Where this could go after the hackathon is in [`docs/FINANCIAL_FRONTIER_ROADMAP.md`](docs/FINANCIAL_FRONTIER_ROADMAP.md), kept separate from what exists.
 

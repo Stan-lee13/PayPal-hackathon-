@@ -347,6 +347,11 @@ export async function cardById(id: string) {
   const c = await getDb().query.cards.findFirst({ where: eq(cards.id, id) });
   return c ? describeCard(c) : null;
 }
+/** Every card on the gateway, newest first, without the charge attempts. Nothing in a card is secret. */
+export async function allCards(limit = 60) {
+  const rows = await getDb().select().from(cards).orderBy(desc(cards.createdAt)).limit(limit);
+  return (await Promise.all(rows.map(describeCard))).map(({ attempts, signed: _signed, ...c }) => ({ ...c, attempts: attempts.length }));
+}
 /** The cards an agent has issued, newest first. */
 export async function cardsOf(agent: string) {
   const rows = await getDb().select().from(cards).where(eq(cards.holder, agent)).orderBy(desc(cards.createdAt)).limit(8);

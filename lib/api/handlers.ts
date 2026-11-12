@@ -251,6 +251,12 @@ export const handlers: Record<string, Handler> = {
     const c = await B.cancelCard(signed as never);
     return { body: await B.cardById(c.id) };
   },
+  /** Every card agents have issued here, and the accounts that could issue one. */
+  "GET /api/cards": async () => {
+    const [cards, books] = await Promise.all([B.allCards(), B.position()]);
+    const accounts = await Promise.all(books.accounts.map(async (a) => ({ agent: a.agent, label: a.label, owner: a.owner, balanceMinor: a.balanceMinor, keepsIncome: a.mode === "hold", /** A built-in demo agent: its page has buttons that issue and charge a card. A real agent signs with its own key. */ demo: await isBankDemoAgent(a.agent) })));
+    return { body: { mode: paypalMode(), cards, accounts } };
+  },
   /** A card's signed terms, what has been used, and every attempt to charge it. Nothing in it is secret. */
   "GET /api/cards/:id": async ({ params }) => {
     const c = await B.cardById(params.id!);

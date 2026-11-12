@@ -210,3 +210,8 @@ html[data-tour] body { padding-bottom: 5.5rem; }
 [data-tour-on] { outline: 2.5px solid var(--blue); outline-offset: 5px; border-radius: 3px; animation: tour-ring 1.6s ease-in-out infinite; }
 @keyframes tour-ring { 0%, 100% { outline-offset: 5px; outline-color: var(--blue); } 50% { outline-offset: 8px; outline-color: color-mix(in srgb, var(--blue) 45%, transparent); } }
 @media (prefers-reduced-motion: reduce) { .tour { animation: fade 160ms ease both; } [data-tour-on] { animation: none; } .tour-btn:active { transform: none; } }
+
+/* The site menu: every page, in one sheet under the header. */
+.site-menu { position: absolute; left: 0; right: 0; top: 100%; z-index: 30; background: var(--sheet); border-top: 1.5px solid var(--ink); border-bottom: 1.5px solid var(--ink); box-shadow: 0 24px 40px -28px rgb(23 20 15 / .55); animation: rise 200ms var(--ease-out) both; }
+.site-menu a[aria-current="page"] .title { color: var(--blue); }
+@media (prefers-reduced-motion: reduce) { .site-menu { animation: fade 120ms ease both; } }
