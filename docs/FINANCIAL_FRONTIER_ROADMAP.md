@@ -58,7 +58,7 @@ What is missing: key storage that is not demo-grade (hardware-backed owner keys,
 
 ### Layer 3: Treasury
 
-What exists: one owner's view across the envelopes sealed with their key, with reconciliation against PayPal and a ledger export. Beside it, for the operator, an auditor: an agent that reads PayPal through PayPal's own Agent Toolkit (five read tools, no credential) and the gateway's books, and proposes actions that a person or the gateway's own rules must carry out (`lib/gateway/auditor.ts`). The fixed procedure ran on the sandbox; the model-driven audit has run only with a stand-in model in tests.
+What exists: one owner's view across the envelopes sealed with their key, with reconciliation against PayPal and a ledger export. Beside it, for the operator, an auditor: an agent that reads PayPal through PayPal's own Agent Toolkit (five read tools, no credential) and the gateway's books, and proposes actions that a person or the gateway's own rules must carry out (`lib/gateway/auditor.ts`). The fixed procedure ran on the sandbox; a real model has run the audit twice, on the sandbox and on the Auditor page against the simulator.
 
 What it could become, as the first product a business would pay for:
 

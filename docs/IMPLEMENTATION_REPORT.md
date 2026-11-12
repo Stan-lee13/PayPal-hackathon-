@@ -272,7 +272,7 @@ Three things. Why PayPal's Agent Toolkit had been ruled out, when agents are mea
 | Proposals | Stand or fall on the records; unknown kinds refused | Five recall proposals for unclaimed payouts stand; each takes the envelope's owner. None was carried out |
 | A dispute the gateway has not heard of | Found through the toolkit, proposed, answered by the sweep, gone from a second audit (tests, and the browser test on the in-browser copy) | No: the sandbox holds no dispute against this account |
 | A memo that gives the auditor orders | A model that obeys it gets two refusals and one proposal naming the owner; nothing changes | Not run |
-| A real language model running the audit | No. Tests use a stand-in model that makes chosen tool calls | No. No model key was available |
+| A real language model running the audit | Yes, once: Claude Haiku through the local Claude Code bridge ran "Let a model audit" on the page, found a staged dispute through the toolkit, traced it to its payment and proposed answering it | Yes, once: the same model from a terminal (`evidence/auditor-model.json`) |
 | The tour | `scripts/tour-check.mjs` on the in-browser copy | Not applicable |
 
 ### Numbers
@@ -290,7 +290,7 @@ Three things. Why PayPal's Agent Toolkit had been ruled out, when agents are mea
 
 ### Not done
 
-- The model-driven audit has not been run with a real language model.
+- The model-driven audit has run with a real model only twice. The hosted copy's own model has not been watched running it.
 - On a server gateway that has `CRON_SECRET` set, the auditor page's "Run the gateway's sweep now" button cannot run the sweep: the gateway answers 401 and the page says the scheduler will answer the dispute on its next run.
 - The auditor has one shared operator key against real PayPal, and no per-person sign-in.
 - The video predates this round too.

@@ -174,4 +174,4 @@ The toolkit is PayPal's own package (`@paypal/agent-toolkit` 1.11.0). It builds 
 - **What the auditor is told.** Each answer is reduced by code to ids, statuses and amounts. Free text another party wrote (a memo) is passed as a quotation with control characters removed.
 - **Who may ask.** On the simulator, anyone. Against real PayPal the reads show the operator's whole account, so they need `AUDITOR_SECRET` as a bearer token, and with none configured the auditor answers 503.
 
-Proven on the sandbox by the fixed procedure (`evidence/auditor.json`). Finding and answering a dispute is proven on the simulator only. The model-driven path has run only with a stand-in model in tests.
+Proven on the sandbox by the fixed procedure (`evidence/auditor.json`). Finding and answering a dispute is proven on the simulator only. The model-driven audit has run twice with a real model (Claude Haiku through the local Claude Code bridge): once on the sandbox from a terminal (`evidence/auditor-model.json`) and once on the Auditor page against the simulator.
