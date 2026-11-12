@@ -191,6 +191,28 @@ try {
   if (OUT) await p2.screenshot({ path: `${OUT}/local-5-console.png`, fullPage: true }).catch(() => {});
   console.log("second tab: console lists the envelope and the receiving agent");
   // The second tab stays open (and keeps polling) for the rest of the run: two tabs share one in-browser database.
+  // A hold the payer approves in PayPal's checkout. On the simulator the checkout is a page of this app; on the sandbox it needs a person at PayPal.
+  if ((await (await fetch(`${BASE}/api/health`)).json().catch(() => ({}))).paypalMode === "simulated") {
+    await page.goto(`${BASE}/console`);
+    await page.getByText(/is translator-agent, an agent owned by Bea/).waitFor(T);
+    await page.getByTestId("approve-at-paypal").click();
+    await page.getByTestId("sim-checkout").getByText(/Approve a hold of/).waitFor(T);
+    await page.getByTestId("sim-checkout").getByText("$200.00").waitFor(T);
+    // cancelling at PayPal seals nothing
+    await page.getByRole("link", { name: "Cancel and go back" }).click();
+    await page.getByText("You cancelled at PayPal. Nothing was held and nothing was sealed.").waitFor(T);
+    await page.getByText(/is translator-agent, an agent owned by Bea/).waitFor(T);
+    await page.getByTestId("approve-at-paypal").click();
+    await page.getByTestId("sim-checkout").getByRole("button", { name: "Approve the hold" }).click();
+    await page.getByText("PayPal hold backing this envelope").waitFor(T);
+    const rail = page.getByTestId("paypal-rail");
+    await rail.getByRole("button", { name: /Show all/ }).click().catch(() => {});
+    await rail.getByText("Asked the payer to approve the hold in PayPal").first().waitFor(T);
+    await rail.getByText("Placed the hold").waitFor(T);
+    await page.getByRole("button", { name: /Run the launch/ }).click();
+    await page.getByText(/creative-agent asked to pay/).waitFor(T);
+    console.log("payer approval: a cancelled checkout sealed nothing; an approved one placed the hold, and the agents spent from it");
+  }
   // What PayPal did, and a recall. The recall runs on the simulator only: PayPal's sandbox does not complete a cancel (see the README).
   const health = await (await fetch(`${BASE}/api/health`)).json().catch(() => ({}));
   if (health.paypalMode === "simulated") {

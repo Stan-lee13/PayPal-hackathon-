@@ -2,6 +2,9 @@
  * The PayPal calls behind an envelope.
  *
  *   Seal    POST /v2/checkout/orders (intent AUTHORIZE)       a hold for the envelope's whole limit
+ *           … with payment_source.paypal                       the payer approves it in PayPal's own checkout first
+ *           GET  /v2/checkout/orders/{id}                      has the payer approved? for this envelope, this amount?
+ *           POST /v2/checkout/orders/{id}/authorize            place the hold the payer approved
  *   Spend   POST /v2/payments/authorizations/{id}/capture     partial capture: exactly what the agent spent
  *           POST /v1/payments/payouts                          pay the payee
  *   Close   POST /v2/payments/authorizations/{id}/void         release whatever was never spent
@@ -72,6 +75,46 @@ export async function authorizeHold(pp: PayPalClient, a: { rootId: string; title
     }
   }
   throw refused ?? new Error("No sandbox test card is configured.");
+}
+
+export type ApprovalRequest = { orderId: string; status: string; approveUrl: string };
+/**
+ * Ask the payer to approve the hold in PayPal's own checkout. PayPal answers with an order that needs
+ * the payer's action and a link to send them to. Nothing is held until they approve and the order is
+ * authorized (authorizeApprovedOrder). The order carries the envelope's id, so it can back no other.
+ */
+export async function requestHoldApproval(pp: PayPalClient, a: { rootId: string; title: string; currency: string; amountMinor: number; returnUrl: string; cancelUrl: string }): Promise<ApprovalRequest> {
+  const r = await pp.request<{ id: string; status: string; links?: Array<{ rel: string; href: string }> }>("POST", "/v2/checkout/orders", {
+    requestId: `approve-${a.rootId}`,
+    body: {
+      intent: "AUTHORIZE",
+      purchase_units: [{ reference_id: a.rootId, custom_id: a.rootId, description: `Envelope: ${a.title}`.slice(0, 127), amount: { currency_code: a.currency, value: toDecimalString(a.amountMinor, a.currency) } }],
+      payment_source: { paypal: { experience_context: { brand_name: "Envelope", shipping_preference: "NO_SHIPPING", user_action: "PAY_NOW", return_url: a.returnUrl, cancel_url: a.cancelUrl } } },
+    },
+  });
+  const approveUrl = r.links?.find((l) => l.rel === "payer-action" || l.rel === "approve")?.href;
+  if (!approveUrl) throw new Error(`PayPal gave no approval link (order ${r.id}, status ${r.status}).`);
+  return { orderId: r.id, status: r.status, approveUrl };
+}
+
+export type OrderFacts = { id: string; status: string; intent: string | null; customId: string | null; amountMinor: number | null; currency: string | null; payerId: string | null; payerEmail: string | null };
+/** The order as PayPal has it now: whether the payer has approved, and what it was made for. */
+export async function getOrder(pp: PayPalClient, id: string): Promise<OrderFacts> {
+  const r = await pp.request<{ id: string; status: string; intent?: string; purchase_units?: Array<{ custom_id?: string; amount?: Money }>; payer?: { payer_id?: string; email_address?: string }; payment_source?: { paypal?: { account_id?: string; email_address?: string } } }>("GET", `/v2/checkout/orders/${encodeURIComponent(id)}`);
+  const pu = r.purchase_units?.[0];
+  return {
+    id: r.id, status: r.status, intent: r.intent ?? null, customId: pu?.custom_id ?? null,
+    amountMinor: pu?.amount ? toMinor(pu.amount.value, pu.amount.currency_code) : null, currency: pu?.amount?.currency_code ?? null,
+    payerId: r.payer?.payer_id ?? r.payment_source?.paypal?.account_id ?? null, payerEmail: r.payer?.email_address ?? r.payment_source?.paypal?.email_address ?? null,
+  };
+}
+
+/** Place the hold on an order the payer has approved. Idempotent on the envelope's id, like the test-card path. */
+export async function authorizeApprovedOrder(pp: PayPalClient, orderId: string, rootId: string): Promise<AuthorizationFacts> {
+  const r = await pp.request<{ id: string; status: string; purchase_units?: Array<{ payments?: { authorizations?: RawAuth[] } }> }>("POST", `/v2/checkout/orders/${encodeURIComponent(orderId)}/authorize`, { requestId: `seal-${rootId}`, prefer: "return=representation", body: {} });
+  const auth = r.purchase_units?.[0]?.payments?.authorizations?.[0];
+  if (!auth) throw new Error(`PayPal returned no authorization (order ${r.id}, status ${r.status}).`);
+  return { ...authFacts(auth), orderId: r.id, customId: auth.custom_id ?? rootId };
 }
 
 export async function getAuthorization(pp: PayPalClient, id: string): Promise<AuthorizationFacts> {

@@ -98,6 +98,8 @@ export type Reference = {
   paypalMode: string; gateway: string; sig: string;
 };
 
+/** Where to send the payer to approve a hold in PayPal's own checkout, and the PayPal order that will carry it. */
+export type ApprovalLink = { orderId: string; approveUrl: string; amountMinor: number; currency: string };
 export type RootState = {
   id: string; principal: string; principalName: string; title: string; currency: string;
   limitMinor: number; status: "ACTIVE" | "CLOSED";

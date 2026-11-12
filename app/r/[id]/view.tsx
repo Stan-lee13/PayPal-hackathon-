@@ -62,6 +62,7 @@ export function ReceiptView({ id }: { id: string }) {
       <div>
         <Link className="link text-sm" href={`/e/${d.chain[0]!.body.id}`}>← Envelope</Link>
         <Link className="link ml-5 text-sm" href={`/proof/${d.chain[0]!.body.id}/${id}`}>This payment in the proof graph →</Link>
+        <Link className="link ml-5 text-sm" href="/bank">The books it is part of →</Link>
         <article className="receipt relative mt-4 px-6 pt-7 text-[.8rem] leading-relaxed sm:px-8" aria-label="Receipt">
           <p className="text-center text-[.68rem] tracking-[.34em]">ENVELOPE · RECEIPT</p>
           <h1 className="mt-5 text-center font-sans"><span className="sr-only">Receipt: </span><Figure minor={r.request.amount} className="text-[3.4rem]" /></h1>
