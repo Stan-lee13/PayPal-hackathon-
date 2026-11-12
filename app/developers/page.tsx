@@ -175,7 +175,7 @@ export default function Developers() {
             <Link className="btn btn-ink" href="/console">Seal an envelope and try it →</Link>
             <Link className="btn" href="/spec">Read the protocol</Link>
           </div>
-          <p className="mt-6 max-w-3xl text-sm text-ink-3">Sandbox only. The SDK has 18 tests against the gateway on the PayPal simulator, and its example program has run against the real PayPal sandbox (docs/evidence/sdk-run.md). The MCP server and command line have 13 tests that speak the real MCP protocol over stdio on the simulator; an earlier version of the MCP server was driven by a language model on the sandbox.</p>
+          <p className="mt-6 max-w-3xl text-sm text-ink-3">Sandbox only. The SDK has 19 tests against the gateway on the PayPal simulator, and its example program has run against the real PayPal sandbox (docs/evidence/sdk-run.md). The MCP server and command line have 13 tests that speak the real MCP protocol over stdio on the simulator; an earlier version of the MCP server was driven by a language model on the sandbox.</p>
         </section>
       </main>
     </>
