@@ -101,6 +101,8 @@ In the last recorded sandbox run the record shows 53 calls to PayPal behind the 
 
 ![What PayPal did for one envelope, on the real sandbox](docs/screenshots/13-paypal-rail.png)
 
+![The Accounts page on the real sandbox: the books, PayPal's reported balance, and PayPal's own statement with its fees](docs/screenshots/14-books-against-paypal.png)
+
 ## The mechanism
 
 | Verb | Who | What happens | PayPal |
