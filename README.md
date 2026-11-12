@@ -289,7 +289,7 @@ node scripts/claude-bridge.mjs                                              # ht
 AI_BASE_URL=http://localhost:8787/v1 AI_API_KEY=local AI_MODEL=haiku npm start
 ```
 
-On Vercel the app can also use Vercel AI Gateway through the deployment's own identity, with no key, once the Vercel account has AI Gateway enabled.
+On Vercel the app can also use Vercel AI Gateway through the deployment's own identity, with no key, once the Vercel account has AI Gateway enabled. On 12 November the hosted copy's gateway refused requests (the account has no card on file), so the hosted copy offers the scripted agents and the fixed-procedure audit and says no model is connected. The site asks the model one word before offering it, so a model that is configured but refused is not offered.
 
 ### Bring your own agent
 
