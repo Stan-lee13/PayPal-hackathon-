@@ -70,7 +70,7 @@ export function AuditorView() {
     setBusy("sweep");
     const r = await api("/api/sweep", { body: {} });
     const sent = r.ok ? ((r.json?.disputes?.aboutPaymentsHere ?? []) as Array<{ dispute: string; evidenceSent: boolean; status: string }>).filter((d) => d.evidenceSent) : [];
-    setNote(!r.ok ? { text: r.json?.error ?? "The sweep did not run.", tone: "bad" } : sent.length ? { text: `The gateway swept: it sent the signed evidence for ${sent.map((d) => d.dispute).join(", ")}; PayPal's status is now ${sent[0]!.status}. Run the audit again to see it confirmed.`, tone: "good" } : { text: "The gateway swept. No dispute was waiting for its answer.", tone: "info" });
+    setNote(r.status === 401 ? { text: "On this gateway the sweep belongs to its scheduler and needs the scheduler's key, so this page cannot run it. The scheduler's next sweep sends the evidence.", tone: "info" } : !r.ok ? { text: r.json?.error ?? "The sweep did not run.", tone: "bad" } : sent.length ? { text: `The gateway swept: it sent the signed evidence for ${sent.map((d) => d.dispute).join(", ")}; PayPal's status is now ${sent[0]!.status}. Run the audit again to see it confirmed.`, tone: "good" } : { text: "The gateway swept. No dispute was waiting for its answer.", tone: "info" });
     setBusy(null);
   }
   async function tryWrite(tool: string) {

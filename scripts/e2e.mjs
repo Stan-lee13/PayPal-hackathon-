@@ -261,12 +261,16 @@ try {
     await page.getByTestId("auditor-steps").getByText("PayPal Agent Toolkit").first().waitFor(T);
     if (OUT) await page.screenshot({ path: `${OUT}/local-9-auditor.png`, fullPage: true }).catch(() => {});
     await proposal.getByTestId("auditor-sweep").click();
-    await page.getByTestId("auditor-note").getByText(/sent the signed evidence/).waitFor(T);
-    await page.getByTestId("auditor-run").click();
-    await page.getByTestId("auditor-steps").getByText("list_disputes").waitFor(T);
-    await page.getByTestId("auditor-report").waitFor(T);
-    if (await page.getByTestId("auditor-proposal").filter({ hasText: "Answer the dispute" }).count()) throw new Error("the dispute was answered, yet the auditor still proposes answering it");
-    console.log("auditor: read PayPal through PayPal's Agent Toolkit, was refused a refund tool, found a dispute the gateway had not heard of, proposed; the gateway's sweep answered it; a second audit no longer proposes it");
+    await page.getByTestId("auditor-note").getByText(/sent the signed evidence|belongs to its scheduler/).waitFor(T);
+    // A gateway with CRON_SECRET keeps the sweep for its scheduler; the page then says so and the dispute waits for the next scheduled sweep.
+    const swept = (await page.getByTestId("auditor-note").getByText(/sent the signed evidence/).count()) > 0;
+    if (swept) {
+      await page.getByTestId("auditor-run").click();
+      await page.getByTestId("auditor-steps").getByText("list_disputes").waitFor(T);
+      await page.getByTestId("auditor-report").waitFor(T);
+      if (await page.getByTestId("auditor-proposal").filter({ hasText: "Answer the dispute" }).count()) throw new Error("the dispute was answered, yet the auditor still proposes answering it");
+    }
+    console.log(`auditor: read PayPal through PayPal's Agent Toolkit, was refused a refund tool, found a dispute the gateway had not heard of, proposed; ${swept ? "the gateway's sweep answered it; a second audit no longer proposes it" : "this gateway keeps the sweep for its scheduler (CRON_SECRET), and the page said so"}`);
   }
 } catch (e) {
   failed = true;
