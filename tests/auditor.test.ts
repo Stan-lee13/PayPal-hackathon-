@@ -6,7 +6,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { useTestEnv } from "./helpers";
 import * as E from "../lib/envelope/core";
-import { liveAudit, scriptedAudit, type AuditStep } from "../lib/ai/auditor";
+import { auditorModelTools, liveAudit, scriptedAudit, type AuditStep } from "../lib/ai/auditor";
 
 const enabled = useTestEnv();
 const d = enabled ? describe : describe.skip;
@@ -73,6 +73,13 @@ d("the auditor (simulated PayPal, real PayPal Agent Toolkit)", async () => {
     // name, description and parameters come out of PayPal's package, not out of this repository
     expect(paypal.find((t) => t.name === "list_transactions")).toMatchObject({ title: "List Transactions", description: expect.stringContaining("List transactions from PayPal"), parameters: { type: "object", properties: { start_date: expect.anything(), page_size: expect.anything() } } });
     expect(tools.filter((t) => t.source === "envelope").map((t) => t.name)).toEqual(["envelope_books", "envelope_statement", "envelope_unsettled", "envelope_payment"]);
+    // what a model is handed: PayPal's descriptions, with parameters in the plain subset of JSON Schema every provider accepts
+    const forModel = auditorModelTools(tools);
+    expect(forModel.map((t) => t.function.name)).toEqual([...tools.map((t) => t.name), "propose"]);
+    expect(JSON.stringify(forModel)).not.toMatch(/"anyOf"|"not"|"default"|"\$schema"/);
+    const lt = forModel.find((t) => t.function.name === "list_transactions")!.function;
+    expect(lt.description).toMatch(/^\[PayPal Agent Toolkit\] List transactions from PayPal/);
+    expect(lt.parameters).toMatchObject({ type: "object", additionalProperties: false, properties: { transaction_id: { type: "string", description: "The ID of the transaction to retrieve." }, transaction_status: { type: "string", enum: ["D", "P", "S", "V"] }, page_size: { type: "number", minimum: 1, maximum: 500 } } });
     // nothing in the list can change anything: every PayPal tool on it is sent as a GET (asserted below), and the gateway's are reads
     expect(tools.some((t) => /creat|pay_|refund$|cancel|delete|update|send|accept|activate|record/.test(t.name) && t.name !== "get_refund" && t.name !== "envelope_payment")).toBe(false);
   });

@@ -47,9 +47,26 @@ export const PROPOSE: ToolDef = {
   },
 };
 
+/**
+ * A tool's parameters as PayPal's package describes them, in the plain subset of JSON Schema every model
+ * provider accepts: no anyOf, not or default. An optional-or-null field becomes its plain type. Nothing is
+ * lost for the gateway: the toolkit's own schema still checks the arguments when the tool is run.
+ */
+export function plainSchema(x: unknown): Record<string, unknown> {
+  const o = (x && typeof x === "object" ? x : {}) as Record<string, unknown>;
+  const alt = Array.isArray(o.anyOf) ? (o.anyOf as Array<Record<string, unknown>>).map(plainSchema).find((b) => typeof b.type === "string" && b.type !== "null") : undefined;
+  const base = alt ? { ...alt, ...(typeof o.description === "string" ? { description: o.description } : {}) } : o;
+  const out: Record<string, unknown> = {};
+  for (const k of ["type", "description", "enum", "pattern", "minimum", "maximum", "required"]) if (base[k] !== undefined) out[k] = base[k];
+  if (base.properties && typeof base.properties === "object") { out.properties = Object.fromEntries(Object.entries(base.properties as Record<string, unknown>).map(([k, v]) => [k, plainSchema(v)])); out.additionalProperties = false; }
+  if (base.items) out.items = plainSchema(base.items);
+  if (out.type === undefined) out.type = out.properties ? "object" : "string";
+  return out;
+}
+
 /** The tool list a model is given: PayPal's toolkit tools and the gateway's, by their own names and descriptions, and `propose`. */
 export function auditorModelTools(tools: AuditTool[]): ToolDef[] {
-  return [...tools.map((t): ToolDef => ({ type: "function", function: { name: t.name, description: `${t.source === "paypal-agent-toolkit" ? "[PayPal Agent Toolkit] " : "[Envelope gateway] "}${t.description}`.slice(0, 900), parameters: t.parameters } })), PROPOSE];
+  return [...tools.map((t): ToolDef => ({ type: "function", function: { name: t.name, description: `${t.source === "paypal-agent-toolkit" ? "[PayPal Agent Toolkit] " : "[Envelope gateway] "}${t.description}`.slice(0, 900), parameters: plainSchema(t.parameters) } })), PROPOSE];
 }
 
 export function auditorOpening(): ChatMessage[] {

@@ -50,11 +50,16 @@ export function AuditorView() {
     setRunning(by); setSteps([]); setNote(null); stop.current = false;
     try {
       if (by === "procedure") await scriptedAudit(io);
-      else await liveAudit({ ...io, turn: async (turns) => {
-        const r = await fetch("/api/ai/audit", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ messages: turns }) });
-        const j = await r.json().catch(() => ({ error: "The model did not answer." }));
-        return r.ok ? { ok: true as const, message: j.message } : { ok: false as const, error: j.error ?? "The model did not answer." };
-      } });
+      else {
+        let reads = 0, failure: string | null = null;
+        await liveAudit({ ...io, step: (s) => { if (s.kind === "read") reads++; if (s.kind === "error" && reads === 0) { failure = s.text; return; } io.step(s); }, turn: async (turns) => {
+          const r = await fetch("/api/ai/audit", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ messages: turns }) });
+          const j = await r.json().catch(() => ({ error: "The model did not answer." }));
+          return r.ok ? { ok: true as const, message: j.message } : { ok: false as const, error: j.error ?? "The model did not answer." };
+        } });
+        // The model could not be reached before it read anything: the audit still happens, by the fixed procedure, and the page says which ran.
+        if (failure) { setNote({ text: `The model could not take the audit (${failure}). It ran by the fixed procedure instead, over the same tools.`, tone: "info" }); setRunning("procedure"); await scriptedAudit(io); }
+      }
     } catch (e) { io.step({ kind: "error", text: e instanceof Error ? e.message : "The audit stopped." }); }
     setRunning(false);
   }
