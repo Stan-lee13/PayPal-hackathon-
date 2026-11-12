@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/client/api";
 import { Stamp, usd } from "./stationery";
@@ -65,6 +66,7 @@ export function PayPalRail({ id, tick }: { id: string; tick?: unknown }) {
         <p className="text-xs text-ink-2">{s.refused > 0 ? `${s.refused} call${s.refused === 1 ? "" : "s"} PayPal refused or could not serve; none of them moved money.` : "PayPal refused none of these calls."}{s.repeats > 0 ? ` ${s.repeats} ${s.repeats === 1 ? "was a retry" : "were retries"} of a request already made: each carries the same idempotency key, so PayPal did nothing twice.` : ""}{r.events.length > 0 ? ` ${r.events.length} event${r.events.length === 1 ? "" : "s"} from PayPal applied.` : ""}</p>
         {s.asked > 0 && <button type="button" className="btn btn-quiet btn-sm !text-[.78rem]" onClick={() => setAll((v) => !v)} aria-expanded={all}>{all ? "Hide the reads" : `Show all ${r.calls.length} calls`}</button>}
       </div>
+      <p className="mt-3 text-xs text-ink-2">These are the calls. Whether they add up is checked separately: <Link className="link" href="/bank">the books against PayPal&rsquo;s reported balance and its own statement →</Link></p>
     </section>
   );
 }

@@ -78,6 +78,7 @@ Amounts are dollars as a string (`"45.00"`, `"45"`, `"45.5"`) or minor units sta
 | `proof(rootId, spendId?)` | The proof graph of an envelope, or of one payment |
 | `card(id)`, `transfer(id)` | A card, a transfer out of a balance |
 | `books()` | Every balance, whether the books add up, and `reserves`: what agents are owed against the balance PayPal reports for the gateway's account (`covered` is `null` when PayPal could not be asked) |
+| `requestApproval(chain, { title?, returnUrl, cancelUrl? })`, `seal(chain, { approvedOrder })` | The two halves of a seal the payer approves at PayPal, for a root block you signed yourself |
 | `statement()` | The gateway's captures, payouts and refunds looked up in PayPal's own statement of its account: each `listed`, `amount differs` or `not listed yet` (PayPal's statement can lag by hours), with PayPal's fee on each line and a `position`: what came in, went out and was refunded, the fees, and what that leaves at PayPal |
 | `status(spendId)` | Where a payment stands now, in any state |
 | `evidence(spendId)` | What the gateway would send PayPal if the payer disputed this payment: the signed chain, in words and in full |
@@ -120,7 +121,7 @@ The signed submissions (`spend`, `promise`, `keep`, `accept`, `revoke`, `seal`, 
 | `charge({ card, amount, memo? })` | As the merchant a card is locked to: take a charge |
 | `receipt(spendId)` | The receipt, PayPal's word on it, and `verify()` to re-check every signature locally |
 | `status(spendId)` | Where a payment stands now, in any state: refused, set aside, in flight, unclaimed, paid, refunded |
-| `checkIntroduction(token)` / `checkPromiseNote(token)` | As a payee: check what another agent handed you |
+| `checkIntroduction(token)` / `checkPromiseNote(token)` | As a payee: check what another agent handed you. The statement of standing that comes back includes PayPal's word on the hold and two dates: `paypal.honoredUntil`, the end of PayPal's three-day honor period, and `paypal.authorizedUntil`, when the authorization itself ends |
 | `exportKey()` | The private key as a JWK, for saving on this machine |
 
 ### `Owner`
@@ -129,6 +130,8 @@ The signed submissions (`spend`, `promise`, `keep`, `accept`, `revoke`, `seal`, 
 |---|---|
 | `Owner.generate`, `Owner.fromJSON`, `export()` | As for `Agent` |
 | `seal({ to, limit, perPayment?, payees?, purposes?, hours?, splits?, approveOver?, title? })` | Sign an envelope and have PayPal hold the money. Returns the chain and PayPal's authorization id. |
+| `requestApproval({ …the same terms, returnUrl, cancelUrl? })` | Sign the envelope and ask PayPal for a link where the payer approves the hold in PayPal's own checkout. Returns `{ chain, orderId, approveUrl, title }`. Nothing is held or recorded: send the payer to `approveUrl` |
+| `sealApproved({ chain, orderId, title? })` | Finish that seal once the payer is back. The gateway reads the order from PayPal and refuses unless it was made for this envelope, for this amount, and is approved; then PayPal places the hold. Refused with nothing held if the payer has not approved |
 | `close(rootId)` | Close an envelope. PayPal voids what was not spent. |
 | `freeze(agent, frozen?)` | Freeze or reopen an agent's account |
 | `treasury()`, `reconcile()`, `envelopes()` | The owner's books, checked against PayPal. Each read is signed, so only the owner gets them. |
@@ -142,7 +145,7 @@ gateway URL, no key). `verifyReceipt`, `verifyStanding`, `verifyPromiseNote`, `v
 `toMinor`, `formatMinor`. `protocol` is the whole protocol core (every `sign…` and `verify…`).
 
 Types for what the gateway answers are exported too, among them `RefundOutcome`, `Reserves`,
-`StatementCheck`, `Evidence`, `PayPalTrail`, `PaymentStatus` and `Recalled`.
+`StatementCheck`, `Evidence`, `PayPalTrail`, `PaymentStatus`, `Recalled`, `ApprovalLink` and `SealTerms`.
 
 ## What a payment tells you
 
@@ -243,17 +246,39 @@ The MCP server offers 15 tools, each marked with MCP annotations:
 freeze: those belong to a person. A refusal by the gateway comes back with `isError: true` and the
 reason codes in the text. The transport is stdio; there is no HTTP transport.
 
+### A second role: the auditor
+
+```bash
+ENVELOPE_ROLE=auditor GATEWAY=http://localhost:3000 npm run mcp     # AUDITOR_KEY=… when the gateway talks to real PayPal
+```
+
+In this role the server holds no agent key and no envelope, and needs no `ENVELOPE_AGENT`. It
+offers ten tools, fetched from the gateway and run by it, all marked `readOnlyHint: true`:
+
+| Group | Tools |
+|---|---|
+| PayPal, through PayPal's Agent Toolkit inside the gateway | `list_transactions`, `list_disputes`, `get_dispute`, `get_order`, `get_refund` |
+| The gateway's books | `envelope_books`, `envelope_statement`, `envelope_unsettled`, `envelope_payment` |
+| Say | `propose` (`answer_dispute`, `recall_payout`, `close_envelope`, `freeze_account`) |
+
+The toolkit's writing tools and this server's spending tools are not there: asking for
+`create_refund` or `envelope_pay` is an unknown tool. `propose` answers whether the proposal stands
+on the gateway's records and whose signature it takes; it carries nothing out. The same tools over
+HTTP: `GET /api/auditor`, `POST /api/auditor/read`, `POST /api/auditor/check`. From a terminal,
+inside the gateway's process: `npm run auditor`. The SDK itself has no auditor class.
+
 ## Tests
 
 ```bash
 npx vitest run tests/sdk.test.ts tests/mcp.test.ts
 ```
 
-- `tests/sdk.test.ts` (18 tests): the SDK against the gateway's real handlers on the PayPal simulator.
-- `tests/mcp.test.ts` (13 tests): the MCP server as a separate process over stdio, speaking JSON-RPC
-  to a local HTTP gateway, and 34 command-line invocations with their output checked.
+- `tests/sdk.test.ts` (19 tests): the SDK against the gateway's real handlers on the PayPal simulator.
+- `tests/mcp.test.ts` (14 tests): the MCP server as a separate process over stdio, speaking JSON-RPC
+  to a local HTTP gateway, in the agent role and the auditor role, and 34 command-line invocations
+  with their output checked.
 
 These run on the simulator. The example program has also been run against the real PayPal sandbox:
-[`evidence/sdk-run.md`](evidence/sdk-run.md). That run predates `refund`, `statement` and `evidence`,
+[`evidence/sdk-run.md`](evidence/sdk-run.md). That run predates `refund`, `statement`, `evidence`, `requestApproval` and `sealApproved`,
 which have run through the SDK on the simulator only; the refund itself ran on the sandbox through
 the gateway's own code (`evidence/sandbox-run.json`).

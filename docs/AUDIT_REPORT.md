@@ -66,18 +66,23 @@ How real each part is. **Operational** means it ran on the real PayPal sandbox a
 | Record of every PayPal call, shown per envelope | Operational | `evidence/sandbox-run.json`, `evidence/sdk-run.md`; `tests/paypal-rail.test.ts` |
 | SDK (`sdk/`), with the MCP server and command line built on it | Operational for the SDK; the rebuilt MCP server is tested over real MCP on the simulator | `evidence/sdk-run.md`; `tests/sdk.test.ts`, `tests/mcp.test.ts` |
 | Sweep of unfinished payments | Operational (ran on the sandbox from the script, nothing to move). Scheduled daily in `vercel.json`; the schedule has not been seen to fire | `evidence/sandbox-run.json` |
-| PayPal events: verified, applied once | Simulated only; the sandbox rejected a forged event | `tests/paypal-rail.test.ts` |
+| PayPal events: verified, applied once | Operational. From PayPal's event feed: seven events about one run applied once each, one of which settled a payment. Pushed: two deliveries confirmed by PayPal's signature check and the same two edited refused; they reached the gateway by replay from the hosted copy's log, not directly | `evidence/paypal-events.json`; `tests/paypal-rail.test.ts` |
+| The owner approves the hold in PayPal's own checkout | Tested end to end on the simulator. On the sandbox PayPal made the order and returned its approval link, and sealing before approval was refused; a person's approval is pending <!-- APPROVAL-SANDBOX --> | `tests/approval.test.ts`, `tests/sdk.test.ts`, the browser test; `scripts/approval-check.ts` |
+| PayPal's honor period in proof of funds | Tested (arithmetic on the expiry PayPal reports; signed with the statement) | `tests/gateway.test.ts` |
+| A copy with no gateway logs PayPal's deliveries for replay | Operational on the hosted copy (the two deliveries above came from its log); tested | `lib/api/relay.ts`; `tests/paypal-rail.test.ts` |
 | Recall of an unclaimed payout | Simulated only; PayPal's sandbox would not cancel | `tests/paypal-rail.test.ts`; `evidence/sandbox-run.json` records the refusals |
 | Refund by the agent that was paid | Operational | `evidence/sandbox-run.json` (capture `1XG96277EH6264408`, refund `4C249901ET649933V`); `tests/books.test.ts`, `tests/sdk.test.ts` |
 | A refund keeps the envelope's budget used, as PayPal keeps the hold used | Operational | `scripts/paypal-refund-capacity.ts` on the sandbox; the main run refuses the refunded $6 a second time |
 | Reserves: what agents are owed against PayPal's reported balance | Operational for the reading; a shortfall has only been produced on the simulator | `evidence/sandbox-run.json`; `tests/books.test.ts` |
 | PayPal's statement (Transaction Search) against the records | Matched on the sandbox: all 28 listed with the same amount, none with a different one. PayPal's fees are read from the same lines ($24.69 on the listed records) <!-- STATEMENT-CHECK --> | `evidence/statement-check.json`; `tests/books.test.ts` |
 | Disputes: found, marked, answered with evidence | Asked on the sandbox (none held); the rest simulated only | `evidence/sandbox-run.json`; `tests/books.test.ts` |
+| The auditor: PayPal's Agent Toolkit cut down to five read tools, the gateway's books, and proposals checked by rule | Operational for the fixed procedure: on the sandbox all 28 listed records were found again through the toolkit with the same amounts, five recall proposals stand for the owner to sign, and a refund the toolkit was asked to make was stopped with nothing sent. A dispute found and answered, and a memo that gives the auditor orders: simulated only. The model-driven audit: run twice with a real model (Claude Haiku through the local Claude Code bridge), on the sandbox (`evidence/auditor-model.json`) and on the Auditor page against the simulator; tests use a stand-in model | `evidence/auditor.json`; `tests/auditor.test.ts` (11), `tests/mcp.test.ts`; `lib/paypal/toolkit.ts`, `lib/gateway/auditor.ts` |
+| Guided tour on the hosted copy | Tested in a browser on the in-browser copy | `scripts/tour-check.mjs`; `components/tour.tsx` |
 | Pending capture handling | Simulated only | the sandbox never returned a pending capture |
 | Refund-due handling | Simulated only | the sandbox never refused a refund |
 | Returned or failed payout handling | Simulated only | no sandbox payout failed |
 | Keys sealed at rest | Tested | `tests/settlement.test.ts` |
-| Hold reauthorization, payer-present funding, Vault, Invoicing, order tracking, partial refunds | Not built | — |
+| Hold reauthorization, Vault, Invoicing, order tracking, Login with PayPal, the Cryptocurrency On/Off Ramp, partial refunds | Not built. Reauthorization cannot be exercised on the sandbox before a hold's fourth day. The ramp is a partner service a person completes on PayPal's pages; only its configuration endpoint was read. PayPal's Agent Toolkit is used by the auditor, read-only, and is given to no spending agent | — |
 | Lending, interest, insurance, network cards | Not built, and not to be built without licensed partners | — |
 
 ## Findings
@@ -89,13 +94,14 @@ Severity is about what could go wrong with money or private data. Faults that we
 | Finding | Severity | State |
 |---|---|---|
 | The database and PayPal cannot commit together; correctness depends on a fixed order of steps, idempotency keys and guarded status changes | — | By design. Described in the architecture document. Every step is retryable; four concurrency and failure cases have tests |
-| Nothing advances unfinished payments on a timer | Medium | Mostly closed: the sweep is scheduled daily in `vercel.json` and a webhook receiver exists. The schedule has not been seen to fire, and no webhook is registered |
-| A hold that lapses at PayPal is not reauthorized | Medium | Open. An envelope can live at most 28 days for this reason |
+| Nothing advances unfinished payments on a timer | Medium | Mostly closed: PayPal's events finished payments on the sandbox, from its feed and pushed (by replay from the hosted copy's log); the sweep is scheduled daily in `vercel.json`. The schedule has not been seen to fire, and a delivery received directly by a deployed gateway has not been run |
+| A hold that lapses at PayPal is not reauthorized, and after three days it is past PayPal's honor period | Medium | Open. An envelope can live at most 28 days. Proof of funds now says when the honor period ends, so a payee can see a weaker hold for what it is; nothing renews it |
 | Captured funds rest in the gateway's PayPal account between capture and payout, and for as long as an agent keeps a balance | High for real money | Open. This is the main reason the system is sandbox-only |
 | A payout accepted by PayPal and held `UNCLAIMED` stays charged until PayPal returns it or the owner recalls it | Low | Open; shown as unclaimed, never as paid. Recall has not completed on the sandbox |
 | A payment into a balance cannot be reversed by the payer | Medium | Partly closed. The agent that was paid can refund it in full while it still holds the money (ran on the sandbox). The payer's own route is a dispute at PayPal, which the gateway finds and answers with evidence (simulator only) |
 | After a refund the books returned the budget, which PayPal does not | High | Fixed on 12 November: the amount stays used and is recorded as refunded. Found on the sandbox |
 | What agents are owed was checked only against the gateway's own arithmetic | Medium | Closed in part: reserves compare it with PayPal's reported balance at PayPal's dated moment. On the sandbox the account holds old test money, so the check cannot fail there |
+| The owner's consent to the hold was never given at PayPal: the hold went on a sandbox test card | Medium | Closed in part: the owner can approve the hold in PayPal's own checkout, and the gateway seals only on PayPal's word that the order made for this envelope is approved. Proven on the simulator; pending a person's approval on the sandbox <!-- APPROVAL-SANDBOX --> |
 
 ### Security and privacy
 
@@ -108,6 +114,9 @@ Severity is about what could go wrong with money or private data. Faults that we
 | No sign-in anywhere | — | By design: every action that matters carries a signature, and reads of an owner's books carry one too |
 | Rate limits per address, with request bodies capped at 128 KB | Low | In place; the address comes from a proxy header |
 | Security headers (frame, content type, referrer, permissions, HSTS) | — | In place |
+| The auditor's reads show the operator's whole PayPal account, including lines that are not the gateway's | Medium | Open on the simulator, like the rest of the demo. Against real PayPal the reads need one shared operator key (`AUDITOR_SECRET`) and the auditor is off without one. No per-person sign-in |
+| PayPal's Agent Toolkit ships tools that write (`create_order`, `pay_order`, `create_refund` and others) | — | Contained three ways: the toolkit is given no credential; a tool outside the five reads is refused by name before it is called; the gateway's client sends only `GET`s on five listed paths for it. Tested for all 42 other tools, and for three writes with the name check removed |
+| Text in a record (a memo, a purpose) could carry instructions to the auditor's model | Low | Bounded. Such text reaches the model as a quotation with control characters removed. A model that obeys it has only reads and `propose`; a proposal is judged on the records and names a signer who is not the auditor. Tested with a stand-in model that obeys the memo, and once with a real model (Claude Haiku, `evidence/auditor-memo.json`), which read the memo, ignored it and reported it. One run, not a guarantee |
 | No external review | High | Open |
 
 ### Product and interface
@@ -121,6 +130,8 @@ Found by using the app on a desktop and a phone-sized screen, as an owner, a pay
 | "Failed · refunded" was shown for payments that failed with nothing to refund | Fixed: "Failed · not paid", and a separate "Refund due" |
 | The console listed every envelope on the gateway to every visitor | Fixed: it lists yours |
 | A payout PayPal is holding unclaimed could be read as paid at a glance on the envelope page | The stamp says "Unclaimed"; the proof graph says "not delivered" in words |
+| A first-time visitor had no order to follow | Fixed by the guided tour (`/?tour=1`): a strip that rings the next control and moves on when the step has happened |
+| On a server gateway with `CRON_SECRET` set, the auditor page's "Run the gateway's sweep now" cannot run the sweep | Open. The gateway answers 401 and the page says the scheduler will answer the dispute on its next run |
 | The agent page is long: passport, record, reference, account, balance, card, income, envelopes, statement | Open. It works; it is dense |
 | Pages are dense with small monospace text | Open. A deliberate look, at some cost to first-read comprehension |
 | No loading skeletons; pages show a one-line "looking" state | Open |

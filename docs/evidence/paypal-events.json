@@ -121,5 +121,76 @@
         }
       ]
     }
-  ]
+  ],
+  "pushedDeliveries": {
+    "replayedAt": "2026-11-12T04:52:52.260Z",
+    "webhook": "25W82274K7440843K",
+    "note": "PayPal pushed these to the hosted copy, which has no gateway and logged them unchanged. They were replayed to a gateway with the sandbox credentials, which asked PayPal to verify each signature before doing anything.",
+    "deliveries": [
+      {
+        "transmission": "bc172b66-de54-11f1-8c07-7df19e281989",
+        "sentAt": "2026-11-12T04:51:33Z",
+        "event": "WH-257378695Y263770P-8FJ35620KK4259940",
+        "type": "PAYMENT.PAYOUTS-ITEM.SUCCEEDED",
+        "sameHeadersWithAnEditedBody": {
+          "status": 401,
+          "answer": {
+            "error": "PayPal did not confirm this event."
+          }
+        },
+        "asDelivered": {
+          "status": 200,
+          "answer": {
+            "event": "WH-257378695Y263770P-8FJ35620KK4259940",
+            "type": "PAYMENT.PAYOUTS-ITEM.SUCCEEDED",
+            "duplicate": false,
+            "subject": "sp_ohYDQ-B4EaybPnzU",
+            "outcome": "payment PAYOUT_PENDING → PAID"
+          }
+        },
+        "deliveredAgain": {
+          "status": 200,
+          "answer": {
+            "event": "WH-257378695Y263770P-8FJ35620KK4259940",
+            "type": "PAYMENT.PAYOUTS-ITEM.SUCCEEDED",
+            "duplicate": true,
+            "subject": null,
+            "outcome": "already applied"
+          }
+        }
+      },
+      {
+        "transmission": "c1a76cce-de54-11f1-8c07-a59b0fabec08",
+        "sentAt": "2026-11-12T04:51:43Z",
+        "event": "WH-0MD72731AP1387055-4U805082ET7674515",
+        "type": "PAYMENT.PAYOUTSBATCH.SUCCESS",
+        "sameHeadersWithAnEditedBody": {
+          "status": 401,
+          "answer": {
+            "error": "PayPal did not confirm this event."
+          }
+        },
+        "asDelivered": {
+          "status": 200,
+          "answer": {
+            "event": "WH-0MD72731AP1387055-4U805082ET7674515",
+            "type": "PAYMENT.PAYOUTSBATCH.SUCCESS",
+            "duplicate": false,
+            "subject": "sp_ohYDQ-B4EaybPnzU",
+            "outcome": "payment unchanged (PAID)"
+          }
+        },
+        "deliveredAgain": {
+          "status": 200,
+          "answer": {
+            "event": "WH-0MD72731AP1387055-4U805082ET7674515",
+            "type": "PAYMENT.PAYOUTSBATCH.SUCCESS",
+            "duplicate": true,
+            "subject": null,
+            "outcome": "already applied"
+          }
+        }
+      }
+    ]
+  }
 }

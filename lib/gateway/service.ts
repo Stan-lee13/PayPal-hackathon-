@@ -24,7 +24,7 @@ import { formatMoney } from "../money";
 import * as E from "../envelope/core";
 import { getPayPal, PayPalApiError, paypalMode } from "../paypal/client";
 import "../paypal/journal"; // every PayPal call made through this gateway is recorded, whoever loads it
-import { authorizeHold, capturePart, disputesFor, getAuthorization, getCapture, getPayout, payout, refundCapture, voidAuthorization, type DisputeFacts } from "../paypal/payments";
+import { authorizeApprovedOrder, authorizeHold, getOrder, requestHoldApproval, capturePart, disputesFor, getAuthorization, getCapture, getPayout, payout, refundCapture, voidAuthorization, type DisputeFacts } from "../paypal/payments";
 import { openJwk, sealJwk } from "../keystore";
 import { audit } from "../services/audit";
 
@@ -73,12 +73,31 @@ export async function verifyReceipt(r: Receipt): Promise<boolean> {
 // Seal: register a root and back it with a PayPal authorization
 // ---------------------------------------------------------------------------
 
-export async function registerRoot(a: { chain: E.Envelope; principalName: string; title: string }): Promise<Root> {
+/**
+ * Ask the payer to approve an envelope's hold in PayPal's own checkout. The envelope is checked exactly
+ * as it will be when it is sealed, PayPal makes an order for its whole limit carrying its id, and the
+ * caller gets the link to send the payer to. Nothing is recorded here and nothing is held: if the payer
+ * walks away, there is nothing to undo. Sealing afterwards (registerRoot with the order's id) places the hold.
+ */
+export async function askApproval(a: { chain: E.Envelope; title: string; returnUrl: string; cancelUrl: string }): Promise<{ orderId: string; approveUrl: string; amountMinor: number; currency: string }> {
+  const { b, caps, existing } = await checkNewRoot(a.chain);
+  if (existing) throw new UserFacingError("This envelope is already sealed.", 409);
+  try {
+    const r = await requestHoldApproval(getPayPal(), { rootId: b.body.id, title: a.title.trim().slice(0, 120) || "Envelope", currency: caps.currency, amountMinor: caps.limit, returnUrl: a.returnUrl, cancelUrl: a.cancelUrl });
+    return { orderId: r.orderId, approveUrl: r.approveUrl, amountMinor: caps.limit, currency: caps.currency };
+  } catch (e) {
+    if (e instanceof PayPalApiError) throw new UserFacingError(`PayPal refused to start the approval: ${e.message}${e.debugId ? ` (debug id ${e.debugId})` : ""}`, 502);
+    throw e;
+  }
+}
+
+/** Everything that must be true of a root envelope before PayPal is asked for anything. */
+async function checkNewRoot(chain: E.Envelope) {
   const db = getDb();
-  if (!Array.isArray(a.chain) || a.chain.length !== 1) throw new UserFacingError("Register the root block only.", 422);
-  const v = await E.verifyChain(a.chain);
+  if (!Array.isArray(chain) || chain.length !== 1) throw new UserFacingError("Register the root block only.", 422);
+  const v = await E.verifyChain(chain);
   if (!v.ok) throw new UserFacingError(`This envelope doesn't verify: ${v.violations.map((x) => x.detail).join("; ")}`, 422);
-  const b = a.chain[0]!;
+  const b = chain[0]!;
   const caps = b.body.caps;
   if (caps.limit > MAX_ROOT_MINOR) throw new UserFacingError(`The demo caps an envelope at ${formatMoney(MAX_ROOT_MINOR, caps.currency)}.`, 422);
   if (caps.currency !== "USD") throw new UserFacingError("The demo supports USD envelopes.", 422);
@@ -89,13 +108,33 @@ export async function registerRoot(a: { chain: E.Envelope; principalName: string
   if (existing) {
     const on = await db.query.blocks.findFirst({ where: eq(blocks.id, b.body.id) });
     if (on && on.hash !== hash) throw new UserFacingError("A different envelope with that id is already sealed.", 409);
-    return existing;
   }
+  return { b, caps, hash, existing: existing ?? null };
+}
+
+/**
+ * Seal a root envelope: PayPal holds its whole limit. With `paypalOrderId` the hold is placed on an
+ * order the payer approved in PayPal's checkout (askApproval); without it, on PayPal's sandbox test
+ * card, with no payer present.
+ */
+export async function registerRoot(a: { chain: E.Envelope; principalName: string; title: string; paypalOrderId?: string }): Promise<Root> {
+  const db = getDb();
+  const { b, caps, hash, existing } = await checkNewRoot(a.chain);
+  if (existing) return existing;
 
   // The hold: PayPal now guarantees the envelope's whole limit, and will refuse to capture beyond it.
   let auth;
+  let payer: { id: string | null; email: string | null } | null = null;
   try {
-    auth = await authorizeHold(getPayPal(), { rootId: b.body.id, title: a.title, currency: caps.currency, amountMinor: caps.limit });
+    if (a.paypalOrderId) {
+      // The order is read from PayPal, not taken on the caller's word: it must be the one made for this envelope, for this amount, and approved.
+      const o = await getOrder(getPayPal(), a.paypalOrderId);
+      if (o.customId !== b.body.id || o.intent !== "AUTHORIZE" || o.amountMinor !== caps.limit || o.currency !== caps.currency) throw new UserFacingError("That PayPal order was not made for this envelope.", 422);
+      if (o.status === "PAYER_ACTION_REQUIRED" || o.status === "CREATED") throw new UserFacingError("The payer has not approved this hold at PayPal yet. Nothing is held.", 409);
+      if (o.status !== "APPROVED") throw new UserFacingError(`That PayPal order can no longer back an envelope (PayPal says ${o.status}).`, 409);
+      payer = { id: o.payerId, email: o.payerEmail };
+      auth = await authorizeApprovedOrder(getPayPal(), o.id, b.body.id);
+    } else auth = await authorizeHold(getPayPal(), { rootId: b.body.id, title: a.title, currency: caps.currency, amountMinor: caps.limit });
   } catch (e) {
     if (e instanceof PayPalApiError) throw new UserFacingError(`PayPal refused the hold: ${e.message}${e.debugId ? ` (debug id ${e.debugId})` : ""}`, 502);
     throw e;
@@ -117,7 +156,10 @@ export async function registerRoot(a: { chain: E.Envelope; principalName: string
     throw e;
   });
   await trail(root, "principal", "envelope.sealed", "OK", b.body.id, { holder: b.body.holderLabel, caps });
-  await trail(root, "paypal", "hold.placed", "OK", auth.id, { amount: formatMoney(auth.amountMinor, auth.currency), expiresAt: auth.expiresAt, order: auth.orderId, mode: paypalMode() });
+  await trail(root, "paypal", "hold.placed", "OK", auth.id, {
+    amount: formatMoney(auth.amountMinor, auth.currency), expiresAt: auth.expiresAt, order: auth.orderId, mode: paypalMode(),
+    funding: payer ? "approved by the payer in PayPal's checkout" : "PayPal's sandbox test card, no payer present", ...(payer ? { payer: payer.email ? maskEmail(payer.email) : null, payerId: payer.id } : {}),
+  });
   return root;
 }
 
@@ -782,6 +824,12 @@ export const maskEmail = (e: string) => e.replace(/^(.)[^@]*(@.*)$/, "$1••�
 // ---------------------------------------------------------------------------
 
 export const STANDING_VERSION = "envelope-standing/1" as const;
+/** PayPal keeps an authorization for 29 days and recommends capturing within the first 3 (the honor period). Given when it expires, when that period ends. */
+export function honorPeriodEnds(expiresAt: string | Date | null): string | null {
+  if (!expiresAt) return null;
+  const t = new Date(expiresAt).getTime();
+  return Number.isFinite(t) ? new Date(t - 26 * 86400_000).toISOString() : null;
+}
 /** How long a statement of standing may be relied on. Budgets move, so it is short. */
 export const STANDING_TTL_MS = 5 * 60_000;
 
@@ -799,7 +847,12 @@ export type Standing = {
   reasons: Array<{ code: E.Reason; detail: string }>;
   /** The most the agent could pay this payee for this purpose in one payment right now. */
   availableMinor: number;
-  paypal: { mode: string; authorizationId: string | null; status: string | null; unusedMinor: number | null };
+  /**
+   * `honoredUntil`: PayPal recommends capturing within three days of the authorization (its honor
+   * period). Until then is when a hold is at its strongest; after it, and until `authorizedUntil`
+   * (29 days), a capture is still attempted and is subject to the funds being available.
+   */
+  paypal: { mode: string; authorizationId: string | null; status: string | null; unusedMinor: number | null; honoredUntil: string | null; authorizedUntil: string | null };
   issuedAt: string;
   validUntil: string;
   gateway: string;
@@ -847,12 +900,14 @@ export async function standing(hello: E.SignedHello): Promise<Standing> {
   }
 
   // Ask PayPal itself whether the hold is still there.
-  const paypal: Standing["paypal"] = { mode: paypalMode(), authorizationId: root.authorizationId, status: null, unusedMinor: null };
+  const paypal: Standing["paypal"] = { mode: paypalMode(), authorizationId: root.authorizationId, status: null, unusedMinor: null, honoredUntil: null, authorizedUntil: null };
   if (root.authorizationId && root.status === "ACTIVE") {
     try {
       const auth = await getAuthorization(getPayPal(), root.authorizationId);
       paypal.status = auth.status;
       paypal.unusedMinor = Math.max(0, auth.amountMinor - root.capturedMinor - root.refundedMinor);
+      paypal.authorizedUntil = auth.expiresAt;
+      paypal.honoredUntil = honorPeriodEnds(auth.expiresAt);
       if (auth.status !== "CREATED" && auth.status !== "PARTIALLY_CAPTURED") reasons.push({ code: "ROOT_NOT_FUNDED", at: root.id, detail: `PayPal reports the hold as ${auth.status}` });
       else available = Math.min(available, paypal.unusedMinor);
     } catch (e) {

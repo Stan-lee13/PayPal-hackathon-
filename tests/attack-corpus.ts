@@ -10,11 +10,18 @@ import * as E from "../lib/envelope/core";
 
 export type AttackRow = { category: string; attack: string; refused: boolean; how: string; moneyMoved: boolean };
 
+/**
+ * How a caller can follow the corpus one attack at a time (tests/attacks.test.ts gives every attack its own test):
+ * `before` is awaited when an attack is about to run, `after` is called with its row. With `listOnly`
+ * the set-up between attacks still runs but no attack does: the rows only name what would be run.
+ */
+export type CorpusRun = { listOnly?: boolean; before?(category: string, attack: string): Promise<void>; after?(row: AttackRow): void };
+
 type G = typeof import("../lib/gateway/service");
 type Bank = typeof import("../lib/gateway/bank");
 type Sim = typeof import("../lib/paypal/emulator");
 
-export async function runCorpus(deps: { G: G; B: Bank; sim: Sim; reset: () => Promise<void>; balanceOf(agent: string): Promise<number>; capturedOf(rootId: string): Promise<number>; read(path: string, params: Record<string, string>, body: unknown): Promise<{ status?: number; body: unknown }>; db: { expirePromise(id: string): Promise<void> } }): Promise<AttackRow[]> {
+export async function runCorpus(deps: { G: G; B: Bank; sim: Sim; reset: () => Promise<void>; balanceOf(agent: string): Promise<number>; capturedOf(rootId: string): Promise<number>; read(path: string, params: Record<string, string>, body: unknown): Promise<{ status?: number; body: unknown }>; db: { expirePromise(id: string): Promise<void> } }, run: CorpusRun = {}): Promise<AttackRow[]> {
   const { G, B, sim } = deps;
   const rows: AttackRow[] = [];
   const EXP = () => new Date(Date.now() + 3600_000).toISOString();
@@ -22,6 +29,8 @@ export async function runCorpus(deps: { G: G; B: Bank; sim: Sim; reset: () => Pr
 
   /** Run one attack. `fn` returns the gateway's verdict: denial codes, a thrown refusal, or `false` from a verifier. */
   async function attack(category: string, name: string, fn: () => Promise<unknown>, legitMoves = 0) {
+    if (run.listOnly) { rows.push({ category, attack: name, refused: false, how: "listed, not run", moneyMoved: false }); return; }
+    await run.before?.(category, name);
     const before = await moved();
     let refused = false, how = "";
     try {
@@ -37,7 +46,9 @@ export async function runCorpus(deps: { G: G; B: Bank; sim: Sim; reset: () => Pr
       } else if (typeof r === "string") { refused = true; how = r; }
       else how = `NOT REFUSED (${JSON.stringify(r)?.slice(0, 60)})`;
     } catch (e) { refused = true; how = `refused: ${e instanceof Error ? e.message.slice(0, 90) : "error"}`; }
-    rows.push({ category, attack: name, refused, how, moneyMoved: (await moved()) - before !== legitMoves });
+    const row: AttackRow = { category, attack: name, refused, how, moneyMoved: (await moved()) - before !== legitMoves };
+    rows.push(row);
+    run.after?.(row);
   }
 
   async function world() {

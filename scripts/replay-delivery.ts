@@ -7,7 +7,7 @@
  *   PAYPAL_WEBHOOK_ID=… PAYPAL_CLIENT_ID=… PAYPAL_CLIENT_SECRET=… DATABASE_URL=… \
  *     npx tsx scripts/replay-delivery.ts delivery.json [more.json …]
  *
- * A delivery file is { "headers": { "paypal-transmission-id": …, … }, "bodyBase64": "…" }.
+ * A delivery file is { "headers": { "paypal-transmission-id": …, … }, "bodyBase64": "…" }, or "parts": ["…", "…"] as logged.
  * Appends to docs/evidence/paypal-events.json. Sandbox only.
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -23,8 +23,9 @@ const { closeDb } = await import("../lib/db");
 const post = (headers: Record<string, string>, raw: string) => run(handlers["POST /api/paypal/webhook"]!, { params: {}, body: JSON.parse(raw), headers, raw });
 const deliveries: Array<Record<string, unknown>> = [];
 for (const file of process.argv.slice(2)) {
-  const d = JSON.parse(readFileSync(file, "utf8")) as { headers: Record<string, string>; bodyBase64: string };
-  const raw = Buffer.from(d.bodyBase64, "base64").toString("utf8");
+  // The log holds the body in numbered parts; a file may give them joined or as they were logged.
+  const d = JSON.parse(readFileSync(file, "utf8")) as { headers: Record<string, string>; bodyBase64?: string; parts?: string[] };
+  const raw = Buffer.from(d.bodyBase64 ?? (d.parts ?? []).join(""), "base64").toString("utf8");
   const ev = JSON.parse(raw) as { id: string; event_type: string; create_time?: string };
   // First the forgery: the genuine headers with a body that differs by one character. PayPal must not vouch for it.
   const i = raw.indexOf('"create_time"');

@@ -131,7 +131,7 @@ export function TreasuryView() {
           {groups.map(({ e, agents }) => (
             <div key={e.id} className="mt-6">
               <p className="flex flex-wrap items-baseline justify-between gap-2 border-b-[1.5px] border-ink pb-1.5">
-                <Link href={`/e/${e.id}`} className="title text-[1.1rem] underline decoration-dotted underline-offset-4">{e.title}</Link>
+                <span><Link href={`/e/${e.id}`} className="title text-[1.1rem] underline decoration-dotted underline-offset-4">{e.title}</Link> <Link href={`/proof/${e.id}`} className="link ml-2 text-xs">proof graph →</Link></span>
                 <span className="mono text-[.7rem] text-ink-2">{usd(e.capturedMinor)} of {usd(e.limitMinor)} · hold {e.authorizationId} · {e.status === "ACTIVE" ? "open" : "closed"}</span>
               </p>
               <ul className="ledger">
@@ -160,7 +160,7 @@ export function TreasuryView() {
         <aside className="space-y-10">
           <section className="sheet sheet-lift p-5 sm:p-6" data-testid="books">
             <div className="flex items-start justify-between gap-3"><h2 className="label">The books</h2>{books && <Stamp tone={books.matched === books.checked ? "green" : "red"} land>{books.matched} of {books.checked} match PayPal</Stamp>}</div>
-            <p className="mt-2 text-sm text-ink-2">Ask PayPal for every capture and payout by id and compare them with what the gateway recorded.</p>
+            <p className="mt-2 text-sm text-ink-2">Ask PayPal for every capture and payout by id and compare them with what the gateway recorded. The gateway&rsquo;s own books, for every owner&rsquo;s agents, are on <Link className="link" href="/bank">Accounts</Link>.</p>
             <div className="mt-4 flex flex-wrap gap-3">
               <button type="button" className="btn btn-ink" disabled={Boolean(busy) || t.payments === 0} onClick={reconcile}>{busy === "books" ? "Asking PayPal…" : "Reconcile with PayPal"}</button>
               <button type="button" className="btn" disabled={d.activity.length === 0} onClick={exportCsv}>Export ledger (CSV)</button>

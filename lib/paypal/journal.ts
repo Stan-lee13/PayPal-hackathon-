@@ -16,6 +16,8 @@ import { paypalMode, setPayPalObserver, type CallRecord } from "./client";
 /** method + path → the operation, in the words the pages use. */
 const OPS: Array<[string, RegExp, string]> = [
   ["POST", /^\/v2\/checkout\/orders$/, "hold.place"],
+  ["GET", /^\/v2\/checkout\/orders\/[^/]+$/, "order.read"],
+  ["POST", /^\/v2\/checkout\/orders\/[^/]+\/authorize$/, "hold.place"],
   ["GET", /^\/v2\/payments\/authorizations\/[^/]+$/, "hold.read"],
   ["POST", /^\/v2\/payments\/authorizations\/[^/]+\/capture$/, "capture"],
   ["POST", /^\/v2\/payments\/authorizations\/[^/]+\/void$/, "hold.void"],
@@ -32,6 +34,7 @@ const OPS: Array<[string, RegExp, string]> = [
   ["GET", /^\/v1\/notifications\/webhooks-events$/, "event.feed"],
 ];
 export const OP_TEXT: Record<string, string> = {
+  "hold.ask": "Asked the payer to approve the hold in PayPal", "order.read": "Asked whether the payer has approved",
   "hold.place": "Placed the hold", "hold.read": "Read the hold", "hold.void": "Released the rest of the hold",
   capture: "Captured part of the hold", "capture.read": "Read a capture", refund: "Refunded a capture",
   "payout.send": "Sent a payout", "payout.read": "Read a payout", "payout.cancel": "Cancelled an unclaimed payout",
@@ -39,26 +42,28 @@ export const OP_TEXT: Record<string, string> = {
   "event.verify": "Verified an event's signature", "event.feed": "Read its event feed",
 };
 /** Operations that change something at PayPal, as opposed to asking. */
-export const MOVES = ["hold.place", "capture", "hold.void", "refund", "payout.send", "payout.cancel", "dispute.evidence"];
+export const MOVES = ["hold.ask", "hold.place", "capture", "hold.void", "refund", "payout.send", "payout.cancel", "dispute.evidence"];
 
 /** Path words that are PayPal's, as opposed to ids. */
-const WORDS = new Set(["v1", "v2", "v3", "checkout", "orders", "payments", "authorizations", "captures", "capture", "void", "refund", "payouts", "payouts-item", "cancel", "notifications", "verify-webhook-signature", "webhooks-events", "reporting", "balances", "transactions", "customer", "disputes", "provide-evidence"]);
+const WORDS = new Set(["v1", "v2", "v3", "checkout", "orders", "authorize", "payments", "authorizations", "captures", "capture", "void", "refund", "payouts", "payouts-item", "cancel", "notifications", "verify-webhook-signature", "webhooks-events", "reporting", "balances", "transactions", "customer", "disputes", "provide-evidence"]);
 type Loose = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 const str = (x: unknown): string | null => (typeof x === "string" && x ? x : null);
 
 function describe(c: CallRecord): Omit<PayPalCall, "id" | "at"> | null {
-  const op = OPS.find(([m, re]) => m === c.method && re.test(c.path))?.[2];
-  if (!op) return null;
+  const found = OPS.find(([m, re]) => m === c.method && re.test(c.path))?.[2];
+  if (!found) return null;
   const req = (c.request ?? {}) as Loose, res = (c.response ?? {}) as Loose;
+  // An order made with a PayPal payment source holds nothing yet: it asks the payer to approve.
+  const op = found === "hold.place" && req.payment_source?.paypal ? "hold.ask" : found;
   const ok = c.status >= 200 && c.status < 300;
   const inPath = c.path.split("/").filter((x) => x && !WORDS.has(x));
   const auth = res.purchase_units?.[0]?.payments?.authorizations?.[0];
   const item = res.items?.[0];
   // Our own ids travel in the idempotency key: seal-<envelope>, capture-<payment>, payout-<payment>, refund-<payment>, close-<envelope>.
-  const ours = c.requestId ? c.requestId.replace(/^(seal|capture|payout|refund|close)-/, "").replace(op === "hold.place" ? /-c\d+$/ : /$^/, "") : null;
+  const ours = c.requestId ? c.requestId.replace(/^(seal|approve|capture|payout|refund|close)-/, "").replace(op === "hold.place" ? /-c\d+$/ : /$^/, "") : null;
   const keys = [...new Set([
     ...inPath, ours, str(res.id), str(auth?.id), str(res.batch_header?.payout_batch_id), str(item?.payout_item_id), str(res.payout_item_id), str(res.payout_batch_id),
-    str(res.invoice_id), str(res.custom_id), str(req.purchase_units?.[0]?.custom_id), str(req.sender_batch_header?.sender_batch_id), str(req.invoice_id),
+    str(res.invoice_id), str(res.custom_id), str(req.purchase_units?.[0]?.custom_id), str(res.purchase_units?.[0]?.custom_id), str(req.sender_batch_header?.sender_batch_id), str(req.invoice_id),
   ].filter((x): x is string => Boolean(x)))];
   const money = req.amount ?? req.purchase_units?.[0]?.amount ?? req.items?.[0]?.amount ?? res.amount ?? item?.payout_item?.amount ?? res.payout_item?.amount;
   const currency = str(money?.currency_code) ?? str(money?.currency);

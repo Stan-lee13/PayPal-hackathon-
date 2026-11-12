@@ -54,45 +54,75 @@ A second pass on 11 November read 65 entries' code for which PayPal APIs they re
 
 | PayPal capability | Entries using it (of 65) | Envelope |
 |---|---|---|
-| Webhooks with signature verification | 34 | Built; proven on the simulator; the sandbox rejected a forged event; no webhook registered, so no genuine event received |
+| Webhooks with signature verification | 34 | Built. On the sandbox (12 November): PayPal's events were read from its event feed and finished a payment; two genuine pushed deliveries were confirmed by PayPal's `verify-webhook-signature` and the same two with one character changed were refused. The pushed ones reached the gateway by replay from the hosted copy's log, because that copy has no database |
 | Vault (payer not present) | 18 | No |
 | Disputes | 18 | Built on 12 November: every receipt check and every sweep asks PayPal; a dispute is marked on the payment and answered with the signed chain of authority. Asked on the sandbox (none held); answering one is proven on the simulator only |
-| JS SDK buttons (the payer approves in PayPal) | 15 | No: the sandbox hold is placed on PayPal's test card |
-| PayPal's Agent Toolkit | 14 | No |
+| The payer approves in PayPal (JS SDK buttons: 15; an approval link in more) | 15 | Built on 12 November with PayPal's approval link, not the JS SDK buttons: the owner approves the hold in PayPal's checkout and the gateway reads the order back before placing the hold. Proven on the simulator; on the sandbox PayPal issued the link and a person's approval is pending <!-- APPROVAL-SANDBOX -->. The default is still PayPal's sandbox test card |
+| PayPal's Agent Toolkit | 14 | Used since 12 November, on the operator's side only and read-only. An auditing agent reads PayPal through five of the toolkit's 47 tools; the toolkit holds no credential, and the gateway's PayPal client carries its requests and carries only reads. No spending agent is given the toolkit: an agent here holds a signed envelope and never a PayPal credential. On the sandbox all 28 listed records were found again through the toolkit with the same amounts, and a refund it was asked to make was stopped with nothing sent (`docs/evidence/auditor.json`). An earlier version of this row said "No" |
 | Order tracking | 11 | No |
 | Transaction Search | about 8 | Built on 12 November, with PayPal's reported balance beside it: every capture, payout and refund is looked up in PayPal's statement of the account, and PayPal's fee is read from each line. On the sandbox all 28 records were found with the same amount, none with a different one <!-- STATEMENT-CHECK --> |
-| Hold reauthorization | 7 | No |
-| Their own MCP server | 22 | Yes, fifteen tools, tested over real MCP |
+| Hold reauthorization | 7 | No. PayPal allows it only after the three-day honor period, so it cannot be exercised on the sandbox within the hackathon. Proof of funds says when that period ends |
+| Their own MCP server | 22 | Yes, fifteen tools, and a second role for an auditor with ten read-and-propose tools, tested over real MCP |
 | Their own SDK | 7, mostly generated | Yes, hand-written and run against the sandbox |
 
-The entries with the broadest PayPal use (second-key, mandate-gateway, chaperone, stood, cosign) still call PayPal products Envelope does not: Vault, payer-present approval, order tracking, reauthorization. Envelope's use goes further into one lifecycle: partial captures of one hold across a tree of agents, payouts with their real delivery status, release, refund (by the agent that was paid, proven on the sandbox), cancellation, a record of every call, and the gateway's books checked against PayPal's reported balance, PayPal's statement and PayPal's disputes. A judge counting PayPal products will count more elsewhere. A judge asking whether PayPal is necessary to the product will find it is here.
+The entries with the broadest PayPal use (second-key, mandate-gateway, chaperone, stood, cosign) still call PayPal products Envelope does not: Vault, order tracking, reauthorization, Login with PayPal. Envelope's use goes further into one lifecycle: partial captures of one hold across a tree of agents, payouts with their real delivery status, release, refund (by the agent that was paid, proven on the sandbox), cancellation, a record of every call, and the gateway's books checked against PayPal's reported balance, PayPal's statement and PayPal's disputes. A judge counting PayPal products will count more elsewhere. A judge asking whether PayPal is necessary to the product will find it is here.
+
+## A second look on 12 November
+
+The Devpost gallery was still not published and its project pages could not be read from here, so this sweep worked from GitHub: about 1,800 repositories that mention the hackathon, 45 cloned and searched by pattern, about 20 READMEs read. Nothing was run, no video or live demo was opened, and "PayPal use" below means the call or product name appears in non-test code. Treat every row as a partial view.
+
+| Entry | Repository | What it says it is | PayPal use seen by pattern scan |
+|---|---|---|---|
+| Keelson | `DavidZapataOh/keelson-paypal` | Each agent purchase checked against a signed mandate sealed in two TEEs, with operator bonds | Authorize, capture, void, reauthorize, refund, Payouts, webhooks, Vault, JS SDK, Disputes evidence, tracking, Login |
+| GAVEL | `harshbhx/gavel-auction` | Every auction bid is a PayPal hold; only the winner is captured | Authorize, capture, void, reauthorize, refund, webhooks |
+| Minder | `Laurel-11/Minder` | Buyer protection for purchases an agent makes | Vault, authorize, tracking, Disputes, webhooks, Agent Toolkit |
+| Mandate | `Sid3503/mandate` | Rules in front of PayPal for a studio; contractors paid only from settled client money | Invoicing, card fields, Payouts, Disputes, reauthorize, Agent Toolkit, Login, Pay Later |
+| Bursar | `priyansh-narang2308/bursar` | Spend authority for AI agents | Authorize, capture, void, reauthorize, Vault, Payouts, Transaction Search, Agent Toolkit |
+| Writ | `dhakseshr/mandate` | An orchestrator delegating narrower sub-mandates, checked at every level, where "the whole tree shares one hold"; an Ed25519-signed passport | Authorize, capture, void, Payouts, Disputes, tracking, JS SDK, Agent Toolkit |
+| Second Key | `KingDayveed357/second-key` | See the table above; unchanged since 10 November | See above |
+| Accnomos | `zaytunazs/accnomos` | Bookkeeping for a UK business | Invoicing, Transaction Search with fees, Balances, Payouts, Disputes evidence |
+| Signed Studio | `medelin/signed-studio` | A PayPal hold released by signature, with an offline check of the money trail | Not listed here: README read only |
+| Chaperone | `apexxx01/chaperone` | Two isolated models between an agent and a payment | Authorize, Vault, Payouts, tracking |
+| Mandate gateway | `Bhaskar422/mandate-gateway` | Mandates for agents, with stores that join by themselves | Vault, Disputes |
+| AgentPal | `muhammadbilalbajwa156/agentpal` | See the table above | See above |
+
+Another entry is named "PayPal-Envelope" (`kajlaM/PayPal-Envelope`): a pot of money per job for one agent. We found no delegation in it. The shared name is a coincidence and could confuse a reader.
+
+**Writ overlaps with this entry more than anything else we read.** Its README describes one hold shared by a whole delegation tree, with narrowing checked at every level. We read its README, its pages and its passport route; we did not read the code that enforces the limits, so we cannot say how it debits budgets. Point 1 of the list below was written before we saw it and has been changed.
+
+**Where these entries are ahead.** Breadth of PayPal products this entry does not use: Vault (7 of the 12), hold reauthorization (7), order tracking (5), Login with PayPal (5); and AG Grid, a sponsor's product, in 10. PayPal's Agent Toolkit (7 of the 12) was on this list; it is now used here, read-only, by the auditor. Test counts in the thousands in some, against this entry's 447 (114 when this was first written). Custom domains and documentation sites. This entry now has a guided path a judge can follow without signing in. Several are likely to place above this entry on breadth and polish.
+
+**Where this entry is ahead of what we read.** Depth in one lifecycle: one hold, partial captures across a tree, payouts followed to PayPal's final word, refunds, and settlement on PayPal's own events. Reconciliation against PayPal's own statement and reported balance, with PayPal's fees read from the statement. A sandbox evidence file behind each claim, and a plain statement of what ran only on the simulator.
 
 ## Where Envelope stands
 
 **Shared with others, so not a claim to originality:** signed delegation chains; agent passports; signed receipts verified in a browser; one hold with partial captures for a single agent; cards for agents (on card rails, and more useful there).
 
-**Not found in the 36 codebases read, with the limits of that reading stated above:**
+**Not found in the entries we read, with the limits of that reading stated above.** This is "not found in what we read", never "nobody has it":
 
-1. One PayPal hold behind a whole tree of agents, with budgets debited at every ancestor and PayPal itself refusing to capture past the hold.
-2. Proof of funds for a payee that includes PayPal's live word on the hold.
-3. Money set aside through the delegation tree and released by a named key's signature.
-4. A gateway that runs unchanged in the visitor's browser.
+1. A payee's proof of funds that carries PayPal's live word on the hold, and says when PayPal's honor period for it ends.
+2. Budgets debited at every ancestor under one lock, with PayPal itself refusing to capture past the hold. (One hold behind a whole tree of agents is no longer on this list: Writ describes it.)
+3. Agents that earn, keep a balance, pay other agents from it, and issue a card only one merchant can charge.
+4. Books reconciled against PayPal's own statement and reported balance, with PayPal's fees read from the statement. (Accnomos does this for a business's bookkeeping; not for agents' balances.)
+5. Money set aside through the delegation tree and released by a named key's signature.
+6. A gateway that runs unchanged in the visitor's browser.
 
-**Where others are stronger:** test volume and CI; Disputes evidence actually exercised against PayPal; hold reauthorization; webhooks that have received real events; payer-present funding (Login with PayPal, vaulting); passkey or phone approval; merchant onboarding; weeks of polish on a hosted demo.
+**Where others are stronger:** test volume and CI; breadth of PayPal products (Vault, reauthorization, order tracking, Login with PayPal, Invoicing); Disputes evidence actually exercised against PayPal; payer approval through PayPal's JS SDK buttons and vaulting; passkey or phone approval; merchant onboarding; judge paths, documentation sites and weeks of polish on a hosted demo.
 
 ## The questions a judge will ask
 
 | Question | Answer |
 |---|---|
-| Why isn't PayPal's own agent toolkit enough? | It gives an agent PayPal's APIs. It does not say how much of the owner's money this agent, or the agents it hires, may spend, and it gives a payee nothing to check. |
+| Why don't the spending agents use PayPal's own agent toolkit? | Out of the box it gives a model PayPal credentials and tools such as `create_order`, `pay_order` and `create_refund`. It does not say how much of the owner's money this agent, or the agents it hires, may spend, and it gives a payee nothing to check; that is the part Envelope adds. So a spending agent holds a signed envelope and never a PayPal credential. |
+| Where is the toolkit used, then? | By the auditor, an agent on the operator's side that only reads. The toolkit runs inside the gateway with no credential of its own; five read tools are allowed by name, and the gateway's client sends only `GET`s on five listed paths for it. Proven on the sandbox by the fixed procedure; a real model (Claude Haiku through the local Claude Code bridge) has run the audit twice, on the sandbox and on the Auditor page. |
 | Why isn't AP2 enough? | A mandate covers user to agent. Envelope covers agent to agent to agent, with budgets that add up and a hold behind the root. The two fit together: a mandate can be where a root envelope's limits come from. |
 | Is this an AI wallet? | No. The agent holds a signature-bound share of someone's hold, not a balance it can spend freely; a balance is a second, separate feature with its own owner controls. |
 | Who controls the money? | PayPal holds it. The owner's key is the only thing that can seal, approve over a threshold, revoke or close. |
 | What if an agent is compromised? | It can spend what its envelope allows, to the payees and purposes on it, until it expires or is revoked. 171 attack cases in the test corpus try to get past that; none does. |
 | Can a child spend twice? | No: a spend debits every envelope above it under one lock before PayPal is called, and PayPal refuses beyond the hold. Eight copies of one request at once are captured and counted once. |
 | What happens when a payment fails? | Capture refused: nothing moved. Payout refused or returned: the capture is refunded. Refund refused too: the payment is shown as refund due and stays counted. |
-| Does it really work with PayPal? | The sandbox evidence files carry PayPal's authorization, capture and payout ids, and the final status PayPal reported for each payout. |
-| What is defensible? | The combination in the list above, and the discipline: no model decides whether money moves, and every claim on the page can be checked by the reader. |
+| Does it really work with PayPal? | The sandbox evidence files carry PayPal's authorization, capture, payout and refund ids, the final status PayPal reported for each payout, PayPal's own statement lines with its fees, and PayPal's own events, both read from its feed and pushed with a signature PayPal confirmed. |
+| What is defensible? | No single item: one rival describes a delegation tree on one hold. The combination in the list above, and the discipline: no model decides whether money moves, and every claim on the page can be checked by the reader. |
 
 ## What we do not know
 

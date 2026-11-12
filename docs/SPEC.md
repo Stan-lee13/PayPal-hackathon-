@@ -95,7 +95,8 @@ The payee hands it to the gateway and receives a **statement of standing**:
   "ask": { "amount": 7000, "currency": "USD", "payee": "designer@example.com", "purpose": "design" },
   "good": true, "reasons": [],
   "availableMinor": 8000,
-  "paypal": { "mode": "sandbox", "authorizationId": "…", "status": "PARTIALLY_CAPTURED", "unusedMinor": 15500 },
+  "paypal": { "mode": "sandbox", "authorizationId": "…", "status": "PARTIALLY_CAPTURED", "unusedMinor": 15500,
+              "honoredUntil": "<authorization + 3 days>", "authorizedUntil": "<authorization + 29 days>" },
   "issuedAt": "…", "validUntil": "<issuedAt + 5 minutes>", "gateway": "<gateway public key>", "sig": "…" }
 ```
 
@@ -216,6 +217,22 @@ A card is a signed statement by an agent with an account. It is not a credential
 
 ## Rules
 
+### Sealing a root
+
+`POST /api/envelopes` with the root block the principal signed. The gateway accepts it only if the block verifies, is in USD, is within the demo's cap, expires within 28 days, and names the agent it is for. It then has PayPal hold the envelope's whole limit, and records the root and the authorization together; if the record cannot be written, the hold is voided. Sealing the same block again returns the same root.
+
+The hold is placed one of two ways.
+
+- **At once**, on PayPal's sandbox test card, with no payer present. This is the default in the reference implementation and exists so that a seal needs no browser step.
+- **After the payer approves it in PayPal's own checkout.** This takes two calls:
+  1. `POST /api/envelopes/approval` with the root block and an absolute http(s) address to return to. The gateway makes every check it will make at sealing, and asks PayPal for an order with intent `AUTHORIZE`, a PayPal payment source, the envelope's whole limit, and the envelope's id as the order's `custom_id`. It answers `{ orderId, approveUrl }`. Nothing is held and nothing is recorded: if the payer walks away there is nothing to undo.
+  2. The payer approves at `approveUrl`, which is PayPal's page. The gateway never sees their PayPal password.
+  3. `POST /api/envelopes` with the same block and `paypalOrderId`. The gateway reads the order from PayPal (`GET /v2/checkout/orders/{id}`) and refuses unless its `custom_id` is this envelope's id, its amount and currency equal the envelope's limit, its intent is `AUTHORIZE`, and its status is `APPROVED`. Only then does it place the hold on that order (`POST /v2/checkout/orders/{id}/authorize`). An order approved for another envelope or another amount cannot back this one, and an order the payer has not approved seals nothing.
+
+The envelope's audit trail records which way the hold was funded. For an approved hold it keeps PayPal's payer id and the payer's address with its local part masked.
+
+On the simulator, `approveUrl` is a page of the reference implementation, marked as the simulator, and `POST /api/sim/paypal/approve` is what its button calls. That endpoint does not exist on a gateway that talks to PayPal.
+
 ### Splitting (offline)
 
 The holder of an envelope appends a block for another key. The new caps must be a narrowing of the parent's:
@@ -307,7 +324,7 @@ The gateway and PayPal cannot commit together, so each step is safe to repeat an
 
 **Events.** PayPal reports captures, payouts and voids as events. The gateway accepts them two ways: pushed to `POST /api/paypal/webhook`, or pulled from PayPal's own event feed. Either way:
 
-1. A pushed event is verified with PayPal (`verify-webhook-signature`) using the headers PayPal signed and the body byte for byte as received. Without a configured webhook id, events are not accepted at all.
+1. A pushed event is verified with PayPal (`verify-webhook-signature`) using the headers PayPal signed and the body byte for byte as received. Without a configured webhook id, events are not accepted at all. A gateway may receive a delivery second-hand: a copy of the site with no database cannot apply an event, so it writes each delivery to its host's log unchanged (PayPal's headers, and the body in base64 so no byte changes) and answers PayPal 503. Replayed to a gateway, such a delivery is verified exactly as if PayPal had pushed it there.
 2. The event is stored under PayPal's event id. A second delivery of the same id does nothing.
 3. **An event is a hint, never the truth.** The gateway finds the payment, transfer or hold the event names (by the payment id it put in `invoice_id` and `sender_item_id`, by capture id, by payout batch id, or by authorization id) and reads that record from PayPal by id. What PayPal answers then is what changes the books. A forged, edited, stale or replayed event can therefore cause a read and nothing else.
 4. A hold PayPal reports voided or lapsed while its envelope is open closes the envelope. A capture refunded or reversed outside the gateway while its payment stands is written to the envelope's audit trail for the owner.
@@ -401,22 +418,23 @@ Anyone holding a hello may ask `POST /api/gateway/standing`. The gateway:
 
 1. verifies the hello exactly as it would a spend (rules 1 to 3), which proves the agent controls the key it claims;
 2. reads, without locking or reserving, the same state a spend would be admitted against (rules 4, 5 and 7);
-3. asks PayPal for the authorization (`GET /v2/payments/authorizations/{id}`) and requires it to be `CREATED` or `PARTIALLY_CAPTURED`;
+3. asks PayPal for the authorization (`GET /v2/payments/authorizations/{id}`) and requires it to be `CREATED` or `PARTIALLY_CAPTURED`; from the expiry PayPal reports it works out when PayPal's three-day honor period ends (`honoredUntil`) and when the authorization itself ends (`authorizedUntil`);
 4. signs the answer: who stands behind the agent back to the owner, whether this exact payment would be accepted now, and the most the agent could pay this payee in one payment.
 
-Nothing is reserved, so the answer can go stale; it is valid for five minutes. It is evidence that the money exists and is reachable by this agent for this payee, not a promise to pay.
+Nothing is reserved, so the answer can go stale; it is valid for five minutes. It is evidence that the money exists and is reachable by this agent for this payee, not a promise to pay. PayPal "recommends that you capture the funds within the 3-day honor period" and says that the "success of the capture is subject to risk and availability of funds". So a hold inside its honor period is at its strongest, and one past it is still authorized but weaker; the statement carries both dates so a payee can tell which. Both are signed with the rest.
 
 ## How it maps to PayPal
 
 | Envelope | PayPal | Why it matters |
 |---|---|---|
 | Seal | Orders v2, `intent: AUTHORIZE` | The money is guaranteed before any agent starts, and never charged up front. |
+| Seal, with the payer's approval | Orders v2 with a PayPal payment source; show order; authorize order | The owner approves the hold where they already trust: in PayPal's checkout. The gateway takes PayPal's word that they did, and only for the order made for this envelope. |
 | Spend | Partial capture of the authorization, then Payouts | The owner is charged exactly what agents spent. PayPal refuses captures beyond the hold. |
 | Close / expire | Void authorization | The remainder goes back automatically. |
 | Set aside | Show authorization details | The fee is reserved under the same hold, and PayPal has confirmed the hold, before a payee starts work. |
 | Accept | Capture + Payout, triggered by the named key's signature | Payment follows evidence of delivery without either side holding PayPal credentials; the fingerprint of the work is bound to the PayPal ids on the receipt. |
 | Pay an agent | Payout to the account's settlement address | One agent's spending becomes another agent's income without either holding PayPal credentials. |
-| Check | Show authorization details | A payee learns from PayPal, through the gateway, that the hold is live before doing any work. |
+| Check | Show authorization details | A payee learns from PayPal, through the gateway, that the hold is live before doing any work, and until when PayPal's honor period for it runs. |
 | Recall | Cancel an unclaimed payout item, then refund the capture | Money that never arrived does not stay out of the owner's hands for thirty days. |
 | Give back | Refund the capture, on the paid agent's signature | An agent that will not do the work returns the fee to the payer through PayPal, not through a promise. |
 | Reserves | Reporting: balances | What agents are owed is compared with a figure the gateway did not produce. |
@@ -427,7 +445,7 @@ Nothing is reserved, so the answer can go stale; it is valid for five minutes. I
 
 Verified in the PayPal sandbox on 2026-11-11: 12 partial captures of one authorization all completed; an over-capture was refused (`MAX_CAPTURE_AMOUNT_EXCEEDED`); void after partial captures returned `VOIDED`; a refunded capture did not return capacity to its authorization. See `docs/evidence/sandbox-run.json`.
 
-An authorization is a hold placed by PayPal on the payer's funding source. It is not an escrow service, lasts at most 29 days, and is honoured for 3; envelopes are limited to 28 days.
+An authorization is a hold placed by PayPal on the payer's funding source. It is not an escrow service. It lasts at most 29 days and has a three-day honor period, within which PayPal recommends capturing; envelopes are limited to 28 days, and a statement of standing says when the honor period ends. Reauthorization, which starts a new honor period, is allowed by PayPal only after the first one is over and is not implemented.
 
 ## Security notes
 
@@ -448,11 +466,11 @@ Attenuating capability chains are well established: macaroons (2014), Biscuit, U
 
 Agent identity, "know your agent" and agent wallets are also crowded: Skyfire, Catena Labs, Payman, Crossmint, Coinbase, Visa and Mastercard all have products or specifications, and PayPal has named the concept. One commercial product (SpendVeto) states that a grandchild's spend counts against every ancestor's cap. Several entries to this hackathon ship agent passports, delegation chains or hold-and-capture budgets; see `docs/DISCOVERY.md`.
 
-Envelope's contribution is the combination, on a mainstream fiat rail: a chain any third party can verify with public keys, money budgets debited at every ancestor, one PayPal authorization behind the whole tree that the network itself enforces, a statement of standing tied to that live hold, and receipts binding PayPal transaction ids to the full chain. We found no project that has all of these together.
+Envelope's contribution is the combination, on a mainstream fiat rail: a chain any third party can verify with public keys, money budgets debited at every ancestor, one PayPal authorization behind the whole tree that the network itself enforces, a statement of standing tied to that live hold, and receipts binding PayPal transaction ids to the full chain. We found no project that has all of these together, in what we were able to read; one other entry to the same hackathon describes a delegation tree sharing one hold (see `COMPETITIVE_INTELLIGENCE.md`).
 
 ## Roadmap
 
-- Principal consent through PayPal's own checkout or a vaulted wallet instead of the sandbox test card.
+- A vaulted PayPal account, so that an owner who approved one hold in PayPal's checkout can seal the next envelope with a signature alone. (Approval in PayPal's checkout is built; see "Sealing a root".)
 - Delivery-versus-payment for promises, so a payee holds more than earmarked money.
 - Reauthorizing a hold before it lapses, for envelopes that outlive PayPal's honor period.
 - Envelopes as AP2 / UCP payment-mandate attachments, so merchants can accept them directly.

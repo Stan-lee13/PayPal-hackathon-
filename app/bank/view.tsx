@@ -101,6 +101,7 @@ export function BankView() {
               <p className="label">PayPal&rsquo;s own statement</p>
               <button type="button" className="btn btn-sm" onClick={compare} disabled={st === "asking"}>{st === "asking" ? "Asking PayPal…" : "Compare with PayPal"}</button>
             </div>
+            {st && typeof st === "object" && st.matches.length > 0 && <p className="mt-2 text-xs text-ink-2">A line opens the receipt of its payment, and from there the chain of signatures behind it.</p>}
             {st === null && <p className="mt-3 text-xs leading-relaxed text-ink-2">Every capture, payout and refund recorded here, looked up in PayPal&rsquo;s statement of the account (Transaction Search): a second source, separate from the calls that moved the money, and the only place PayPal&rsquo;s fees appear.</p>}
             {st === "failed" && <p className="mt-3 text-sm text-red" role="alert">PayPal could not be asked for its statement just now.</p>}
             {st && typeof st === "object" && (
@@ -120,7 +121,7 @@ export function BankView() {
                 <p className="mono mt-2 text-[.68rem] leading-relaxed text-ink-3">PayPal lists {st.paypalLines} line{st.paypalLines === 1 ? "" : "s"} since {hm(st.from)} on {new Date(st.from).toISOString().slice(5, 10)}; {st.otherActivity} are not from this ledger.</p>
                 {st.matches.length > 0 && (
                   <ul className="mono mt-3 max-h-56 space-y-1 overflow-y-auto border-t border-rule pt-2 text-[.7rem] leading-snug">
-                    {st.matches.slice(0, 40).map((m) => <li key={`${m.what}${m.paypalId}${m.spend}`} className="leader"><span>{m.what} {m.paypalId}</span><i /><span className={m.verdict === "listed" ? "text-green" : m.verdict === "amount differs" ? "text-red" : "text-ink-3"}>{usd(m.amountMinor)}{m.feeMinor ? ` · fee ${usd(m.feeMinor)}` : ""} · {m.verdict}{m.returned ? ", came back" : ""}</span></li>)}
+                    {st.matches.slice(0, 40).map((m) => <li key={`${m.what}${m.paypalId}${m.spend}`} className="leader"><span>{m.what} {/^(sp|pr)_/.test(m.spend) ? <Link className="underline decoration-dotted underline-offset-2" href={`/r/${m.spend}`} title="The receipt of the payment this line belongs to">{m.paypalId}</Link> : m.paypalId}</span><i /><span className={m.verdict === "listed" ? "text-green" : m.verdict === "amount differs" ? "text-red" : "text-ink-3"}>{usd(m.amountMinor)}{m.feeMinor ? ` · fee ${usd(m.feeMinor)}` : ""} · {m.verdict}{m.returned ? ", came back" : ""}</span></li>)}
                   </ul>
                 )}
               </div>

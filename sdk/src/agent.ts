@@ -389,6 +389,9 @@ export class Agent extends Party {
 }
 
 /** A person, or a service acting for one. The root of every envelope is an owner's signature. */
+/** The limits an owner signs into a root envelope. */
+export type SealTerms = { to: { publicKey: string; label: string }; limit: Amount; perPayment?: Amount; payees?: string[] | null; purposes?: string[] | null; hours?: number; notAfter?: Date | string; splits?: number; approveOver?: Amount; title?: string };
+
 export class Owner extends Party {
   static async generate(init: { gateway: Gateway | string; label: string }): Promise<Owner> {
     return new Owner({ ...init, key: await E.generateKeyPair() });
@@ -404,17 +407,36 @@ export class Owner extends Party {
    * Returns the chain (give it to the agent: `agent.hold(chain)`) and the root as the gateway recorded
    * it, including PayPal's authorization id.
    */
-  async seal(p: { to: { publicKey: string; label: string }; limit: Amount; perPayment?: Amount; payees?: string[] | null; purposes?: string[] | null; hours?: number; notAfter?: Date | string; splits?: number; approveOver?: Amount; title?: string }): Promise<{ chain: E.Envelope; root: RootState; envelopeUrl: string }> {
+  async seal(p: SealTerms): Promise<{ chain: E.Envelope; root: RootState; envelopeUrl: string }> {
+    const chain = await this.#signRoot(p);
+    const root = await this.gateway.seal(chain, { ownerName: this.label, title: optional(p.title, "title", 120) ?? "Envelope" });
+    return { chain, root, envelopeUrl: this.gateway.envelopeUrl(root.id) };
+  }
+  /**
+   * The same envelope, with the hold approved by the payer in PayPal's own checkout instead of placed
+   * unattended. Signs the envelope and asks PayPal for an approval link. Nothing is held or recorded:
+   * send the payer to `approveUrl`, and when PayPal returns them, call `sealApproved` with what this gave you.
+   */
+  async requestApproval(p: SealTerms & { returnUrl: string; cancelUrl?: string }): Promise<{ chain: E.Envelope; orderId: string; approveUrl: string; title: string }> {
+    const chain = await this.#signRoot(p);
+    const title = optional(p.title, "title", 120) ?? "Envelope";
+    const link = await this.gateway.requestApproval(chain, { title, returnUrl: text(p.returnUrl, "returnUrl", 400), cancelUrl: optional(p.cancelUrl, "cancelUrl", 400) });
+    return { chain, orderId: link.orderId, approveUrl: link.approveUrl, title };
+  }
+  /** Finish a seal the payer approved at PayPal. Refused, with nothing held, if PayPal says they have not approved. */
+  async sealApproved(a: { chain: E.Envelope; orderId: string; title?: string }): Promise<{ chain: E.Envelope; root: RootState; envelopeUrl: string }> {
+    const root = await this.gateway.seal(a.chain, { ownerName: this.label, title: a.title, approvedOrder: text(a.orderId, "orderId", 40) });
+    return { chain: a.chain, root, envelopeUrl: this.gateway.envelopeUrl(root.id) };
+  }
+  async #signRoot(p: SealTerms): Promise<E.Envelope> {
     const limit = toMinor(p.limit, "limit");
     if (p.notAfter !== undefined && p.hours !== undefined) throw refuseLocally("Give notAfter or hours, not both.");
     const notAfter = p.notAfter !== undefined ? new Date(p.notAfter).toISOString() : new Date(Date.now() + (p.hours ?? 6) * 3600_000).toISOString();
-    const chain = await E.seal(this.key, { publicKey: publicKeyOf(p.to, "to"), label: text(p.to?.label, "to.label", 80) }, {
+    return E.seal(this.key, { publicKey: publicKeyOf(p.to, "to"), label: text(p.to?.label, "to.label", 80) }, {
       currency: "USD", limit, perPayment: p.perPayment === undefined ? limit : toMinor(p.perPayment, "perPayment"),
       payees: p.payees ?? null, purposes: p.purposes ?? null, notAfter, splits: p.splits === undefined ? 2 : wholeNumber(p.splits, "splits", 0, 8),
       ...(p.approveOver !== undefined ? { approveOver: toMinor(p.approveOver, "approveOver") } : {}),
     });
-    const root = await this.gateway.seal(chain, { ownerName: this.label, title: optional(p.title, "title", 120) ?? "Envelope" });
-    return { chain, root, envelopeUrl: this.gateway.envelopeUrl(root.id) };
   }
   /** Close a root envelope: PayPal voids whatever was not spent. */
   close(rootId: string): Promise<RevokeResult> { return this.revoke(rootId); }

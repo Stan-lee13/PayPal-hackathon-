@@ -27,7 +27,7 @@ type CardT = {
 };
 const CARD_STATE: Record<CardT["state"], { text: string; tone: "green" | "red" | "grey" | "amber" }> = { ACTIVE: { text: "Active", tone: "green" }, USED_UP: { text: "Ended itself", tone: "grey" }, CANCELLED: { text: "Cancelled", tone: "red" }, EXPIRED: { text: "Expired", tone: "amber" } };
 const period = (s: number) => (s === 0 ? "none" : s % 86400 === 0 ? `${s / 86400} day${s === 86400 ? "" : "s"}` : s < 120 ? `${s} s` : `${Math.round(s / 60)} min`);
-type Standing = { v: string; agent: string; agentLabel: string; account: string; sponsors: Sponsor[]; root: string; ask: { amount: number; currency: string; payee: string; purpose: string }; good: boolean; reasons: Array<{ code: string; detail: string }>; availableMinor: number; paypal: { mode: string; authorizationId: string | null; status: string | null; unusedMinor: number | null }; issuedAt: string; validUntil: string; gateway: string; sig: string };
+type Standing = { v: string; agent: string; agentLabel: string; account: string; sponsors: Sponsor[]; root: string; ask: { amount: number; currency: string; payee: string; purpose: string }; good: boolean; reasons: Array<{ code: string; detail: string }>; availableMinor: number; paypal: { mode: string; authorizationId: string | null; status: string | null; unusedMinor: number | null; honoredUntil?: string | null; authorizedUntil?: string | null }; issuedAt: string; validUntil: string; gateway: string; sig: string };
 
 const STATE: Record<Account["state"], { text: string; tone: "green" | "red" | "grey" | "amber" }> = { LIVE: { text: "Live", tone: "green" }, REVOKED: { text: "Revoked", tone: "red" }, CLOSED: { text: "Closed", tone: "grey" }, EXPIRED: { text: "Expired", tone: "amber" } };
 const ENTRY: Record<string, string> = { income: "Paid in from", transfer_in: "Received from", transfer_out: "Paid to", payout: "Paid out by PayPal to", withdrawal: "Withdrawn to its owner at", reversal: "Put back: payout failed to", refund: "Refunded to the payer, via", refund_reversal: "Put back: PayPal refused the refund to" };
@@ -184,12 +184,13 @@ export function AgentView({ agentKey }: { agentKey: string }) {
               <ul className="ledger mt-4 border-t-[1.5px] border-ink" data-testid="ledger">
                 {p.balance.ledger.map((l) => (
                   <li key={l.id} className="flex items-baseline justify-between gap-3 py-2.5">
-                    <p className="min-w-0 text-[.9rem]"><span className="mono mr-2 text-[.7rem] text-ink-3">{stamp(l.at)}</span>{ENTRY[l.kind] ?? l.kind} <span className="title">{l.counterparty ?? "—"}</span>{l.memo && <span className="text-xs text-ink-2"> · {l.memo}</span>}</p>
+                    <p className="min-w-0 text-[.9rem]"><span className="mono mr-2 text-[.7rem] text-ink-3">{stamp(l.at)}</span>{ENTRY[l.kind] ?? l.kind} <span className="title">{l.counterparty ?? "—"}</span>{l.memo && <span className="text-xs text-ink-2"> · {l.memo}</span>}{/^(sp|pr)_/.test(l.ref) && <> · <Link className="link text-xs" href={`/r/${l.ref}`}>receipt →</Link></>}</p>
                     <p className="shrink-0 text-right leading-tight"><span className={`figure text-[1.1rem] ${l.deltaMinor < 0 ? "" : "text-green"}`}>{l.deltaMinor < 0 ? "−" : "+"}{usd(Math.abs(l.deltaMinor))}</span><span className="mono block text-[.66rem] text-ink-3">{usd(l.balanceAfterMinor)}</span></p>
                   </li>
                 ))}
               </ul>
             )}
+            <p className="mt-3 text-xs text-ink-2">This balance is one line of the gateway&rsquo;s books. <Link className="link" href="/bank">All accounts, checked against PayPal&rsquo;s own balance and statement →</Link></p>
           </section>
         )}
 
@@ -356,6 +357,7 @@ export function AgentView({ agentKey }: { agentKey: string }) {
               <li className="leader"><span className="text-ink-2">Stands behind it</span><i /><span className="mono text-[.78rem]">{answer.s.sponsors.map((x) => x.label).join(" → ")}</span></li>
               <li className="leader"><span className="text-ink-2">PayPal hold</span><i /><span className="mono text-[.78rem]">{answer.s.paypal.status ?? "not confirmed"}{answer.s.paypal.unusedMinor !== null ? ` · ${usd(answer.s.paypal.unusedMinor)} unused` : ""}</span></li>
               <li className="leader"><span className="text-ink-2">Authorization</span><i /><span className="mono text-[.78rem]">{answer.s.paypal.authorizationId ?? "none"}</span></li>
+              {answer.s.paypal.honoredUntil && <li className="leader"><span className="text-ink-2" title="PayPal recommends capturing within three days of the authorization. After that a capture is still attempted, subject to the funds being available, until the authorization ends on day 29.">PayPal&rsquo;s honor period</span><i /><span className={`mono text-[.78rem] ${Date.parse(answer.s.paypal.honoredUntil) > Date.now() ? "" : "text-red"}`}>{Date.parse(answer.s.paypal.honoredUntil) > Date.now() ? `until ${new Date(answer.s.paypal.honoredUntil).toISOString().slice(0, 16).replace("T", " ")} UTC` : "ended: captures no longer assured"}</span></li>}
               {answer.s.good && <li className="leader"><span className="text-ink-2">Could pay you up to</span><i /><span className="mono text-[.78rem]">{usd(answer.s.availableMinor)} in one payment</span></li>}
               <li className="leader"><span className="text-ink-2">Valid until</span><i /><span className="mono text-[.78rem]">{new Date(answer.s.validUntil).toISOString().slice(11, 19)} UTC</span></li>
             </ul>

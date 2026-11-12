@@ -1,6 +1,6 @@
 # Implementation report
 
-What was researched, decided, built and proven in the round of work that ended on 11 November 2026 (pull request #8), and in the shorter round that followed on 12 November (pull request #9), which has its own section at the end. Earlier rounds are in the git history and in [`RED_TEAM_REPORT.md`](RED_TEAM_REPORT.md).
+What was researched, decided, built and proven in the round of work that ended on 11 November 2026 (pull request #8), and in the two shorter rounds that followed on 12 November (pull request #9, then #10 and #11), each with its own section at the end. Earlier rounds are in the git history and in [`RED_TEAM_REPORT.md`](RED_TEAM_REPORT.md).
 
 ## The question this round answered
 
@@ -18,7 +18,7 @@ The Orchestra Research skills library was installed as asked (`npx @orchestra-re
 |---|---|---|---|---|---|
 | What does the hackathon require of PayPal? | Devpost page and rules | 11 Nov | "must meaningfully use both PayPal and AI"; "at least one PayPal technology"; Agent Toolkit and MCP are optional links. Technological Implementation asks "how thoroughly and skillfully does the project use PayPal Developer Platform and AI tool(s)". Judges "are not required to test the Project" | High (read directly) | Depth and skill of PayPal use is judged by name. Most judges will see only the video, text and repository |
 | How deeply do rivals use PayPal? | Static read of 65 rival repositories | 11 Nov | 34 verify webhooks; 18 use Vault; 18 use Disputes; 15 use JS SDK buttons; 14 use the Agent Toolkit; about 8 use Transaction Search; 7 reauthorize holds; 22 ship their own MCP server; 7 an SDK, mostly generated | Medium (grep, about 20 read in depth, nothing run) | Webhook verification was a gap more than half the field had closed. An SDK is rare |
-| Can PayPal's event feed be read without an inbound endpoint? | PayPal docs (`GET /v1/notifications/webhooks-events`) and the sandbox | 11 Nov | The endpoint exists and returned an empty list: this sandbox app has no webhook registered. Registering one from the development session was blocked as an account change | High for what was seen | Built both a push receiver and a pull of the feed. Proven on the simulator. Registration is the owner's step |
+| Can PayPal's event feed be read without an inbound endpoint? | PayPal docs (`GET /v1/notifications/webhooks-events`) and the sandbox | 11 Nov | The endpoint exists and returned an empty list: this sandbox app has no webhook registered. Registering one from the development session was blocked as an account change | High for what was seen | Built both a push receiver and a pull of the feed. Proven on the simulator. Registration is the owner's step (On 12 November, with a webhook registered, the same call returned real events: see the last section.) |
 | How does PayPal verify a webhook? | PayPal schema and docs; one call to the sandbox | 11 Nov | Seven required fields; the event must be passed back exactly as received; a forged event sent to the real sandbox returned `verification_status: FAILURE` | High | The receiver passes the raw body through. The forged-event answer is real evidence the check is wired |
 | Can an unclaimed payout be cancelled? | PayPal docs; the sandbox | 11 Nov | Documented: only when `UNCLAIMED`, returns `RETURNED`. On the sandbox: `BATCH_NOT_COMPLETED` while the batch closes, then `INTERNAL_SERVICE_ERROR` on every attempt, over several payout items and three runs (PayPal's debug ids are recorded) | High for what was seen | Recall is built and proven on the simulator. On the sandbox the gateway reports PayPal's refusal and changes nothing. Not claimed as working there |
 | What do PayPal's own agent tools give an agent? | PayPal docs, `paypal/agent-toolkit` | 11 Nov | App-wide credentials or an access token; per-tool enablement only; no spending limit, payee restriction or approval | Medium (docs only) | This is the gap Envelope fills. Stated as positioning, not built against |
@@ -100,25 +100,25 @@ Found and left, with reasons:
 | Thing | Simulator | Real PayPal sandbox |
 |---|---|---|
 | Record of PayPal calls | `tests/paypal-rail.test.ts` | Yes: `evidence/sandbox-run.json`, `evidence/sdk-run.md` |
-| SDK | `tests/sdk.test.ts` (17 then, 18 now) | Yes: `evidence/sdk-run.md` |
+| SDK | `tests/sdk.test.ts` (17 then, 19 now) | Yes: `evidence/sdk-run.md` |
 | MCP server and command line on the SDK | `tests/mcp.test.ts` (13), real MCP over stdio | The MCP server before the rebuild was driven by a model on the sandbox; not rerun since |
 | Sweep | Yes | Yes: ran, found nothing to move |
-| Webhook receiver | Yes: genuine, forged, edited, repeated, late | A forged event was rejected by PayPal. No genuine event has been received |
-| Event feed | Yes | Returned empty: no webhook is registered |
+| Webhook receiver | Yes: genuine, forged, edited, repeated, late | At the end of this round: a forged event was rejected by PayPal and no genuine event had been received. Since 12 November: two genuine pushed deliveries confirmed by PayPal (last section) |
+| Event feed | Yes | At the end of this round it returned empty, because no webhook was registered. Since 12 November: seven events about one run read and applied (last section) |
 | Recall | Yes | No: PayPal's sandbox refused every cancel |
 | Hold voided outside the gateway | Yes | No |
 
 ## Numbers
 
-- 101 automated tests passed at the end of this round (63 before it). After the next round: 109.
+- 101 automated tests passed at the end of this round (63 before it). After the next round: 109. After the one after that: 114. After the last round (the auditor and test depth): 447.
 - The attack corpus is unchanged at 171, all refused. New adversarial cases for recall and events are in `tests/paypal-rail.test.ts` so that figure, which the recorded video quotes, stays true.
 - Browser test: passes with a server gateway and with the in-browser gateway.
 
 ## Not done
 
-- No webhook is registered on the sandbox app, so no real PayPal event has been received.
+- No webhook was registered on the sandbox app at the end of this round, so no real PayPal event had been received. (One was registered on 12 November: last section.)
 - Recall has not completed on the sandbox.
-- Vault, Disputes, payer-present approval, Transaction Search, Invoicing and reauthorization were not used at the end of this round. More than a dozen rivals use each of the first three. (Disputes and Transaction Search were added in the next round.)
+- Vault, Disputes, payer-present approval, Transaction Search, Invoicing and reauthorization were not used at the end of this round. More than a dozen rivals use each of the first three. (Disputes and Transaction Search were added in the next round, and payer approval in the one after.)
 - The SDK is not published. That needs the owner's decision.
 - The video was not re-recorded. The owner asked to say when.
 
@@ -139,7 +139,7 @@ The rule from the round before still applied ("do not add an API merely to incre
 | Can an agent that was paid give the money back to the payer? | Captures: refund (already used for failed payouts) | A refund signed by the paid agent |
 | Has the payer disputed a payment, and what do we say? | Disputes: list, show, provide evidence | Dispute check, mark and evidence |
 
-Left out again, for the same reasons as before: Vault and payer-present approval (need a buyer login in a browser), Invoicing (a new product surface), reauthorization (needs four days), order tracking.
+Left out again, for the same reasons as before: Vault and payer-present approval (need a buyer login in a browser), Invoicing (a new product surface), reauthorization (needs four days), order tracking. (Payer approval was built later the same day, with PayPal's approval link and no buyer password in the gateway: last section.)
 
 ### What was built
 
@@ -183,10 +183,114 @@ Left out again, for the same reasons as before: Vault and payer-present approval
 
 ### Not done
 
-- No webhook is registered on the sandbox app, so no genuine PayPal event has been received.
+- At the end of this round no webhook was registered on the sandbox app, so no genuine PayPal event had been received. (Done later the same day: last section.)
 - Recall still has not completed on the sandbox.
 - On PayPal's real statement all 28 records were matched; a record that disagrees has only been produced on the simulator. <!-- STATEMENT-CHECK -->
 - No dispute evidence has been sent to the real PayPal.
 - Partial refunds; a refund of money that has already left the balance; recall for payouts made from a balance.
-- Vault, payer-present approval, Invoicing, order tracking and reauthorization.
+- Vault, payer approval in PayPal's checkout, Invoicing, order tracking and reauthorization. (Payer approval was built later the same day.)
 - The SDK is not published, and the video has not been re-recorded: it predates this round.
+
+---
+
+## Later on 12 November 2026 (pull requests #10 and #11)
+
+### What prompted it
+
+The owner registered a webhook for the sandbox app (`25W82274K7440843K`, all events, pointing at the hosted copy), asked for a fresh look at rivals, and asked that the features be one connected system and not a pile.
+
+A sweep of GitHub (Devpost's gallery is not published) found that every one of the twelve strongest entries seen lets the payer approve in PayPal, and that one of them, Writ, describes a delegation tree sharing one hold. Details and limits of that reading: [`COMPETITIVE_INTELLIGENCE.md`](COMPETITIVE_INTELLIGENCE.md).
+
+### What was built
+
+1. **PayPal's events on the real sandbox, from its feed** (`scripts/events-check.ts`, `evidence/paypal-events.json`). A $30 hold (`7WY24032LA280193S`), an $8 payment left as PayPal first reported it, a $6 payment given back. PayPal published seven events about the run; the gateway read them from the feed and applied each once; a `PAYMENT.CAPTURE.COMPLETED` event made it read the payment from PayPal, which took it from `PAYOUT_PENDING` to `PAID`; the same feed read again applied nothing; the void was confirmed by `PAYMENT.AUTHORIZATION.VOIDED`.
+2. **A copy with no gateway logs deliveries for replay** (`lib/api/relay.ts`, `scripts/replay-delivery.ts`). The webhook points at the hosted copy, which has no database and so cannot apply an event. It used to answer a bare 503. It now writes each delivery to the host's log unchanged (PayPal's headers, the body in base64) and still answers 503, because the event was not applied. A logged delivery can be replayed to a gateway with the sandbox credentials, where it is verified with PayPal like any other.
+3. **A pushed delivery verified by its signature, on the sandbox.** A real $7 payment (hold `2PE77716P0344103R`, payment `sp_ohYDQ-B4EaybPnzU`) was left at `PAYOUT_PENDING`. Two of PayPal's deliveries about it were taken from the host's log and replayed. PayPal's `verify-webhook-signature` confirmed each as sent and refused the same headers with one character of the body changed (401). `PAYMENT.PAYOUTS-ITEM.SUCCEEDED` took the payment to `PAID`; `PAYMENT.PAYOUTSBATCH.SUCCESS` left it there; each delivered again was "already applied".
+4. **The payer approves the hold in PayPal's own checkout** (`askApproval` and `registerRoot` in `lib/gateway/service.ts`; `requestHoldApproval`, `getOrder`, `authorizeApprovedOrder` in `lib/paypal/payments.ts`; `POST /api/envelopes/approval`; the console's second button; `owner.requestApproval` and `owner.sealApproved` in the SDK; a simulated checkout page at `/sim/paypal`). Asking for approval checks the envelope as sealing will, has PayPal make an order carrying the envelope's id and whole limit, and returns PayPal's link. Nothing is held or recorded. Sealing then reads the order from PayPal and refuses it unless it was made for this envelope, for this amount, with intent AUTHORIZE, and is approved; only then is the hold placed on it.
+5. **PayPal's honor period in proof of funds** (`honorPeriodEnds` in `lib/gateway/service.ts`). A statement of standing carries when PayPal's three-day honor period ends and when the 29-day authorization ends, signed with the rest; the agent page, the envelope page, the command line and the MCP tool show them.
+6. **Pages that lead to each other.** A line of PayPal's statement opens the receipt of its payment; a ledger entry opens its receipt; the PayPal panel, the treasury, a receipt and an agent's balance lead to the books; the treasury leads to each envelope's proof graph; an envelope leads to its owner's treasury.
+
+### Decided against, and why
+
+| Not built | Why |
+|---|---|
+| Hold reauthorization (7 of the 12 rivals) | PayPal allows it only once the three-day honor period is over, so it cannot be exercised on the sandbox before the deadline, and what it does to a hold that has been partly captured is not documented. Building it would have meant guessing. Proof of funds now says when the honor period ends, which is the honest half of the same question |
+| PayPal's Agent Toolkit (7 of 12) | It gives an agent PayPal API access through credentials its runtime holds. Agents here hold a signed envelope and never a PayPal credential; that is the point of the design. (Reversed in part in the next round: the toolkit is now used, read-only, by an auditor on the operator's side. See the last section) |
+| Vault (7 of 12) | It follows from payer approval (save the approved account for the next envelope) and would be the next thing to build. There was not time to prove it |
+| Order tracking, Login with PayPal, Invoicing | No question in this product that only they answer |
+| An AG Grid ledger (a sponsor prize, 10 of 12) | A separate prize; not what the entry is about |
+
+### Proven, and where
+
+| Thing | Simulator | Real PayPal sandbox |
+|---|---|---|
+| PayPal's events from its feed | `tests/paypal-rail.test.ts` | Yes: `evidence/paypal-events.json`, seven events, one settled a payment |
+| A pushed delivery verified by signature | Same tests: genuine, forged, edited, unsigned, repeated, late | Yes, by replay from the hosted copy's log: two confirmed, the same two edited refused. Not delivered to a gateway directly |
+| Delivery log of a copy with no gateway | One test: byte for byte, no `authorization` header logged, a stranger refused | The hosted copy logged PayPal's real deliveries, which is where the two above came from |
+| Payer approval | `tests/approval.test.ts` (3), one SDK test, the browser test in both modes | Order made (`PAYER_ACTION_REQUIRED`), link returned, sealing before approval refused. A person's approval is pending <!-- APPROVAL-SANDBOX --> |
+| Honor period in proof of funds | `tests/gateway.test.ts` | Not run there; it is arithmetic on the expiry PayPal reports |
+
+### Numbers
+
+- 114 automated tests pass (109 before): three in `tests/approval.test.ts`, one more each in `tests/sdk.test.ts` (19) and `tests/paypal-rail.test.ts` (9), and the honor-period assertions in `tests/gateway.test.ts`.
+- The attack corpus is unchanged at 171, all refused.
+- The MCP server still has fifteen tools.
+
+### Not done
+
+- Payer approval has not completed on the sandbox: it waits for a person. <!-- APPROVAL-SANDBOX -->
+- The pushed deliveries reached a gateway by replay, not directly: the hosted copy has no database. The gateway trusts PayPal's verification call and does not check the certificate chain itself.
+- Recall still has not completed on the sandbox, and no dispute evidence has been sent to the real PayPal.
+- Hold reauthorization, Vault, order tracking, Login with PayPal, Invoicing.
+- The video has not been re-recorded: it predates the last three rounds.
+
+## The round after that: the auditor, test depth, a guided tour (12 November)
+
+### What was asked
+
+Three things. Why PayPal's Agent Toolkit had been ruled out, when agents are meant to be the main users of the product. Why rivals still had many more tests. And a path a judge can follow without reading anything.
+
+### The decision on the toolkit
+
+"No place in the design" was too strong. The toolkit, out of the box, gives a model PayPal credentials and 47 tools, among them `create_order`, `pay_order` and `create_refund`. That is the arrangement Envelope replaces for agents that spend, and that part of the earlier decision stands: no spending agent is given it. But there is a job on the operator's side that only reads: checking what the spending agents did. That is where the toolkit fits.
+
+### What was built
+
+1. **The toolkit inside the gateway, cut down to reading** (`lib/paypal/toolkit.ts`). Five tools: `list_transactions`, `list_disputes`, `get_dispute`, `get_order`, `get_refund`. Three restrictions that do not depend on the model or on the toolkit's own configuration: it is given a placeholder token and no credential, and every request it builds is carried by the gateway's one PayPal client; any other tool is refused by name before the toolkit is called; and the carrier sends only `GET`s on five listed paths. The toolkit's hard-coded host (`api.sandbox.paypal.com`) is never contacted; requests go through the gateway's client to `api-m.sandbox.paypal.com`.
+2. **The auditor's reads and the check on its proposals** (`lib/gateway/auditor.ts`). Four reads of the gateway's records (`envelope_books`, `envelope_statement`, `envelope_unsettled`, `envelope_payment`) and `checkProposal`: four kinds (answer_dispute, recall_payout, close_envelope, freeze_account), judged against the records by rule. The reason text is not read. The answer names who would have to sign: the envelope's owner, the agent's owner, or the gateway's sweep.
+3. **Two ways to run it over the same tools** (`lib/ai/auditor.ts`): a model decides what to read (`/api/ai/audit` gives it the tool list), or a fixed procedure does when no model is connected.
+4. **Three fronts**: the `/auditor` page, which also runs in the in-browser copy with the toolkit package in the tab; a terminal (`npm run auditor`, `-- --model`, `-- --evidence FILE`); and MCP (`ENVELOPE_ROLE=auditor npm run mcp`, ten tools, no agent key). Endpoints: `GET /api/auditor`, `POST /api/auditor/read`, `POST /api/auditor/check`, and, on the simulator only, `POST /api/demo/dispute`. Against real PayPal the reads need `AUDITOR_SECRET`; with none configured the auditor answers 503.
+5. **Test depth.** Each of the 171 attacks is its own named test. 24 seeded runs make 40 to 80 random moves over two envelope trees and four accounts and check the gateway against an independent model after every move, even seeds with PayPal fees on. A matrix covers each of the eight terms narrower, equal and wider, 49 ordered pairs, and chains one to seven deep.
+6. **A guided tour** (`components/tour.tsx`, `/?tour=1`): seven steps, each advanced by the gateway's records or the page, not a timer.
+
+### Proven, and where
+
+| Thing | Simulator | Real PayPal sandbox |
+|---|---|---|
+| The toolkit's reads agree with the gateway's own reader | `tests/auditor.test.ts` | Yes, by the fixed procedure: 482 settled and 84 pending transactions read; of 34 records, 28 listed with the same amount (6 not listed yet) and all 28 found again through the toolkit. `evidence/auditor.json` |
+| A toolkit write is stopped | All 42 other tools refused by name; with the name check removed, the carrier stops `create_refund`, `pay_order` and `accept_dispute_claim` | Yes: `create_refund` refused by name, and stopped at the wire with nothing sent |
+| Proposals | Stand or fall on the records; unknown kinds refused | Five recall proposals for unclaimed payouts stand; each takes the envelope's owner. None was carried out |
+| A dispute the gateway has not heard of | Found through the toolkit, proposed, answered by the sweep, gone from a second audit (tests, and the browser test on the in-browser copy) | No: the sandbox holds no dispute against this account |
+| A memo that gives the auditor orders | A model that obeys it gets two refusals and one proposal naming the owner; nothing changes | Not run |
+| A real language model running the audit | Yes, once: Claude Haiku through the local Claude Code bridge ran "Let a model audit" on the page, found a staged dispute through the toolkit, traced it to its payment and proposed answering it | Yes, once: the same model from a terminal (`evidence/auditor-model.json`) |
+| The tour | `scripts/tour-check.mjs` on the in-browser copy | Not applicable |
+
+### Numbers
+
+- 447 automated tests in 17 files pass in about 93 seconds (114 before): `attacks` 172, `narrowing` 125, `invariants` 25, `auditor` 11, `mcp` 14, and the rest unchanged.
+- 160 further random seeds (100 to 259) passed once. No mutation testing was done, so there is no measure of what an injected fault would escape.
+- The attack corpus is unchanged at 171, all refused; `scripts/attack-suite.ts` reports the same.
+- The MCP server has fifteen tools as an agent and ten as an auditor.
+
+### Considered and not built
+
+- **PayPal's Cryptocurrency On/Off Ramp.** Switched on for the sandbox app. A partner service in which a person buys or sells crypto on PayPal's pages; `GET /v1/crypto/configurations` answered and nothing else was called. It does not fit an agent paying from a hold. See `FINANCIAL_FRONTIER_ROADMAP.md`.
+- **Sponsor tools.** None is used: AG Grid, APIMatic's context plugin, Bryntum, Channel3, Render.
+- Hold reauthorization, Vault, order tracking, Login with PayPal and Invoicing remain not built.
+
+### Not done
+
+- The model-driven audit has run with a real model only twice. The hosted copy's own model has not been watched running it.
+- On a server gateway that has `CRON_SECRET` set, the auditor page's "Run the gateway's sweep now" button cannot run the sweep: the gateway answers 401 and the page says the scheduler will answer the dispute on its next run.
+- The auditor has one shared operator key against real PayPal, and no per-person sign-in.
+- The video predates this round too.

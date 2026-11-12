@@ -351,7 +351,7 @@ switch (cmd) {
     const s = c.standing, signed = c.signature.ok;
     console.log(`${s.agentLabel} · account ${s.account}`);
     console.log(`  Stands behind it: ${s.sponsors.map((x) => `${x.label} (${x.role}, ${E.fingerprint(x.key)})`).join(" → ")}`);
-    console.log(`  PayPal hold ${s.paypal.authorizationId ?? "none"}: ${s.paypal.status ?? "not confirmed"}${s.paypal.unusedMinor !== null ? `, ${usd(s.paypal.unusedMinor)} unused` : ""} (${s.paypal.mode})`);
+    console.log(`  PayPal hold ${s.paypal.authorizationId ?? "none"}: ${s.paypal.status ?? "not confirmed"}${s.paypal.unusedMinor !== null ? `, ${usd(s.paypal.unusedMinor)} unused` : ""}${s.paypal.honoredUntil ? `, in PayPal's honor period until ${s.paypal.honoredUntil.slice(0, 16).replace("T", " ")} UTC` : ""} (${s.paypal.mode})`);
     console.log(`  Asked: ${usd(s.ask.amount)} to ${s.ask.payee} for ${s.ask.purpose}`);
     console.log(s.good ? `  GOOD. It can pay you up to ${usd(s.availableMinor)} in one payment right now.` : `  NOT GOOD. This payment would be refused:`);
     for (const x of s.reasons) console.log(`    ${x.code}: ${x.detail}`);

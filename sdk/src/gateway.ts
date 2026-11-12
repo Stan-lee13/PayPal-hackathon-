@@ -6,7 +6,7 @@
 import type { SignedRefund } from "../../lib/envelope/core";
 import type { Envelope, SignedAccept, SignedAccount, SignedCard, SignedCardCancel, SignedCharge, SignedFreeze, SignedHello, SignedKeep, SignedPromise, SignedRead, SignedRevoke, SignedSpend, SignedTransfer } from "../../lib/envelope/core";
 import { EnvelopeError } from "./errors";
-import type { AccountOpened, AgentProfile, Books, Card, ChargeOutcome, EnvelopeState, FreezeResult, GatewayKey, GatewayReason, PayPalTrail, Evidence, PaymentStatus, PromiseOutcome, Recalled, ReceiptResponse, RefundOutcome, StatementCheck, Reference, RevokeResult, RootState, SpendOutcome, Standing, TransferOutcome } from "./types";
+import type { AccountOpened, ApprovalLink, AgentProfile, Books, Card, ChargeOutcome, EnvelopeState, FreezeResult, GatewayKey, GatewayReason, PayPalTrail, Evidence, PaymentStatus, PromiseOutcome, Recalled, ReceiptResponse, RefundOutcome, StatementCheck, Reference, RevokeResult, RootState, SpendOutcome, Standing, TransferOutcome } from "./types";
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 export type GatewayOptions = {
@@ -125,9 +125,17 @@ export class Gateway {
   /** The named key accepts (pays) or declines (releases) a promise. Declining answers LAPSED, which is what was asked for. */
   accept(signed: SignedAccept): Promise<SpendOutcome> { return this.verdict("/api/gateway/accept", { signed }, (o: SpendOutcome) => signed.request.decline === true && o.status === "LAPSED"); }
   revoke(signed: SignedRevoke): Promise<RevokeResult> { return this.ok("POST", "/api/gateway/revoke", { signed }); }
-  /** Seal a root envelope: the gateway asks PayPal to hold the money. */
-  async seal(chain: Envelope, p: { ownerName?: string; title?: string } = {}): Promise<RootState> {
-    return (await this.ok<{ root: RootState }>("POST", "/api/envelopes", { chain, principalName: p.ownerName, title: p.title })).root;
+  /**
+   * Seal a root envelope: the gateway asks PayPal to hold the money. With `approvedOrder` the hold is
+   * placed on a PayPal order the payer approved (see `requestApproval`); the gateway reads that order
+   * from PayPal and refuses it unless it was made for this envelope and has been approved.
+   */
+  async seal(chain: Envelope, p: { ownerName?: string; title?: string; approvedOrder?: string } = {}): Promise<RootState> {
+    return (await this.ok<{ root: RootState }>("POST", "/api/envelopes", { chain, principalName: p.ownerName, title: p.title, paypalOrderId: p.approvedOrder })).root;
+  }
+  /** Ask PayPal for a link where the payer approves this envelope's hold in PayPal's own checkout. Nothing is held or recorded yet. */
+  requestApproval(chain: Envelope, p: { title?: string; returnUrl: string; cancelUrl?: string }): Promise<ApprovalLink> {
+    return this.ok("POST", "/api/envelopes/approval", { chain, title: p.title, returnUrl: p.returnUrl, cancelUrl: p.cancelUrl ?? p.returnUrl });
   }
   openAccount(signed: SignedAccount): Promise<AccountOpened> { return this.ok("POST", "/api/accounts", { signed }); }
   sendTransfer(signed: SignedTransfer): Promise<TransferOutcome> { return this.verdict("/api/bank/transfer", { signed }); }

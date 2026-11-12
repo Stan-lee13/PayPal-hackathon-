@@ -191,6 +191,28 @@ try {
   if (OUT) await p2.screenshot({ path: `${OUT}/local-5-console.png`, fullPage: true }).catch(() => {});
   console.log("second tab: console lists the envelope and the receiving agent");
   // The second tab stays open (and keeps polling) for the rest of the run: two tabs share one in-browser database.
+  // A hold the payer approves in PayPal's checkout. On the simulator the checkout is a page of this app; on the sandbox it needs a person at PayPal.
+  if ((await (await fetch(`${BASE}/api/health`)).json().catch(() => ({}))).paypalMode === "simulated") {
+    await page.goto(`${BASE}/console`);
+    await page.getByText(/is translator-agent, an agent owned by Bea/).waitFor(T);
+    await page.getByTestId("approve-at-paypal").click();
+    await page.getByTestId("sim-checkout").getByText(/Approve a hold of/).waitFor(T);
+    await page.getByTestId("sim-checkout").getByText("$200.00").waitFor(T);
+    // cancelling at PayPal seals nothing
+    await page.getByRole("link", { name: "Cancel and go back" }).click();
+    await page.getByText("You cancelled at PayPal. Nothing was held and nothing was sealed.").waitFor(T);
+    await page.getByText(/is translator-agent, an agent owned by Bea/).waitFor(T);
+    await page.getByTestId("approve-at-paypal").click();
+    await page.getByTestId("sim-checkout").getByRole("button", { name: "Approve the hold" }).click();
+    await page.getByText("PayPal hold backing this envelope").waitFor(T);
+    const rail = page.getByTestId("paypal-rail");
+    await rail.getByRole("button", { name: /Show all/ }).click().catch(() => {});
+    await rail.getByText("Asked the payer to approve the hold in PayPal").first().waitFor(T);
+    await rail.getByText("Placed the hold").waitFor(T);
+    await page.getByRole("button", { name: /Run the launch/ }).click();
+    await page.getByText(/creative-agent asked to pay/).waitFor(T);
+    console.log("payer approval: a cancelled checkout sealed nothing; an approved one placed the hold, and the agents spent from it");
+  }
   // What PayPal did, and a recall. The recall runs on the simulator only: PayPal's sandbox does not complete a cancel (see the README).
   const health = await (await fetch(`${BASE}/api/health`)).json().catch(() => ({}));
   if (health.paypalMode === "simulated") {
@@ -223,6 +245,32 @@ try {
     await page.getByTestId("paypal-rail").getByText("Refunded a capture").first().waitFor(T);
     console.log("refund: the agent that was paid gave $45 back; PayPal refunded the capture; the envelope shows $112 refunded and not spendable again");
     console.log("paypal record: hold, captures and payout listed; an unclaimed payout recalled by the owner: cancelled at PayPal, capture refunded");
+
+    // The auditor: PayPal's own Agent Toolkit, cut down to reading, run by the gateway. It finds a dispute the gateway has not heard of.
+    await page.goto(`${BASE}/auditor`);
+    await page.getByTestId("auditor-reach").getByText("list_transactions").waitFor(T);
+    await page.getByRole("button", { name: "create_refund" }).click();
+    await page.getByTestId("auditor-refusal").getByText(/is not a tool the auditor has/).waitFor(T);
+    await page.getByTestId("auditor-stage-dispute").click();
+    await page.getByTestId("auditor-note").getByText(/has disputed payment/).waitFor(T);
+    await page.getByTestId("auditor-run").click();
+    await page.getByTestId("auditor-report").getByText(/thing(s)? needs? a person\./).waitFor(T);
+    const proposal = page.getByTestId("auditor-proposal").filter({ hasText: "Answer the dispute" });
+    await proposal.getByText("stands", { exact: true }).waitFor(T);
+    await proposal.getByText("the gateway's sweep", { exact: true }).waitFor(T);
+    await page.getByTestId("auditor-steps").getByText("PayPal Agent Toolkit").first().waitFor(T);
+    if (OUT) await page.screenshot({ path: `${OUT}/local-9-auditor.png`, fullPage: true }).catch(() => {});
+    await proposal.getByTestId("auditor-sweep").click();
+    await page.getByTestId("auditor-note").getByText(/sent the signed evidence|belongs to its scheduler/).waitFor(T);
+    // A gateway with CRON_SECRET keeps the sweep for its scheduler; the page then says so and the dispute waits for the next scheduled sweep.
+    const swept = (await page.getByTestId("auditor-note").getByText(/sent the signed evidence/).count()) > 0;
+    if (swept) {
+      await page.getByTestId("auditor-run").click();
+      await page.getByTestId("auditor-steps").getByText("list_disputes").waitFor(T);
+      await page.getByTestId("auditor-report").waitFor(T);
+      if (await page.getByTestId("auditor-proposal").filter({ hasText: "Answer the dispute" }).count()) throw new Error("the dispute was answered, yet the auditor still proposes answering it");
+    }
+    console.log(`auditor: read PayPal through PayPal's Agent Toolkit, was refused a refund tool, found a dispute the gateway had not heard of, proposed; ${swept ? "the gateway's sweep answered it; a second audit no longer proposes it" : "this gateway keeps the sweep for its scheduler (CRON_SECRET), and the page said so"}`);
   }
 } catch (e) {
   failed = true;

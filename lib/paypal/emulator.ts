@@ -17,7 +17,10 @@ type SimCapture = { id: string; authorization_id: string; status: "COMPLETED" | 
 type SimPayout = { batch_id: string; sender_batch_id: string; item_id: string; transaction_id: string; item_status: "SUCCESS" | "UNCLAIMED" | "RETURNED" | "FAILED"; receiver: string; amount: { currency: string; value: string } };
 export type SimEvent = { id: string; event_type: string; create_time: string; resource_type: string; resource: Record<string, unknown> };
 type SimDispute = { dispute_id: string; status: string; reason: string; dispute_life_cycle_stage: string; create_time: string; dispute_amount: Money; capture_id: string; evidence?: string };
-type Sim = { disputes?: Record<string, SimDispute>; events?: SimEvent[]; auths: Record<string, SimAuth>; captures: Record<string, SimCapture>; payouts: Record<string, SimPayout>; idem: Record<string, { status: number; body: unknown }>; calls: string[]; failNext: string | null; failLeft?: number; nextCapture?: "PENDING" | null; refuseRefunds?: boolean; fees?: boolean };
+/** An order waiting for, or given, the payer's approval in PayPal's checkout. */
+type SimOrder = { id: string; status: "PAYER_ACTION_REQUIRED" | "APPROVED" | "COMPLETED"; reference_id?: string; custom_id: string; amount: Money; auth_id?: string };
+const SIM_PAYER = { payer_id: "SIMPAYER7Q2", email_address: "payer@personal.example.com", name: { given_name: "Sandbox", surname: "Payer" } };
+type Sim = { orders?: Record<string, SimOrder>; disputes?: Record<string, SimDispute>; events?: SimEvent[]; auths: Record<string, SimAuth>; captures: Record<string, SimCapture>; payouts: Record<string, SimPayout>; idem: Record<string, { status: number; body: unknown }>; calls: string[]; failNext: string | null; failLeft?: number; nextCapture?: "PENDING" | null; refuseRefunds?: boolean; fees?: boolean };
 
 function state(): Sim {
   return simState<Sim>("paypal", () => ({ auths: {}, captures: {}, payouts: {}, idem: {}, calls: [], failNext: null }));
@@ -79,6 +82,10 @@ export async function simNextCapturePending() { await withSimState(() => { state
 export async function simSetCapture(id: string, status: "COMPLETED" | "DECLINED") { await withSimState(() => { const c = state().captures[id]; if (c) c.status = status; }); }
 /** Tests: PayPal refuses every refund until switched off. */
 export async function simRefuseRefunds(on: boolean) { await withSimState(() => { state().refuseRefunds = on; }); }
+/** The simulated payer presses "approve" in the simulated checkout. False when there is no such order waiting. */
+export async function simApproveOrder(orderId: string): Promise<boolean> {
+  return withSimState(() => { const o = state().orders?.[orderId]; if (!o || o.status !== "PAYER_ACTION_REQUIRED") return false; o.status = "APPROVED"; return true; });
+}
 /** Tests: charge fees on captures and payouts from now on, as PayPal does (see captureFee above). */
 export async function simChargeFees(on: boolean) { await withSimState(() => { state().fees = on; }); }
 /** Tests: mutating calls the simulator executed (not idempotent replays), e.g. to prove nothing was captured twice. */
@@ -117,13 +124,42 @@ function route(input: string, init: RequestInit): Response {
     const pu = body?.purchase_units?.[0];
     if (body?.intent !== "AUTHORIZE") return err(422, "UNPROCESSABLE_ENTITY", "UNSUPPORTED_INTENT", "The simulator supports intent=AUTHORIZE.");
     if (!pu?.amount?.value || !pu?.amount?.currency_code) return err(422, "UNPROCESSABLE_ENTITY", "MISSING_REQUIRED_PARAMETER", "amount is required.");
-    if (!body?.payment_source?.card?.number) return err(422, "UNPROCESSABLE_ENTITY", "PAYER_ACTION_REQUIRED", "The simulator only authorizes orders with a card payment source.");
+    if (body?.payment_source?.paypal) {
+      // The payer has to approve this one in PayPal's checkout. Here that is a page of this app, plainly marked as the simulator.
+      const ctx = body.payment_source.paypal.experience_context ?? {};
+      const o: SimOrder = { id: id("SIMORD"), status: "PAYER_ACTION_REQUIRED", reference_id: pu.reference_id, custom_id: pu.custom_id ?? "", amount: pu.amount };
+      (s.orders ??= {})[o.id] = o;
+      const q = new URLSearchParams({ token: o.id, amount: pu.amount.value, currency: pu.amount.currency_code, for: String(pu.description ?? ""), back: String(ctx.return_url ?? ""), cancel: String(ctx.cancel_url ?? "") });
+      return reply(200, { id: o.id, status: o.status, payment_source: { paypal: {} }, links: [{ rel: "self", href: `${url.origin}/v2/checkout/orders/${o.id}`, method: "GET" }, { rel: "payer-action", href: `/sim/paypal?${q}`, method: "GET" }] });
+    }
+    if (!body?.payment_source?.card?.number) return err(422, "UNPROCESSABLE_ENTITY", "PAYER_ACTION_REQUIRED", "The simulator authorizes orders with a card, or with a PayPal payment source the payer approves.");
     const now = new Date();
     const orderId = id("SIMORD");
     const a: SimAuth = { id: id("SIMAUTH"), order_id: orderId, status: "CREATED", amount: pu.amount, custom_id: pu.custom_id ?? "", create_time: now.toISOString(), expiration_time: new Date(now.getTime() + 29 * 86400_000).toISOString(), captured: 0 };
     s.auths[a.id] = a;
     emit(s, "PAYMENT.AUTHORIZATION.CREATED", "authorization", pub(a));
     return reply(201, { id: orderId, status: "COMPLETED", purchase_units: [{ reference_id: pu.reference_id, payments: { authorizations: [pub(a)] } }] });
+  });
+  const orderBody = (o: SimOrder) => ({
+    id: o.id, status: o.status, intent: "AUTHORIZE",
+    purchase_units: [{ reference_id: o.reference_id, custom_id: o.custom_id, amount: o.amount, ...(o.auth_id && s.auths[o.auth_id] ? { payments: { authorizations: [pub(s.auths[o.auth_id]!)] } } : {}) }],
+    ...(o.status === "PAYER_ACTION_REQUIRED" ? {} : { payer: SIM_PAYER, payment_source: { paypal: { account_id: SIM_PAYER.payer_id, email_address: SIM_PAYER.email_address } } }),
+  });
+  if ((m = p.match(/^\/v2\/checkout\/orders\/([^/]+)$/)) && method === "GET") {
+    const o = s.orders?.[m[1]!];
+    return o ? reply(200, orderBody(o)) : err(404, "RESOURCE_NOT_FOUND", "INVALID_RESOURCE_ID", "Order not found.");
+  }
+  if ((m = p.match(/^\/v2\/checkout\/orders\/([^/]+)\/authorize$/)) && method === "POST") return mutate(() => {
+    const o = s.orders?.[m![1]!];
+    if (!o) return err(404, "RESOURCE_NOT_FOUND", "INVALID_RESOURCE_ID", "Order not found.");
+    if (o.status === "PAYER_ACTION_REQUIRED") return err(422, "UNPROCESSABLE_ENTITY", "ORDER_NOT_APPROVED", "Payer has not yet approved the Order for payment.");
+    if (o.status === "COMPLETED") return err(422, "UNPROCESSABLE_ENTITY", "ORDER_ALREADY_AUTHORIZED", "Order already authorized.");
+    const now = new Date();
+    const a: SimAuth = { id: id("SIMAUTH"), order_id: o.id, status: "CREATED", amount: o.amount, custom_id: o.custom_id, create_time: now.toISOString(), expiration_time: new Date(now.getTime() + 29 * 86400_000).toISOString(), captured: 0 };
+    s.auths[a.id] = a;
+    o.status = "COMPLETED"; o.auth_id = a.id;
+    emit(s, "PAYMENT.AUTHORIZATION.CREATED", "authorization", pub(a));
+    return reply(201, orderBody(o));
   });
   if ((m = p.match(/^\/v2\/payments\/authorizations\/([^/]+)$/)) && method === "GET") {
     const a = s.auths[m[1]!];
@@ -164,6 +200,10 @@ function route(input: string, init: RequestInit): Response {
     emit(s, "PAYMENT.CAPTURE.REFUNDED", "refund", { ...refund, amount: c.amount, invoice_id: c.invoice_id, custom_id: c.custom_id });
     return reply(201, refund);
   });
+  if ((m = p.match(/^\/v2\/payments\/refunds\/([^/]+)$/)) && method === "GET") {
+    const c = Object.values(s.captures).find((x) => x.refund_id === m![1]);
+    return c ? reply(200, { id: c.refund_id, status: "COMPLETED", amount: c.amount, invoice_id: c.invoice_id, custom_id: c.custom_id }) : err(404, "RESOURCE_NOT_FOUND", "INVALID_RESOURCE_ID", "Refund not found.");
+  }
   if (p === "/v1/payments/payouts" && method === "POST") return mutate(() => {
     const sbid = body?.sender_batch_header?.sender_batch_id;
     const it = body?.items?.[0];

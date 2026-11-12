@@ -196,3 +196,17 @@ select.field { appearance: none; background-image: linear-gradient(45deg, transp
 .xcard { position: relative; overflow: hidden; aspect-ratio: 1.586; border-radius: 14px; padding: 18px 20px; color: #FCFAF4;
   background: linear-gradient(135deg, #1B2B6B 0%, #17140F 62%); box-shadow: 0 1px 0 rgb(255 255 255 / .12) inset, 0 14px 28px -14px rgb(23 20 15 / .55); }
 .xcard-dead { filter: grayscale(.85); opacity: .72; }
+
+/* The guided tour: a strip along the bottom, and a ring on the control to press. */
+html[data-tour] body { padding-bottom: 5.5rem; }
+.tour { position: fixed; inset: auto 0 0 0; z-index: 40; background: var(--ink); color: var(--sheet); border-top: 3px solid var(--blue); box-shadow: 0 -10px 30px -18px rgb(23 20 15 / .6); animation: rise 260ms var(--ease-out) both; }
+.tour-dot { width: 14px; height: 4px; border-radius: 2px; background: color-mix(in srgb, var(--sheet) 22%, transparent); transition: background-color 200ms ease; }
+.tour-dot.is-done { background: var(--sheet); }
+.tour-dot.is-now { background: color-mix(in srgb, var(--blue) 55%, var(--sheet)); }
+.tour-btn { display: inline-flex; align-items: center; min-height: 34px; padding: .25rem .8rem; border-radius: 3px; border: 1.25px solid color-mix(in srgb, var(--sheet) 35%, transparent); font-size: .82rem; font-weight: 600; color: var(--sheet); transition: background-color 150ms ease, transform 120ms var(--ease-out); }
+.tour-btn:active { transform: scale(.97); }
+.tour-btn-main { background: var(--sheet); color: var(--ink); border-color: var(--sheet); }
+@media (hover: hover) and (pointer: fine) { .tour-btn:hover { background: color-mix(in srgb, var(--sheet) 14%, transparent); } .tour-btn-main:hover { background: #fff; } }
+[data-tour-on] { outline: 2.5px solid var(--blue); outline-offset: 5px; border-radius: 3px; animation: tour-ring 1.6s ease-in-out infinite; }
+@keyframes tour-ring { 0%, 100% { outline-offset: 5px; outline-color: var(--blue); } 50% { outline-offset: 8px; outline-color: color-mix(in srgb, var(--blue) 45%, transparent); } }
+@media (prefers-reduced-motion: reduce) { .tour { animation: fade 160ms ease both; } [data-tour-on] { animation: none; } .tour-btn:active { transform: none; } }

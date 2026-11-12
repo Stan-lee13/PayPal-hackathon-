@@ -193,6 +193,10 @@ d("gateway (simulated PayPal)", async () => {
     await G.spend(await E.signSpend(w.artChain, w.art, { amount: 7000, payee: "designer@example.com", purpose: "design" }));
     const after = await ask(w.artChain, w.art, { amount: 1500, payee: "designer@example.com", purpose: "design" });
     expect(after).toMatchObject({ good: true, availableMinor: 2000, paypal: { status: "PARTIALLY_CAPTURED", unusedMinor: 13000 } });
+    // PayPal recommends capturing within three days of the authorization: the statement says when that ends, and when the authorization itself does
+    expect(Date.parse(after.paypal.authorizedUntil!) - Date.parse(after.paypal.honoredUntil!)).toBe(26 * 86400_000);
+    expect(Date.parse(after.paypal.honoredUntil!) - Date.now()).toBeGreaterThan(2.9 * 86400_000);
+    expect(await G.verifyStanding(after)).toBe(true);
     expect((await ask(w.artChain, w.art, { amount: 2500, payee: "designer@example.com", purpose: "design" })).reasons.map((x) => x.code)).toEqual(["OVER_ENVELOPE_LIMIT"]);
 
     // someone who copied the envelope but lacks the key

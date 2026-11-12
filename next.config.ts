@@ -1,3 +1,4 @@
+import path from "node:path";
 import type { NextConfig } from "next";
 
 const securityHeaders = [
@@ -20,6 +21,8 @@ const nextConfig: NextConfig = {
       // PGlite carries Node-only branches it never takes in a browser; give the bundler empty modules for them.
       config.plugins.push(new webpack.NormalModuleReplacementPlugin(/^node:/, (res: { request: string }) => { res.request = res.request.replace(/^node:/, ""); }));
       config.resolve.fallback = { ...config.resolve.fallback, fs: false, "fs/promises": false, path: false, module: false, url: false, crypto: false, stream: false, zlib: false, os: false, util: false, worker_threads: false, child_process: false, async_hooks: false, net: false, tls: false, perf_hooks: false };
+      // PayPal's Agent Toolkit depends on the npm package "os", which only re-exports Node's; in a tab it gets a stand-in.
+      config.resolve.alias = { ...config.resolve.alias, os$: path.resolve("lib/local/os-shim.cjs") };
       // In the browser the gateway's database is PGlite, not a Postgres connection.
       config.plugins.push(new webpack.NormalModuleReplacementPlugin(/^\.\/driver$/, (res: { context: string; request: string }) => {
         if (/[\\/]lib[\\/]db$/.test(res.context)) res.request = "./driver.browser";

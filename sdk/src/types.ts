@@ -78,7 +78,8 @@ export type Standing = {
   good: boolean;
   reasons: Array<{ code: string; detail: string }>;
   availableMinor: number;
-  paypal: { mode: string; authorizationId: string | null; status: string | null; unusedMinor: number | null };
+  /** `honoredUntil` is the end of PayPal's three-day honor period, when the hold is at its strongest; `authorizedUntil` is when the authorization itself ends (29 days). */
+  paypal: { mode: string; authorizationId: string | null; status: string | null; unusedMinor: number | null; honoredUntil: string | null; authorizedUntil: string | null };
   issuedAt: string; validUntil: string; gateway: string; sig: string;
 };
 
@@ -98,6 +99,8 @@ export type Reference = {
   paypalMode: string; gateway: string; sig: string;
 };
 
+/** Where to send the payer to approve a hold in PayPal's own checkout, and the PayPal order that will carry it. */
+export type ApprovalLink = { orderId: string; approveUrl: string; amountMinor: number; currency: string };
 export type RootState = {
   id: string; principal: string; principalName: string; title: string; currency: string;
   limitMinor: number; status: "ACTIVE" | "CLOSED";

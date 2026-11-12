@@ -161,7 +161,7 @@ export function EnvelopeView({ id }: { id: string }) {
         <header>
           <p className="label">Envelope · owner {root.principalName} <span className="normal-case tracking-normal">{fingerprint(root.principal)}</span>{isOwner ? " (you)" : ""}</p>
           <h1 className="display mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-[clamp(2rem,4.4vw,3rem)]">{root.title} <Stamp tone={open ? "green" : "grey"}>{open ? "Open" : "Closed"}</Stamp></h1>
-          <p className="mt-2"><Link className="link text-[.9rem]" href={`/proof/${root.id}`} data-testid="proof-link">Proof graph: trace every dollar back to {isOwner ? "your" : `${root.principalName}'s`} signature →</Link></p>
+          <p className="mt-2"><Link className="link text-[.9rem]" href={`/proof/${root.id}`} data-testid="proof-link">Proof graph: trace every dollar back to {isOwner ? "your" : `${root.principalName}'s`} signature →</Link>{isOwner && <Link className="link ml-5 text-[.9rem]" href="/treasury">Your treasury: every envelope and agent of yours →</Link>}</p>
         </header>
 
         <section className="sheet overflow-hidden p-5 sm:p-6" aria-label="PayPal hold">
@@ -169,6 +169,7 @@ export function EnvelopeView({ id }: { id: string }) {
             <div>
               <p className="label">PayPal hold backing this envelope</p>
               <p className="mono mt-1 text-[.72rem] text-ink-2">authorization {root.authorizationId}</p>
+              {open && root.authorizationExpiresAt && <p className="mt-1 max-w-sm text-[.72rem] leading-snug text-ink-3" title="PayPal recommends capturing within three days of the authorization. After that a capture is still attempted, subject to the funds being available.">In PayPal&rsquo;s honor period until {new Date(Date.parse(root.authorizationExpiresAt) - 26 * 86400_000).toISOString().slice(0, 16).replace("T", " ")} UTC · authorized until {new Date(root.authorizationExpiresAt).toISOString().slice(0, 10)}</p>}
             </div>
             <Postmark className="-mr-4 -mt-4 shrink-0 rotate-[7deg]" size={104} tone={open ? "blue" : "grey"} top="PAYPAL · HOLD" bottom={open ? "AUTHORIZED" : "VOIDED"} line1={usd(root.limitMinor)} line2={d.mode === "sandbox" ? "SANDBOX" : d.mode.toUpperCase()} />
           </div>
@@ -208,10 +209,10 @@ export function EnvelopeView({ id }: { id: string }) {
           <section className="space-y-4 border-t-[1.5px] border-ink pt-5" data-testid="controls">
             <h2 className="label">Controls</h2>
             <div className="flex flex-wrap gap-x-4 gap-y-4">
-              {d.demoAgents && <button type="button" className="btn btn-ink" disabled={Boolean(busy) || !open} onClick={() => script(RUN, "run")}>{busy === "run" ? "Agents working…" : "Run the launch (agents split & pay)"}</button>}
-              {d.demoAgents && <button type="button" className="btn" disabled={Boolean(busy) || !open} onClick={() => script(ATTACK, "attack")}>{busy === "attack" ? "Attacking…" : "Compromise the creative agent"}</button>}
+              {d.demoAgents && <button type="button" className="btn btn-ink" data-tour="run" disabled={Boolean(busy) || !open} onClick={() => script(RUN, "run")}>{busy === "run" ? "Agents working…" : "Run the launch (agents split & pay)"}</button>}
+              {d.demoAgents && <button type="button" className="btn" data-tour="attack" disabled={Boolean(busy) || !open} onClick={() => script(ATTACK, "attack")}>{busy === "attack" ? "Attacking…" : "Compromise the creative agent"}</button>}
               {d.demoAgents && blocks[0]?.caps.approveOver !== undefined && <button type="button" className="btn" disabled={Boolean(busy) || !open || waiting.length > 0} onClick={() => script(["ask-owner"], "ask")}>{busy === "ask" ? "Asking…" : "Agent asks for a bigger payment"}</button>}
-              {isOwner && <button type="button" className="btn btn-red" disabled={Boolean(busy) || !open} onClick={() => revoke(id, "the root")}>Close envelope & release the hold</button>}
+              {isOwner && <button type="button" className="btn btn-red" data-tour="close" disabled={Boolean(busy) || !open} onClick={() => revoke(id, "the root")}>Close envelope & release the hold</button>}
             </div>
             {d.demoAgents && <p className="text-xs text-ink-2">The built-in agents are scripted and their keys live {gatewayInBrowser() ? "in this browser" : "on this demo server"}. External agents (see the README) hold their own keys and call the same gateway.</p>}
             {!isOwner && <p className="text-xs text-ink-2">Only the owner's browser holds the key that can revoke or close this envelope.</p>}
@@ -243,7 +244,7 @@ export function EnvelopeView({ id }: { id: string }) {
                   {s.reasons.length > 0 && <ul className="mono mt-2 space-y-0.5 text-[.72rem] leading-snug text-red">{s.reasons.map((r, i) => <li key={i}><b>{r.code}</b> · {r.detail}</li>)}</ul>}
                   {s.captureId && <p className="mono mt-2 text-[.68rem] text-ink-2">capture {s.captureId} · {s.payoutStatus === "HELD_IN_ACCOUNT" ? "credited to the agent\u2019s balance, no payout" : <>payout {s.payoutBatchId}{s.payoutStatus ? ` (${s.payoutStatus})` : ""}</>}</p>}
                   {s.disputeId && <p className="mono mt-2 text-[.7rem] leading-snug text-red">PayPal dispute {s.disputeId} · {(s.disputeStatus ?? "open").replace(/_/g, " ").toLowerCase()} · the gateway answers with this payment&rsquo;s signed chain of authority</p>}
-                  {s.hasReceipt && <Link className="link mt-1.5 inline-block text-[.8rem]" href={`/r/${s.id}`}>Receipt & authority chain →</Link>}
+                  {s.hasReceipt && <Link className="link mt-1.5 inline-block text-[.8rem]" data-tour="receipt" href={`/r/${s.id}`}>Receipt & authority chain →</Link>}
                   {s.status === "UNCLAIMED" && isOwner && (
                     <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5">
                       <button type="button" className="btn btn-sm" disabled={Boolean(busy)} onClick={() => recall(s.id)} data-testid="recall">{busy === "recall" ? "Asking PayPal…" : "Recall this payment"}</button>
