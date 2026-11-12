@@ -16,6 +16,7 @@ export { EnvelopeError } from "./errors";
 export { toMinor, formatMinor, type Amount } from "./money";
 export { verifyReceipt, verifyStanding, verifyPromiseNote, verifyReference, verifyTransferReceipt, encodeToken, decodeToken, type Verification } from "./verify";
 export type * from "./types";
+export type { SealTerms } from "./agent";
 
 /** The protocol itself: every signing and verifying function, with no network and no dependencies. */
 export * as protocol from "../../lib/envelope/core";

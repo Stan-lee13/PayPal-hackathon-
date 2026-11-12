@@ -184,12 +184,13 @@ export function AgentView({ agentKey }: { agentKey: string }) {
               <ul className="ledger mt-4 border-t-[1.5px] border-ink" data-testid="ledger">
                 {p.balance.ledger.map((l) => (
                   <li key={l.id} className="flex items-baseline justify-between gap-3 py-2.5">
-                    <p className="min-w-0 text-[.9rem]"><span className="mono mr-2 text-[.7rem] text-ink-3">{stamp(l.at)}</span>{ENTRY[l.kind] ?? l.kind} <span className="title">{l.counterparty ?? "—"}</span>{l.memo && <span className="text-xs text-ink-2"> · {l.memo}</span>}</p>
+                    <p className="min-w-0 text-[.9rem]"><span className="mono mr-2 text-[.7rem] text-ink-3">{stamp(l.at)}</span>{ENTRY[l.kind] ?? l.kind} <span className="title">{l.counterparty ?? "—"}</span>{l.memo && <span className="text-xs text-ink-2"> · {l.memo}</span>}{/^(sp|pr)_/.test(l.ref) && <> · <Link className="link text-xs" href={`/r/${l.ref}`}>receipt →</Link></>}</p>
                     <p className="shrink-0 text-right leading-tight"><span className={`figure text-[1.1rem] ${l.deltaMinor < 0 ? "" : "text-green"}`}>{l.deltaMinor < 0 ? "−" : "+"}{usd(Math.abs(l.deltaMinor))}</span><span className="mono block text-[.66rem] text-ink-3">{usd(l.balanceAfterMinor)}</span></p>
                   </li>
                 ))}
               </ul>
             )}
+            <p className="mt-3 text-xs text-ink-2">This balance is one line of the gateway&rsquo;s books. <Link className="link" href="/bank">All accounts, checked against PayPal&rsquo;s own balance and statement →</Link></p>
           </section>
         )}
 

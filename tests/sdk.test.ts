@@ -312,6 +312,22 @@ d("@envelope/sdk against the gateway (simulated PayPal)", () => {
     await ada.close(root.id);
   });
 
+  it("an owner seals with a hold the payer approves at PayPal: refused until approved, then sealed on that order", async () => {
+    const { simApproveOrder } = await import("../lib/paypal/emulator");
+    const payer = await Agent.generate({ gateway, label: "courier-agent" });
+    const asked = await ada.requestApproval({ to: payer.identity, limit: "30.00", payees: ["designer@example.com"], purposes: ["design"], hours: 1, title: "Courier budget", returnUrl: "https://app.example/back" });
+    expect(asked.approveUrl).toContain(asked.orderId);
+    // the payer has not approved: nothing is sealed, and the SDK says why
+    const early = await refused(ada.sealApproved(asked));
+    expect(early.message).toContain("has not approved");
+    expect(await simApproveOrder(asked.orderId)).toBe(true);
+    const sealed = await ada.sealApproved(asked);
+    expect(sealed.root).toMatchObject({ limitMinor: 3000, paypalOrderId: asked.orderId, status: "ACTIVE" });
+    await payer.hold(sealed.chain);
+    expect((await payer.pay({ amount: "12.00", payee: "designer@example.com", purpose: "design" })).paypal?.captureId).toBeTruthy();
+    await ada.close(sealed.root.id);
+  });
+
   it("the owner reads their own books, revokes a sub-envelope and closes the root", async () => {
     const t = await ada.treasury();
     expect(t).toBeTruthy();

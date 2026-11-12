@@ -2,11 +2,19 @@
 
 import { api } from "@/lib/client/api";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { fingerprint, randomId, seal, type KeyPair } from "@/lib/envelope/core";
 import { principalKey } from "@/lib/principal-key";
 
 const cents = (s: string) => Math.round(Number(s) * 100);
+/** A seal the payer is approving at PayPal. Kept for this tab only, so coming back from PayPal can finish it. */
+const PENDING = "envelope:seal-awaiting-paypal";
+type Waiting = { chain: unknown; principalName: string; title: string; draftId?: string; orderId: string };
+const waitingSeal = {
+  read(): Waiting | null { try { return JSON.parse(sessionStorage.getItem(PENDING) ?? "null"); } catch { return null; } },
+  keep(w: Waiting) { sessionStorage.setItem(PENDING, JSON.stringify(w)); },
+  forget() { try { sessionStorage.setItem(PENDING, "null"); } catch { /* storage unavailable */ } },
+};
 
 export function SealForm({ designer }: { designer: string }) {
   const router = useRouter();
@@ -23,7 +31,32 @@ export function SealForm({ designer }: { designer: string }) {
   const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => setF({ ...f, [k]: e.target.value });
   const list = (s: string) => s.split(",").map((x) => x.trim()).filter(Boolean);
 
-  async function submit(e: React.FormEvent) {
+  // Back from PayPal's checkout: the payer approved (PayPal adds ?token=<order>) or cancelled.
+  const resumed = useRef(false);
+  useEffect(() => {
+    if (resumed.current) return;
+    const q = new URLSearchParams(location.search);
+    const waiting = waitingSeal.read();
+    if (q.has("cancelled")) {
+      resumed.current = true;
+      waitingSeal.forget();
+      setErr("You cancelled at PayPal. Nothing was held and nothing was sealed.");
+      history.replaceState(null, "", "/console");
+      return;
+    }
+    const token = q.get("token");
+    if (!token || !waiting || waiting.orderId !== token) return;
+    resumed.current = true;
+    void (async () => {
+      setBusy("PayPal says you approved. Placing the hold…");
+      const r = await api("/api/envelopes", { body: { chain: waiting.chain, principalName: waiting.principalName, title: waiting.title, draftId: waiting.draftId, paypalOrderId: token } });
+      if (!r.ok) { setErr(r.json?.error ?? "The gateway refused the envelope."); setBusy(null); history.replaceState(null, "", "/console"); return; }
+      waitingSeal.forget();
+      router.push(`/e/${r.json.root.id}`);
+    })();
+  }, [router]);
+
+  async function submit(e: React.SyntheticEvent, approveAtPayPal = false) {
     e.preventDefault();
     if (!key) return;
     setErr(null);
@@ -39,6 +72,16 @@ export function SealForm({ designer }: { designer: string }) {
       } else if (!/^[A-Za-z0-9_-]{43}$/.test(holder.publicKey)) throw new Error("Paste the agent's public key (43 characters, from `agent.ts keygen`).");
       setBusy("Signing in your browser…");
       const chain = await seal(key, holder, { currency: "USD", limit: cents(f.limit), perPayment: cents(f.per), payees: list(f.payees).length ? list(f.payees) : null, purposes: list(f.purposes).length ? list(f.purposes) : null, notAfter: new Date(Date.now() + Number(f.hours) * 3600_000).toISOString(), splits: Number(f.splits), ...(f.over.trim() ? { approveOver: cents(f.over) } : {}) });
+      if (approveAtPayPal) {
+        // The payer approves the hold in PayPal's own checkout. Nothing is held or recorded until they come back approved.
+        setBusy("Asking PayPal for an approval link…");
+        const a = await api("/api/envelopes/approval", { body: { chain, title: f.title, returnUrl: `${location.origin}/console?approved=1`, cancelUrl: `${location.origin}/console?cancelled=1` } });
+        if (!a.ok) throw new Error(a.json?.error ?? "PayPal would not start the approval.");
+        waitingSeal.keep({ chain, principalName: f.name, title: f.title, draftId: f.holder === "demo" ? draftId : undefined, orderId: a.json.orderId });
+        setBusy("Taking you to PayPal…");
+        location.href = a.json.approveUrl;
+        return;
+      }
       setBusy("Placing the PayPal hold…");
       const r = await api("/api/envelopes", { body: { chain, principalName: f.name, title: f.title, draftId: f.holder === "demo" ? draftId : undefined } });
       const j = r.json;
@@ -82,8 +125,12 @@ export function SealForm({ designer }: { designer: string }) {
           <p className="border-b-[1.5px] border-ink pb-1 font-serif text-[1.6rem] italic leading-none text-blue" aria-hidden="true">{f.name || "—"}</p>
           <p className="mt-1.5 text-xs text-ink-2">Signed with your key <span className="mono text-ink">{key ? fingerprint(key.publicKey) : "…"}</span>, which stays in this browser. The gateway can enforce your envelope but can't forge one.</p>
         </div>
-        <button className="btn btn-ink shrink-0" disabled={!key || Boolean(busy)}>{busy ?? `Seal & hold $${Number(f.limit || 0).toFixed(2)} on PayPal`}</button>
+        <div className="flex shrink-0 flex-col items-stretch gap-2">
+          <button className="btn btn-ink" disabled={!key || Boolean(busy)}>{busy ?? `Seal & hold $${Number(f.limit || 0).toFixed(2)} on PayPal`}</button>
+          <button type="button" className="btn btn-sm" disabled={!key || Boolean(busy)} onClick={(e) => submit(e, true)} data-testid="approve-at-paypal">Or approve the hold in PayPal first →</button>
+        </div>
       </div>
+      <p className="-mt-2 text-xs text-ink-3">The first button places the hold on PayPal&rsquo;s sandbox test card, with nobody signing in. The second sends you to PayPal&rsquo;s checkout to approve the hold yourself; the envelope is sealed when you come back.</p>
       {err && <p role="alert" className="text-sm text-red">{err}</p>}
     </form>
   );

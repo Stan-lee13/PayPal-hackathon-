@@ -67,9 +67,23 @@ export const handlers: Record<string, Handler> = {
   },
 
   /** Seal: register a root envelope signed by the principal; the gateway places the PayPal hold. */
+  /** Start a seal that the payer approves in PayPal's own checkout: returns the link to send them to. Nothing is held or recorded yet. */
+  "POST /api/envelopes/approval": async ({ body }) => {
+    const back = z.string().min(8).max(400).refine((u) => { try { return ["https:", "http:"].includes(new URL(u).protocol); } catch { return false; } }, "Give an absolute http(s) address to return to.");
+    const b = z.object({ chain: z.array(z.any()).length(1), title: z.string().max(120).default("Envelope"), returnUrl: back, cancelUrl: back }).parse(body);
+    return { body: await G.askApproval(b) };
+  },
+  /** The simulated payer approves in the simulated checkout. Exists only on the simulator. */
+  "POST /api/sim/paypal/approve": async ({ body }) => {
+    if (paypalMode() !== "simulated") return { status: 404, body: { error: "There is no simulated checkout here: this gateway talks to PayPal." } };
+    const b = z.object({ orderId: z.string().regex(/^[A-Z0-9]{6,40}$/) }).parse(body);
+    const { simApproveOrder } = await import("../paypal/emulator");
+    return (await simApproveOrder(b.orderId)) ? { body: { approved: true } } : { status: 409, body: { error: "There is no order with that id waiting for approval." } };
+  },
+
   "POST /api/envelopes": async ({ body }) => {
-    const b = z.object({ chain: z.array(z.any()).length(1), principalName: z.string().max(80).default("Principal"), title: z.string().max(120).default("Envelope"), draftId: z.string().regex(/^draft_[A-Za-z0-9_-]{8,40}$/).optional() }).parse(body);
-    const root = await G.registerRoot({ chain: b.chain, principalName: b.principalName, title: b.title });
+    const b = z.object({ chain: z.array(z.any()).length(1), principalName: z.string().max(80).default("Principal"), title: z.string().max(120).default("Envelope"), draftId: z.string().regex(/^draft_[A-Za-z0-9_-]{8,40}$/).optional(), paypalOrderId: z.string().regex(/^[A-Z0-9]{6,40}$/).optional() }).parse(body);
+    const root = await G.registerRoot({ chain: b.chain, principalName: b.principalName, title: b.title, paypalOrderId: b.paypalOrderId });
     return { body: { root, demoAgents: b.draftId ? await attachDemoAgents(b.draftId, b.chain) : false } };
   },
 
