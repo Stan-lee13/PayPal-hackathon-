@@ -195,6 +195,28 @@ d("the PayPal rail (simulated PayPal)", async () => {
     expect(await calls("/capture")).toBe(0);
   });
 
+  it("a copy with no gateway logs a PayPal delivery unchanged for replay, applies nothing, and says so to PayPal", async () => {
+    const { logPayPalDelivery } = await import("../lib/api/relay");
+    const raw = JSON.stringify({ id: "WH-1", event_type: "PAYMENT.CAPTURE.COMPLETED", resource: { id: "CAP", note: "é".repeat(900) } });
+    const lines: string[] = [];
+    const log = console.log;
+    console.log = (...a: unknown[]) => { lines.push(a.join(" ")); };
+    let res: Response, stranger: Response;
+    try {
+      res = await logPayPalDelivery(new Request("http://x/api/paypal/webhook", { method: "POST", body: raw, headers: { "paypal-transmission-id": "tx-12345678", "paypal-transmission-sig": "sig", "paypal-auth-algo": "SHA256withRSA", authorization: "Bearer not-logged" } }));
+      stranger = await logPayPalDelivery(new Request("http://x/api/paypal/webhook", { method: "POST", body: raw }));
+    } finally { console.log = log; }
+    expect(res.status).toBe(503);          // PayPal is told the event was not applied
+    expect(stranger.status).toBe(400);     // not a PayPal delivery: nothing logged
+    expect(lines.filter((l) => l.includes("tx-12345678")).length).toBeGreaterThan(1);
+    expect(lines.join("\n")).not.toContain("not-logged");
+    // the body comes back byte for byte, which is what PayPal's signature covers
+    const body = lines.map((l) => /body (\d+)\/(\d+) (\S+)$/.exec(l)).filter(Boolean).sort((x, y) => Number(x![1]) - Number(y![1])).map((m) => m![3]).join("");
+    expect(Buffer.from(body, "base64").toString("utf8")).toBe(raw);
+    expect(JSON.parse(/headers (\{.*\})$/.exec(lines.find((l) => l.includes(" headers "))!)![1]!)).toMatchObject({ "paypal-transmission-sig": "sig", "paypal-auth-algo": "SHA256withRSA" });
+    expect(await getDb().select().from(schema.paypalEvents)).toHaveLength(0);
+  });
+
   it("the sweep endpoint refuses callers without the scheduler's secret when one is set", async () => {
     process.env.CRON_SECRET = "s3cret";
     try {
