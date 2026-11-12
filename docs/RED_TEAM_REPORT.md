@@ -1,6 +1,6 @@
 # Red team report
 
-What was attacked, what broke, what was fixed, and what is still open. Written 11 November 2026; the section "12 November" and the open list were updated the next day.
+What was attacked, what broke, what was fixed, and what is still open. Written 11 November 2026; the sections dated 12 November and the open list were added and updated the next day.
 
 Three sources:
 
@@ -79,6 +79,28 @@ Attacks on the new code (`tests/books.test.ts`, `tests/sdk.test.ts`):
 | A record whose amount differs from PayPal's statement | Reported as "amount differs"; the comparison as a whole is marked not ok |
 | A dispute opened at PayPal against a capture | Shown on the payment; evidence sent once; sending it moves no money |
 
+## Later on 12 November: payer approval, and deliveries PayPal pushes
+
+New code: the owner approving a hold in PayPal's own checkout, and a copy with no gateway logging PayPal's deliveries for replay. No fault was found in old code in this round.
+
+Attacks on the approval path (`tests/approval.test.ts`, `tests/sdk.test.ts`; simulator):
+
+| Attack | Result |
+|---|---|
+| Sealing with an order the payer has not approved yet | Refused (409). PayPal is not asked to authorize, nothing is held, nothing is recorded |
+| An order another owner approved, presented to seal a different envelope | Refused (422): the order is read from PayPal and carries the other envelope's id |
+| An approved order presented for an envelope with a larger limit | Refused (422): the amount PayPal holds for the order must equal the envelope's limit |
+| An order id PayPal does not know | Refused; nothing recorded |
+| A `javascript:` address given as the place to return to after approval | Refused (400): only an absolute http(s) address is accepted |
+| The same approved order used twice | The envelope is returned as already sealed; one authorization at PayPal |
+| An envelope already sealed put up for approval again | Refused (409) |
+| The simulated checkout's approve call, for an order that is not waiting or already approved | Refused (409). The call exists only on the simulator: a gateway that talks to PayPal answers 404 |
+| The audit line for the hold searched for the payer's address | Masked; only PayPal's payer id is kept |
+
+On the simulated checkout page, the address to return to comes from the link, so the page only ever sends the payer back to the same site.
+
+Attacks on pushed deliveries, on the real sandbox (`scripts/replay-delivery.ts`, `evidence/paypal-events.json`): two genuine deliveries from PayPal were offered to a gateway three ways each. With one character of the body changed and PayPal's own headers: refused (401), because PayPal's `verify-webhook-signature` did not confirm it. As delivered: confirmed by PayPal and applied. Delivered again: "already applied". The copy with no gateway (`tests/paypal-rail.test.ts`): a request without PayPal's headers is refused and not logged; the `authorization` header is never logged; the body is logged byte for byte and nothing is stored or applied.
+
 ## What was tried and held
 
 From the attack corpus, all refused with no capture or payout caused:
@@ -102,11 +124,13 @@ From the reviewer's notes, areas examined with nothing found: the approval thres
 ## Reproducing
 
 ```bash
-npm test                              # 109 tests on the simulator
+npm test                              # 114 tests on the simulator
 npx tsx scripts/attack-suite.ts       # the corpus; rewrites docs/evidence/attack-suite.json
-npx vitest run tests/settlement.test.ts tests/review-findings.test.ts tests/replay-encoding.test.ts tests/books.test.ts
+npx vitest run tests/settlement.test.ts tests/review-findings.test.ts tests/replay-encoding.test.ts tests/books.test.ts tests/approval.test.ts
 npx tsx scripts/paypal-refund-capacity.ts   # on the real sandbox: a refunded capture does not reopen the hold
 node scripts/tabs-stress.mjs          # two tabs on the in-browser copy (see the file's header for how to start it)
+npx tsx scripts/events-check.ts       # on the real sandbox: PayPal's events, read from its feed, finish a payment
+npx tsx scripts/approval-check.ts     # on the real sandbox: prints PayPal's approval link and waits for a person to approve
 ```
 
 To see a fault come back, revert its fix and run the matching test. For the replay bug: make `unb64u` in `lib/envelope/core.ts` accept any spelling again and `tests/replay-encoding.test.ts` fails with a second payment.
@@ -118,7 +142,7 @@ These are known and not fixed.
 | Risk | Why it is still there |
 |---|---|
 | A receipt is signed when the capture is made and the payout is requested. It records PayPal's payout status at that moment and is not withdrawn if the payout later fails. | The receipt page and the proof graph ask PayPal live, which is the remedy. A signed correction would be better. |
-| Settlement by itself is set up and has not been seen to run. | `vercel.json` schedules the sweep daily and a verified webhook receiver exists; both are tested on the simulator. The hosted copy has no database for them to work on, no webhook is registered for the sandbox app, and no genuine PayPal event has been received. |
+| Pushed deliveries reached a gateway by replay, not directly; the daily schedule has not been seen to fire. | On the sandbox PayPal's events finished payments both ways: read from its event feed, and pushed with signatures PayPal confirmed. The webhook points at the hosted copy, which has no database, so it logs each delivery unchanged and a gateway with the sandbox credentials replays it. A deployment with a database would receive them directly; that has not been run. `vercel.json` schedules the sweep daily and it has not been seen to fire. |
 | Dispute evidence has never been sent to the real PayPal. | Finding a dispute and answering it ran on the simulator only. On the sandbox PayPal was asked and held none. What PayPal makes of the evidence is unknown. |
 | A record that disagrees with PayPal's statement has only been produced on the simulator. | On the sandbox all 28 records were found on PayPal's statement with the same amount and none with a different one. There was no mismatch to catch. <!-- STATEMENT-CHECK --> |
 | Reserves are weak evidence on the sandbox. | The sandbox account holds test money from earlier runs, so it always covers; and PayPal's figure is about two hours old, so a newer shortfall is not seen until PayPal's next figure. The shortfall case is tested on the simulator. |
@@ -126,6 +150,9 @@ These are known and not fixed.
 | A refund is all or nothing, and only while the money is in the balance. | No partial refunds; nothing for money the agent has already spent. The payer's own route is a dispute at PayPal. |
 | The dispute evidence is public to whoever has the payment's id. | Like the receipt. It contains the signed chain and the payee's address as the agent signed it. A real deployment would send it to PayPal and show it only to the parties. |
 | The webhook receiver trusts PayPal's verification call. | It does not verify the certificate chain itself. Because an event can only cause a read of PayPal, a wrongly accepted event could not move money. |
+| The copy with no gateway writes PayPal's deliveries to the host's log. | Headers and body, unchanged, so they can be replayed. On the sandbox these are test events; with real money the log would hold payers' details and would need the same care as the database. A request without PayPal's headers is refused and not logged, and there is a per-instance limit, which is not a shared one. |
+| Payer approval has not completed on the real sandbox. | PayPal made the order and returned the approval link, and sealing before approval was refused. Completing it needs a person to sign in at PayPal and approve. The whole path is tested on the simulator. <!-- APPROVAL-SANDBOX --> |
+| A hold is never reauthorized. | PayPal recommends capturing within three days of the authorization and allows reauthorization only after that, so it cannot be exercised on the sandbox within the hackathon, and what it does to a partly captured hold is not documented. An envelope may live 28 days; after the third its hold is past the honor period. Proof of funds says when that is; nothing renews it. |
 | Recall covers payments from an envelope only, and has not completed on the sandbox. | A payout from an agent's balance that goes unclaimed still waits for PayPal to return it. On the sandbox PayPal answered every cancel with an error. |
 | An envelope's page, its proof graph and an agent's page are readable by anyone who has the id or key. The books page lists every account's balance. | Ids are random and unlisted, and keys are how counterparties find an agent. A real deployment would put the books behind operator sign-in and let an agent choose what its page shows. |
 | The shared demo agent (translator-agent and its card) can be driven by any visitor of the site. | It is one agent for every visitor by design, and it only pays fixed demo destinations. The check that the call comes from a browser page is not authentication. |
