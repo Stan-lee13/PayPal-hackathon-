@@ -113,7 +113,7 @@ export function SealForm({ designer }: { designer: string }) {
           <option value="own">My own agent (paste its public key)</option>
         </select>
       </label>
-      {f.holder === "demo" && <p className="-mt-3 text-xs text-ink-3">The demo agents follow a fixed script and their keys are held by this demo server. Real agents keep their own keys.</p>}
+      {f.holder === "demo" && <p className="-mt-3 text-xs text-ink-3">The demo agents follow a fixed script, and this demo keeps their keys for them. Real agents keep their own keys.</p>}
       {f.holder === "own" && (
         <div className="grid gap-x-8 gap-y-6 sm:grid-cols-[2fr_1fr]">
           <label className={L}>Agent public key<input className="field mono mt-1 !text-[.78rem]" value={f.agentKey} onChange={set("agentKey")} placeholder="from: npx tsx scripts/agent.ts keygen ops" /></label>
@@ -126,7 +126,7 @@ export function SealForm({ designer }: { designer: string }) {
           <p className="mt-1.5 text-xs text-ink-2">Signed with your key <span className="mono text-ink">{key ? fingerprint(key.publicKey) : "…"}</span>, which stays in this browser. The gateway can enforce your envelope but can't forge one.</p>
         </div>
         <div className="flex shrink-0 flex-col items-stretch gap-2">
-          <button className="btn btn-ink" disabled={!key || Boolean(busy)}>{busy ?? `Seal & hold $${Number(f.limit || 0).toFixed(2)} on PayPal`}</button>
+          <button className="btn btn-ink" data-tour="seal" disabled={!key || Boolean(busy)}>{busy ?? `Seal & hold $${Number(f.limit || 0).toFixed(2)} on PayPal`}</button>
           <button type="button" className="btn btn-sm" disabled={!key || Boolean(busy)} onClick={(e) => submit(e, true)} data-testid="approve-at-paypal">Or approve the hold in PayPal first →</button>
         </div>
       </div>

@@ -1,3 +1,4 @@
+import { TourStart } from "@/components/tour";
 import { Journey } from "@/components/journey";
 import Link from "next/link";
 import { ModeBanner } from "@/components/mode-banner";
@@ -95,7 +96,8 @@ export default function Home() {
             </p>
             <div className="mt-8 flex flex-wrap gap-4">
               <Link className="btn btn-ink" href="/console">Seal an envelope →</Link>
-              <Link className="btn" href="/spec">Read the protocol</Link>
+              <TourStart />
+              <Link className="btn btn-quiet" href="/spec">Read the protocol</Link>
             </div>
           </div>
 

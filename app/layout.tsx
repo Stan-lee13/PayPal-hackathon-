@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Fraunces, IBM_Plex_Mono, Instrument_Sans } from "next/font/google";
 import { GatewayStall } from "@/components/gateway-stall";
 import { InkDefs } from "@/components/stationery";
+import { Tour } from "@/components/tour";
 import { gatewayRunsInBrowser } from "@/lib/deployment";
 import "./globals.css";
 
@@ -27,6 +28,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <InkDefs />
         {children}
         <GatewayStall />
+        <Tour />
       </body>
     </html>
   );

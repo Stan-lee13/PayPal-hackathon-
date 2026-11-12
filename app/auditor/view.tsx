@@ -24,6 +24,7 @@ export function AuditorView() {
   const [note, setNote] = useState<{ text: string; tone: "good" | "bad" | "info" } | null>(null);
   const [refusal, setRefusal] = useState<{ tool: string; text: string } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [staged, setStaged] = useState(false);
   const stop = useRef(false);
   const headers = () => (key ? { authorization: `Bearer ${key}` } : undefined);
   const loadDesk = async () => { const r = await api<Desk>("/api/auditor", { headers: headers() }); if (r.ok) setDesk(r.json); };
@@ -62,6 +63,7 @@ export function AuditorView() {
     setBusy("stage");
     const r = await api("/api/demo/dispute", { body: {} });
     setNote(r.ok ? { text: `A payer has disputed payment ${r.json.payment} at the simulated PayPal (dispute ${r.json.dispute}). The gateway has not been told. Run the audit.`, tone: "info" } : { text: r.json?.error ?? "Could not stage a dispute.", tone: "bad" });
+    if (r.ok) setStaged(true);
     setBusy(null);
   }
   async function sweep() {
@@ -142,7 +144,7 @@ export function AuditorView() {
             <p className="mt-3 text-[.82rem] text-ink-2">{model?.available ? <>A model ({model.model}) decides what to look at, or a fixed procedure makes the same reads in a set order. Both use the same tools.</> : <>No model is connected to this copy, so the audit runs by a fixed procedure over the same tools a model would use.</>}</p>
             {simulated ? (
               <p className="mt-4 flex flex-wrap items-center gap-3 border-t border-rule pt-4 text-[.86rem] text-ink-2">
-                <button type="button" className="btn btn-sm" data-testid="auditor-stage-dispute" disabled={busy === "stage"} onClick={() => void stage()}>A payer disputes the latest payment</button>
+                <button type="button" className="btn btn-sm" data-testid="auditor-stage-dispute" data-staged={staged ? "" : undefined} disabled={busy === "stage"} onClick={() => void stage()}>A payer disputes the latest payment</button>
                 <span>Simulator only: gives the auditor something to find. On PayPal a payer does this in the Resolution Center.</span>
               </p>
             ) : null}
