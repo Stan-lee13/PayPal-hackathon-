@@ -60,7 +60,7 @@ A second pass on 11 November read 65 entries' code for which PayPal APIs they re
 | JS SDK buttons (the payer approves in PayPal) | 15 | No: the sandbox hold is placed on PayPal's test card |
 | PayPal's Agent Toolkit | 14 | No |
 | Order tracking | 11 | No |
-| Transaction Search | about 8 | Built on 12 November, with PayPal's reported balance beside it: every capture, payout and refund is looked up in PayPal's statement of the account, and PayPal's fee is read from each line. On the sandbox 13 of 28 records were found with the same amount, none with a different one; 15 too recent to be listed <!-- STATEMENT-CHECK --> |
+| Transaction Search | about 8 | Built on 12 November, with PayPal's reported balance beside it: every capture, payout and refund is looked up in PayPal's statement of the account, and PayPal's fee is read from each line. On the sandbox all 28 records were found with the same amount, none with a different one <!-- STATEMENT-CHECK --> |
 | Hold reauthorization | 7 | No |
 | Their own MCP server | 22 | Yes, fifteen tools, tested over real MCP |
 | Their own SDK | 7, mostly generated | Yes, hand-written and run against the sandbox |

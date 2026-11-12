@@ -71,7 +71,7 @@ How real each part is. **Operational** means it ran on the real PayPal sandbox a
 | Refund by the agent that was paid | Operational | `evidence/sandbox-run.json` (capture `1XG96277EH6264408`, refund `4C249901ET649933V`); `tests/books.test.ts`, `tests/sdk.test.ts` |
 | A refund keeps the envelope's budget used, as PayPal keeps the hold used | Operational | `scripts/paypal-refund-capacity.ts` on the sandbox; the main run refuses the refunded $6 a second time |
 | Reserves: what agents are owed against PayPal's reported balance | Operational for the reading; a shortfall has only been produced on the simulator | `evidence/sandbox-run.json`; `tests/books.test.ts` |
-| PayPal's statement (Transaction Search) against the records | Matched on the sandbox: 13 of 28 listed with the same amount, none with a different one; 15 too recent to be listed. PayPal's fees are read from the same lines ($12.02 on the listed records) <!-- STATEMENT-CHECK --> | `evidence/statement-check.json`; `tests/books.test.ts` |
+| PayPal's statement (Transaction Search) against the records | Matched on the sandbox: all 28 listed with the same amount, none with a different one. PayPal's fees are read from the same lines ($24.69 on the listed records) <!-- STATEMENT-CHECK --> | `evidence/statement-check.json`; `tests/books.test.ts` |
 | Disputes: found, marked, answered with evidence | Asked on the sandbox (none held); the rest simulated only | `evidence/sandbox-run.json`; `tests/books.test.ts` |
 | Pending capture handling | Simulated only | the sandbox never returned a pending capture |
 | Refund-due handling | Simulated only | the sandbox never refused a refund |

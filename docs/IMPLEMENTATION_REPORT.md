@@ -167,7 +167,7 @@ Left out again, for the same reasons as before: Vault and payer-present approval
 | Refund by the paid agent | `tests/books.test.ts`, `tests/sdk.test.ts`, browser test | Yes: capture `1XG96277EH6264408`, refund `4C249901ET649933V`, capture read back `REFUNDED` |
 | A refund does not reopen the hold | The gateway's own arithmetic refuses the next payment (tests) | Yes: authorization `0E653354WJ396544C`, refund `3FW098456W852262F`, second capture refused `MAX_CAPTURE_AMOUNT_EXCEEDED`; and in the main run a further $6 refused by the gateway |
 | Reserves | Yes, including a shortfall | Yes for the reading: $6114.08 as of 22:29:59 UTC on 11 November, covered. The account holds old test money, so this shows the call works, not that a shortfall would be caught there |
-| Statement match | Yes, including an amount that differs | Yes: 13 of 28 records listed with the same amount, none with a different one; 15 too recent to be listed; PayPal's fees read from the lines ($12.02) <!-- STATEMENT-CHECK --> |
+| Statement match | Yes, including an amount that differs | Yes: all 28 records listed with the same amount, none with a different one; PayPal's fees read from the lines ($24.69) <!-- STATEMENT-CHECK --> |
 | Disputes | Yes: found, marked, answered once | Asked only: PayPal held none |
 | Scheduled sweep | n/a | The sweep ran from the script. The schedule has not been seen to fire |
 | Two tabs on the in-browser copy | `scripts/tabs-stress.mjs` | n/a (that copy is a simulator) |
@@ -185,7 +185,7 @@ Left out again, for the same reasons as before: Vault and payer-present approval
 
 - No webhook is registered on the sandbox app, so no genuine PayPal event has been received.
 - Recall still has not completed on the sandbox.
-- On PayPal's real statement 13 of 28 records were matched and the rest were too recent to be listed; a record that disagrees has only been produced on the simulator. <!-- STATEMENT-CHECK -->
+- On PayPal's real statement all 28 records were matched; a record that disagrees has only been produced on the simulator. <!-- STATEMENT-CHECK -->
 - No dispute evidence has been sent to the real PayPal.
 - Partial refunds; a refund of money that has already left the balance; recall for payouts made from a balance.
 - Vault, payer-present approval, Invoicing, order tracking and reauthorization.

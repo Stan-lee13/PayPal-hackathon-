@@ -6,7 +6,7 @@ Every line marked "ran" or "pass" was run on this branch; where a check was last
 
 ## Verdict
 
-**Go, once the owner has done the steps under "Only the owner can do these".** The product works end to end on the real PayPal sandbox and on the hosted simulator. Three things are proven on the simulator only and are labelled that way everywhere: recalling an unclaimed payout, receiving PayPal's events, and answering a dispute with evidence (the dispute calls themselves ran on the sandbox, and PayPal had nothing disputed). PayPal's own statement was matched on the sandbox: 13 of 28 records listed with the same amount, none with a different one; 15 too recent to be listed. That statement also shows what the books did not: PayPal's fees ($12.02 on the listed records), which fall on the gateway's operator and are not priced in. <!-- STATEMENT-CHECK -->
+**Go, once the owner has done the steps under "Only the owner can do these".** The product works end to end on the real PayPal sandbox and on the hosted simulator. Three things are proven on the simulator only and are labelled that way everywhere: recalling an unclaimed payout, receiving PayPal's events, and answering a dispute with evidence (the dispute calls themselves ran on the sandbox, and PayPal had nothing disputed). PayPal's own statement was matched on the sandbox: all 28 records listed with the same amount, none with a different one. That statement also shows what the books did not: PayPal's fees ($24.69 on the listed records), which fall on the gateway's operator and are not priced in. <!-- STATEMENT-CHECK -->
 
 ## Architecture in one picture
 
@@ -64,7 +64,7 @@ The only component that holds PayPal credentials is the gateway. No model output
 | Refund of a capture, by the agent that was paid | Ran on the sandbox: capture `1XG96277EH6264408`, refund `4C249901ET649933V`, read back `REFUNDED` |
 | Refund of a capture after a failed payout | Simulator only: no sandbox payout failed |
 | Reported balance (reserves) | Ran on the sandbox: $6114.08 as of 22:29:59 UTC on 11 November, covered. The account holds old test money, so this proves the reading, not that a shortfall would show there |
-| Transaction Search (statement) | Matched on the sandbox: 222 lines read, 13 of 28 of our records listed with the same amount, none with a different one; 15 too recent to be listed. PayPal's fee read from each line: $12.02 on the listed records. An amount that differs is caught on the simulator only <!-- STATEMENT-CHECK --> |
+| Transaction Search (statement) | Matched on the sandbox: 251 lines read, all 28 of our records listed with the same amount, none with a different one. PayPal's fee read from each line: $24.69 on the listed records. An amount that differs is caught on the simulator only <!-- STATEMENT-CHECK --> |
 | Disputes | Asked on the sandbox: none held. Finding one and sending evidence: simulator only |
 | Cancel of an unclaimed payout (recall) | Simulator only. On the sandbox PayPal answered `BATCH_NOT_COMPLETED`, then `INTERNAL_SERVICE_ERROR` on every attempt |
 | Webhook verification | A forged event sent to the real sandbox was rejected. No genuine event has been received |
@@ -107,7 +107,7 @@ No scores are given here. A judge should not have to take the author's word for 
 ## Still open
 
 - Settlement by itself is set up and not yet seen: `vercel.json` schedules the sweep daily, but the hosted copy has no database for it to work on, and no webhook is registered.
-- No dispute evidence has been sent to the real PayPal. On PayPal's real statement 13 of 28 records were matched; the rest were too recent to be listed; a mismatch has only been produced on the simulator. <!-- STATEMENT-CHECK -->
+- No dispute evidence has been sent to the real PayPal. On PayPal's real statement all 28 records were matched; a mismatch has only been produced on the simulator. <!-- STATEMENT-CHECK -->
 - Reserves on the sandbox cannot show a shortfall: the account holds old test money and PayPal's figure is hours old.
 - PayPal's fees are measured (from its statement) and not charged to anyone: the operator carries them. That is a product decision still to make, not a defect in the arithmetic.
 - No partial refunds; a payment that has left an agent's balance cannot be refunded from it.
