@@ -216,22 +216,6 @@ await scene("receipt", async () => {
   await scrollTo('[data-testid="proof-inspector"]', "center");
 });
 
-// 6a. Over the owner's threshold: the agent can only ask, and the owner signs in this browser
-await page.goto(rootUrl);
-await holdCard();
-await scene("approval", async () => {
-  await scrollTo('[data-testid="controls"]', "start");
-  await wait(600);
-  await page.getByRole("button", { name: "Agent asks for a bigger payment" }).click();
-  await page.getByTestId("approval").getByText(/asks to pay/).waitFor(T);
-  await scrollTo('[data-testid="approval"]');
-  await wait(4200);
-  await page.getByTestId("approval").getByRole("button", { name: /^Sign & pay/ }).click();
-  await page.getByText(/^You signed\./).waitFor(T);
-  await page.getByTestId("approval").waitFor({ state: "detached", timeout: 30000 });
-  await top();
-});
-
 // 6b. The owner's treasury, with the books checked against PayPal
 await scene("treasury", async () => {
   await page.goto(`${BASE}/treasury`);
@@ -239,6 +223,25 @@ await scene("treasury", async () => {
   await wait(2200);
   await page.getByRole("button", { name: "Reconcile with PayPal" }).click();
   await page.getByTestId("books").getByText(/\d+ of \d+ match PayPal/i).waitFor(T);
+});
+
+// 6c. The auditor: a model reads PayPal through PayPal's own Agent Toolkit and the gateway's books, and proposes.
+// Against real PayPal the auditor's reads need the operator's key: start the app with AUDITOR_SECRET and pass the same value as AUDITOR_KEY here.
+await page.goto(`${BASE}/auditor`);
+await page.getByTestId("auditor-reach").getByText("list_transactions").waitFor(T);
+if (process.env.AUDITOR_KEY) {
+  await page.getByLabel(/Operator.s key/).fill(process.env.AUDITOR_KEY);
+  await page.keyboard.press("Tab");
+  await page.getByTestId("auditor-run").and(page.locator(":enabled")).waitFor(T);
+}
+await fast("auditor", async () => {
+  const byModel = page.getByTestId("auditor-run-model");
+  await ((await byModel.count()) ? byModel : page.getByTestId("auditor-run")).click();
+  await page.getByTestId("auditor-steps").getByText("PayPal Agent Toolkit").first().waitFor({ timeout: 240000 });
+  await scrollTo('[data-testid="auditor-steps"]', "start");
+  await page.getByTestId("auditor-report").waitFor({ timeout: 480000 });
+  await scrollTo('[data-testid="auditor-report"]', "center");
+  await wait(2500);
 });
 
 // 7. Revoke the compromised agent, then close
@@ -257,7 +260,7 @@ await scene("close", async () => {
 });
 
 // 8. Numbers, then the close
-await card("<span class=\"figure\" style=\"font-size:120px\">171<span style=\"color:#8A8271\">/171</span></span>", ["attacks refused in the test suite. None moved money.", "Try all of it in your browser: nothing to install, nothing to configure."]);
+await card("<span class=\"figure\" style=\"font-size:120px\">171<span style=\"color:#8A8271\">/171</span></span>", ["attacks refused, among 447 tests. None moved money.", "Try it in your browser: envelope-paypal.vercel.app/?tour=1 · nothing to install"]);
 await scene("numbers");
 await card("Seal is an authorization.<br>Spend is a capture and a payout.<br><em>Close is a void.</em>", ["Envelope · accounts, cards and a treasury for AI agents, on PayPal's rails", "open source · github.com/Stan-lee13/PayPal-hackathon-"]);
 await scene("end");
