@@ -96,7 +96,7 @@ export function BankView() {
             </p>
           </section>
 
-          <section className="sheet p-5 sm:p-6" data-testid="bank-statement">
+          <section className="sheet scroll-mt-6 p-5 sm:p-6" data-testid="bank-statement" id="statement">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <p className="label">PayPal&rsquo;s own statement</p>
               <button type="button" className="btn btn-sm" onClick={compare} disabled={st === "asking"}>{st === "asking" ? "Asking PayPal…" : "Compare with PayPal"}</button>

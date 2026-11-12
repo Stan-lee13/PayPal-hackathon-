@@ -22,7 +22,10 @@ export async function api<T = any>(path: string, init: { method?: "GET" | "POST"
     // Same shape a network round trip would give: dates become strings.
     return { ok: out.status >= 200 && out.status < 300, status: out.status, json: JSON.parse(JSON.stringify(out.body)) as T };
   }
-  const r = await fetch(path, { method, cache: "no-store", headers: { ...(init.body === undefined ? {} : { "content-type": "application/json" }), ...init.headers }, body: init.body === undefined ? undefined : JSON.stringify(init.body) });
+  let r: Response;
+  // A request that never reached the gateway is an answer too: the caller shows it and its button comes back, instead of a rejected promise leaving the page busy.
+  try { r = await fetch(path, { method, cache: "no-store", headers: { ...(init.body === undefined ? {} : { "content-type": "application/json" }), ...init.headers }, body: init.body === undefined ? undefined : JSON.stringify(init.body) }); }
+  catch { return { ok: false, status: 0, json: { error: "The gateway could not be reached. Check the connection and try again; nothing was changed by this attempt unless the page says otherwise." } as T }; }
   let json: unknown = null;
   try { json = await r.json(); } catch { json = { error: "The gateway did not answer." }; }
   return { ok: r.ok, status: r.status, json: json as T };

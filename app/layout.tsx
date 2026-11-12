@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Fraunces, IBM_Plex_Mono, Instrument_Sans } from "next/font/google";
 import { GatewayStall } from "@/components/gateway-stall";
 import { InkDefs } from "@/components/stationery";
+import { SiteFooter } from "@/components/site-footer";
 import { Tour } from "@/components/tour";
 import { gatewayRunsInBrowser } from "@/lib/deployment";
 import "./globals.css";
@@ -27,6 +28,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <a href="#main" className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-50 btn btn-ink">Skip to content</a>
         <InkDefs />
         {children}
+        <SiteFooter />
         <GatewayStall />
         <Tour />
       </body>

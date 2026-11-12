@@ -195,7 +195,7 @@ export function AgentView({ agentKey }: { agentKey: string }) {
         )}
 
         {p.balance && (p.bankDemo || p.cards.length > 0) && (
-          <section data-testid="cards">
+          <section data-testid="cards" id="cards" className="scroll-mt-6">
             <h2 className="label">Its card</h2>
             <p className="mt-1.5 max-w-prose text-sm text-ink-2">A Xenoncard is not a number to keep secret. It is this agent&rsquo;s signed permission for <b>one merchant</b> to charge its balance: so much a charge, so many charges, no more often than a billing period, and then it ends by itself. Only that merchant&rsquo;s key can charge it, so the card&rsquo;s details are worth nothing to anyone else. Nobody&rsquo;s bank card is handed to anyone.</p>
             {p.cards[0] && (() => {
