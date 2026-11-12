@@ -1,8 +1,61 @@
+<div align="center">
+
+<img src="docs/brand/envelope-icon.png" alt="Envelope: a kraft paper envelope closed with a blue seal" width="168" />
+
 # Envelope
 
 **Give your agent an envelope, not your wallet.**
 
-Try it (no sign-up): <https://envelope-paypal.vercel.app> · Two-minute tour: <https://envelope-paypal.vercel.app/?tour=1> · Video: <!-- VIDEO-LINK --> [`docs/demo/envelope-demo.mp4`](docs/demo/envelope-demo.mp4) for now · Sandbox evidence: [`docs/evidence/`](docs/evidence/) · SDK: [`docs/SDK.md`](docs/SDK.md)
+Spending authority for AI agents, backed by a PayPal hold.<br />
+An agent can split it for the agents it hires. Nobody can enlarge it.
+
+[**Try it**](https://envelope-paypal.vercel.app) &nbsp;·&nbsp; [**Two-minute tour**](https://envelope-paypal.vercel.app/?tour=1) &nbsp;·&nbsp; <!-- VIDEO-LINK -->[**Video**](docs/demo/envelope-demo.mp4) &nbsp;·&nbsp; [**Evidence**](docs/evidence/) &nbsp;·&nbsp; [**SDK**](docs/SDK.md) &nbsp;·&nbsp; [**Protocol**](docs/SPEC.md)
+
+![PayPal sandbox](https://img.shields.io/badge/PayPal-sandbox-1F3FA8) ![447 tests](https://img.shields.io/badge/tests-447_passing-2E7D4F) ![171 of 171 attacks refused](https://img.shields.io/badge/attacks-171_of_171_refused-2E7D4F) ![MIT licence](https://img.shields.io/badge/licence-MIT-17140F)
+
+</div>
+
+---
+
+| You sign | PayPal holds | Agents spend inside it |
+|---|---|---|
+| "$200, only to these two payees, only for translation and design, until tonight." Your key stays in your browser. | One authorization for the whole amount. Nothing is charged until an agent pays. | Each payment is a partial capture. Agents split smaller envelopes for the agents they hire, and an agent audits them through PayPal's own Agent Toolkit. |
+
+<table>
+  <tr>
+    <td width="33%"><img src="docs/screenshots/16-tour.png" alt="Sealing an envelope, with the guided tour's strip along the bottom" /></td>
+    <td width="33%"><img src="docs/screenshots/03-model.png" alt="A language model playing the agents on an envelope's page" /></td>
+    <td width="33%"><img src="docs/screenshots/15-auditor.png" alt="The auditor's page with its report" /></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Seal: you sign, PayPal holds</sub></td>
+    <td align="center"><sub>Agents split and pay; the gateway decides</sub></td>
+    <td align="center"><sub>An agent audits the agents</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/11-card.png" alt="A card an agent issued to one merchant" /></td>
+    <td><img src="docs/screenshots/12-proof-graph.png" alt="The proof graph tracing a payment back to its owner" /></td>
+    <td><img src="docs/screenshots/14-books-against-paypal.png" alt="The books compared with PayPal's own statement" /></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>A card locked to one merchant</sub></td>
+    <td align="center"><sub>Every dollar traced to a signature</sub></td>
+    <td align="center"><sub>The books against PayPal's statement</sub></td>
+  </tr>
+</table>
+
+## Contents
+
+- [What it is](#what-it-is)
+- [Judges: two minutes](#judges-two-minutes) · [Finding your way](#finding-your-way)
+- [What is proven where](#what-is-proven-where) · [What has actually run](#what-has-actually-run)
+- [What an agent gets](#what-an-agent-gets)
+- [The problem](#the-problem) · [What PayPal does here](#what-paypal-does-here) · [The mechanism](#the-mechanism)
+- [What it stops](#what-it-stops) · [How AI is used](#how-ai-is-used)
+- [Run it](#run-it) · [Bring your own agent](#bring-your-own-agent)
+- [Honest limits](#honest-limits) · [Licence](#licence)
+
+## What it is
 
 Someone who lets an AI agent spend money has two bad choices: hand it a credential that can spend everything, or approve every payment by hand. The freelancer or agent on the other side has a problem of its own: it cannot tell whether the software asking for work can pay. Envelope is one answer to both: a spending limit the owner signs, that PayPal holds the money for, and that anyone can check.
 
