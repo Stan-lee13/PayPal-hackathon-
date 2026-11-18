@@ -119,35 +119,99 @@ d("settlement lease", async () => {
 
   /** The same simulator, described the way a real provider must be: no promise about a repeat. */
   const withoutRetryPromise = () => Object.assign(Object.create(rail), {
-    idempotency: { sameReferenceIsSameOperation: true, retryWhileInFlight: false, memoryMs: null, lookupByReference: false, note: "no promise about a repeat while the first call is running" },
+    idempotency: { sameReferenceIsSameOperation: true, retryWhileInFlight: false, memoryMs: 30 * 86_400_000, duplicateIsAnError: true, lookupByReference: false, note: "no promise about a repeat while the first call is running" },
   }) as unknown as Mock;
 
-  it("a rail that cannot promise a safe repeat is parked and reconciled, never re-sent", async () => {
-    setRailForTesting(withoutRetryPromise());
-    const signed = await ask(500);
-    rail.failNext("payout.send", 1);
-    const first = await G.spend(signed);
+  /** The four facts every reconciliation must carry. */
+  const evidence = () => ({
+    by: "ops@example.com", source: "PayPal dashboard → Payouts (batch list)",
+    checkedAt: new Date().toISOString(), rationale: "PayPal's own batch and item records for this payment's sender_batch_id",
+  });
+
+  /**
+   * A payout the provider accepted whose answer never reached us: exactly the state resolvePayoutDoubt() exists
+   * for. Returns the provider's own batch id, which is the only thing that may be reconciled against.
+   */
+  async function doubtful(amountMinor = 500) {
+    let batchId = "";
+    let once = true;
+    const realSend = rail.payouts.send.bind(rail.payouts);
+    swallowed(rail).payouts.send = async (a) => {
+      const out = await realSend(a);
+      batchId = out.batchRef.id;
+      if (once) { once = false; throw inDoubt(rail.id, "the answer was lost on the way back", { providerCode: "MOCK_IN_DOUBT" }); }
+      return out;
+    };
+    const first = await G.spend(await ask(amountMinor));
     expect(first.spend!.payoutStatus).toBe("IN_DOUBT");
+    expect(batchId).toBeTruthy();
+    return { first, batchId };
+  }
+
+  it("a rail that cannot promise a safe repeat is parked and reconciled from the provider's item record, never re-sent", async () => {
+    setRailForTesting(withoutRetryPromise());
+    const { first, batchId } = await doubtful();
     const again = await G.settle(first.spend!.id);
     expect(again.status).toBe("CAPTURED");
     expect(again.payoutBatchId).toBeNull();
-    expect(rail.payoutCount(first.spend!.id)).toBe(0); // nothing was sent a second time
+    expect(rail.payoutCount(first.spend!.id)).toBe(1); // nothing was sent a second time
 
-    // Someone checked the provider and found the payout: it is recorded once, with the provider's ids.
-    const resolved = await G.resolvePayoutDoubt(first.spend!.id, { kind: "sent", by: "ops", batchRef: "PP-BATCH-7", itemRef: "PP-ITEM-7", status: "SUCCESS" });
-    expect(resolved.payoutBatchId).toBe("PP-BATCH-7");
+    // A batch id typed by hand is not evidence: the provider is asked, and it does not know this one.
+    await expect(G.resolvePayoutDoubt(first.spend!.id, { kind: "sent", batchRef: "PP-BATCH-7", ...evidence() }))
+      .rejects.toThrow(/no payout batch/);
+    expect((await spendRow(first.spend!.id)).payoutBatchId).toBeNull();
+
+    // The real batch is looked up at the provider; its item status is what is recorded — not a caller's claim.
+    const resolved = await G.resolvePayoutDoubt(first.spend!.id, { kind: "sent", batchRef: batchId, ...evidence() });
+    expect(resolved.payoutBatchId).toBe(batchId);
+    expect(resolved.payoutItemId).toBeTruthy();
     expect(resolved.payoutStatus).toBe("SUCCESS");
     expect((await positions()).filter((p) => p.kind === "payout")).toHaveLength(1);
     expect((await positions()).filter((p) => p.kind === "refund")).toHaveLength(0);
+    // And the reconciliation is on the record with its evidence and what the provider said about delivery.
+    const trails = (await getDb().execute(sql`select detail from audit_log where action = 'payout.reconciled'`)) as unknown as Array<{ detail: Record<string, unknown> }>;
+    expect(trails).toHaveLength(1);
+    expect(trails[0]!.detail).toMatchObject({ spend: first.spend!.id, itemStatus: "SUCCESS", funds: "credited", item: resolved.payoutItemId });
   });
 
-  it("clearing a doubt as not-sent is the only thing that makes a retry legitimate", async () => {
+  it("a batch the provider knows, but has no item status for, is not evidence that anyone was paid", async () => {
+    setRailForTesting(withoutRetryPromise());
+    const { first, batchId } = await doubtful();
+    const realRead = rail.payouts.read.bind(rail.payouts);
+    // A closed batch whose item has not been reported yet: batch SUCCESS says nothing about this recipient.
+    rail.payouts.read = async (p) => ({ ...(await realRead(p)), batchStatus: "SUCCESS", itemStatus: null });
+    await expect(G.resolvePayoutDoubt(first.spend!.id, { kind: "sent", batchRef: batchId, ...evidence() }))
+      .rejects.toThrow(/Batch status is not item status/);
+    expect((await spendRow(first.spend!.id)).payoutBatchId).toBeNull();
+  });
+
+  it("an item that pays a different amount is not this payment, and is refused", async () => {
+    setRailForTesting(withoutRetryPromise());
+    const { first, batchId } = await doubtful();
+    const realRead = rail.payouts.read.bind(rail.payouts);
+    rail.payouts.read = async (p) => ({ ...(await realRead(p)), amount: { minor: 99, currency: "USD" } });
+    await expect(G.resolvePayoutDoubt(first.spend!.id, { kind: "sent", batchRef: batchId, ...evidence() }))
+      .rejects.toThrow(/this payment owes/);
+    expect((await spendRow(first.spend!.id)).payoutBatchId).toBeNull();
+  });
+
+  it("clearing a doubt as not-sent needs evidence, and records who said so and why a retry cannot duplicate", async () => {
     setRailForTesting(withoutRetryPromise());
     const signed = await ask(450);
     rail.failNext("payout.send", 1);
     const first = await G.spend(signed);
     expect(first.spend!.payoutStatus).toBe("IN_DOUBT");
-    await G.resolvePayoutDoubt(first.spend!.id, { kind: "not-sent", by: "ops", note: "the provider lists no batch for this reference" });
+    // "I looked" is not a reconciliation: no source, no time, no reasoning.
+    await expect(G.resolvePayoutDoubt(first.spend!.id, { kind: "not-sent", by: "ops" } as unknown as Parameters<typeof G.resolvePayoutDoubt>[1]))
+      .rejects.toThrow(/needs who authorised it/);
+    expect((await spendRow(first.spend!.id)).payoutStatus).toBe("IN_DOUBT");
+
+    const how = evidence();
+    await G.resolvePayoutDoubt(first.spend!.id, { kind: "not-sent", ...how });
+    const trails = (await getDb().execute(sql`select detail from audit_log where action = 'payout.doubt_cleared'`)) as unknown as Array<{ detail: Record<string, unknown> }>;
+    expect(trails).toHaveLength(1);
+    expect(trails[0]!.detail).toMatchObject({ by: how.by, source: how.source, checkedAt: how.checkedAt, rationale: how.rationale, lookupByReference: false, retrySafe: false });
+
     const paid = await G.settle(first.spend!.id);
     expect(paid.status).toBe("PAID");
     expect(rail.payoutCount(first.spend!.id)).toBe(1);

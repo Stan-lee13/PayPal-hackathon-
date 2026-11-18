@@ -449,15 +449,51 @@ export async function settle(spendId: string): Promise<Spend> {
 }
 
 /**
+ * Evidence for a reconciliation. It is not enough to say "I looked": the record has to name who decided,
+ * where the fact came from, when it was observed, and why it proves a retry cannot pay twice. This is what
+ * an auditor reads months later, when the provider's own logs are gone.
+ */
+export type PayoutDoubtEvidence = {
+  /** Who authorised the reconciliation: an operator id or a reconciliation job, never free text. */
+  by: string;
+  /** Where the fact was observed, e.g. "PayPal dashboard → Payouts → batch 5TY…", "Transaction Search 2026-11-18". */
+  source: string;
+  /** When it was observed (ISO 8601). */
+  checkedAt: string;
+  /** Why this establishes that a retry cannot produce a second payment. */
+  rationale: string;
+};
+
+/**
  * An interrupted payout can only be resolved by finding out what the provider did. That is a person's (or a
- * reconciliation job's) decision, recorded with evidence: either the payout exists — it is recorded here,
- * once, with the provider's ids — or it does not, and the retry becomes legitimate.
+ * reconciliation job's) decision, recorded with evidence: either the payout exists — and the provider is
+ * asked to confirm it, item by item — or it does not, and the retry becomes legitimate.
+ *
+ * `batchRef` is a lookup key, never proof. A batch the provider does not know is refused, and a batch that
+ * is merely *submitted* (batch `SUCCESS`, item still `PENDING`/`UNCLAIMED`) is recorded as exactly that.
  */
 export type PayoutDoubt =
-  | { kind: "not-sent"; by: string; note?: string }
-  | { kind: "sent"; by: string; batchRef: string; itemRef?: string | null; status?: string | null; transactionId?: string | null; note?: string };
+  | (PayoutDoubtEvidence & { kind: "not-sent" })
+  | (PayoutDoubtEvidence & { kind: "sent"; batchRef: string; itemRef?: string | null });
+
+/** Every reconciliation carries the same four facts, whatever it concludes. */
+function checkDoubtEvidence(how: PayoutDoubtEvidence): void {
+  const missing = (["by", "source", "rationale"] as const).filter((k) => !how[k] || !how[k].trim());
+  if (missing.length || !how.checkedAt) {
+    throw new UserFacingError(
+      `A payout reconciliation needs who authorised it (by), where the evidence came from (source), when it was observed (checkedAt) and why a retry cannot duplicate the payment (rationale)${missing.length ? `; missing: ${missing.join(", ")}` : ""}.`,
+      400,
+    );
+  }
+  const at = Date.parse(how.checkedAt);
+  if (!Number.isFinite(at)) throw new UserFacingError("checkedAt must be an ISO 8601 timestamp.", 400);
+  if (at > Date.now() + 5 * 60_000) throw new UserFacingError("checkedAt is in the future: record when the evidence was actually observed.", 400);
+}
+
+const sameReceiver = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
 
 export async function resolvePayoutDoubt(spendId: string, how: PayoutDoubt): Promise<Spend> {
+  checkDoubtEvidence(how);
   const db = getDb();
   const r = rail();
   const generation = await claimSettlement(spendId);
@@ -468,20 +504,64 @@ export async function resolvePayoutDoubt(spendId: string, how: PayoutDoubt): Pro
     const root = (await db.query.roots.findFirst({ where: eq(roots.id, s.rootId) }))!;
     if (s.payoutBatchId) return s; // already recorded: nothing to resolve
     if (how.kind === "sent") {
-      const status = how.status ?? "PENDING";
+      // Ask the provider, rather than trusting the id we were handed. A batch nobody at the provider knows is
+      // not evidence, and a batch id is not an item.
+      const facts = await r.payouts.read(railRef(r.id, "payout", how.batchRef)).catch((e: unknown) => {
+        if (isRailError(e) && e.code === "not_found") {
+          throw new UserFacingError(`The ${r.label} rail has no payout batch ${how.batchRef}. A batch id typed by hand is not evidence: check the provider again, or resolve as not-sent with the evidence that proves it.`, 409);
+        }
+        throw e;
+      });
+      if (facts.batchRef.id !== how.batchRef) {
+        throw new UserFacingError(`The provider returned batch ${facts.batchRef.id} for ${how.batchRef}; refusing to record a payout that is not the one that was looked up.`, 409);
+      }
+      // A payout batch has a status of its own, and it is not the recipient's. Only an item status says whether
+      // money reached the payee: a SUCCESS batch can hold an UNCLAIMED or FAILED item.
+      if (!facts.itemStatus) {
+        throw new UserFacingError(`Batch ${how.batchRef} is ${facts.batchStatus}, but the provider reported no item status, so there is no evidence about this recipient. Batch status is not item status.`, 409);
+      }
+      const providerItem = refId(facts.itemRef);
+      if (how.itemRef && providerItem && how.itemRef !== providerItem) {
+        throw new UserFacingError(`Item ${how.itemRef} is not the provider's item ${providerItem} in batch ${how.batchRef}.`, 409);
+      }
+      const itemId = providerItem ?? how.itemRef ?? null;
+      if (!itemId) {
+        throw new UserFacingError(`Batch ${how.batchRef} has no item id and none was given, so this payout cannot be attributed to a recipient.`, 409);
+      }
+      // Match the item to THIS payment before recording it: a batch for a different amount or payee must never
+      // settle this spend.
+      if (!facts.amount) {
+        throw new UserFacingError(`The provider reported no amount for item ${itemId}; it cannot be matched to this payment.`, 409);
+      }
+      if (facts.amount.minor !== s.amountMinor || facts.amount.currency !== s.currency) {
+        throw new UserFacingError(`Item ${itemId} is ${formatMoney(facts.amount.minor, facts.amount.currency)}, not the ${formatMoney(s.amountMinor, s.currency)} this payment owes.`, 409);
+      }
+      if (facts.receiver && !sameReceiver(facts.receiver, s.payoutTo ?? s.payee)) {
+        throw new UserFacingError(`Item ${itemId} pays a different recipient than this payment's payee; refusing to record it.`, 409);
+      }
+      const status = facts.itemStatus; // the provider's own word, never a caller's
+      const evidence = { by: how.by, source: how.source, checkedAt: how.checkedAt, rationale: how.rationale };
       await db.transaction(async (tx) => {
         const [u] = await tx.update(spends)
-          .set({ payoutBatchId: how.batchRef, payoutItemId: how.itemRef ?? null, payoutTransactionId: how.transactionId ?? null, payoutStatus: status, settleGeneration: generation })
-          .where(and(eq(spends.id, s.id), isNull(spends.payoutBatchId))).returning({ id: spends.id });
+          .set({ payoutBatchId: facts.batchRef.id, payoutItemId: itemId, payoutTransactionId: facts.transactionId, payoutStatus: status, settleGeneration: generation })
+          .where(and(eq(spends.id, s.id), isNull(spends.payoutBatchId), eq(spends.settleGeneration, generation))).returning({ id: spends.id });
         if (!u) return;
         // The money did leave: record the position in the same transaction, once (the reference is unique).
-        await postPayout({ owner: root.principal, rail: r.id, currency: s.currency, amountMinor: s.amountMinor, ref: s.id, memo: `payout ${how.batchRef} (reconciled)` }, tx);
+        await postPayout({ owner: root.principal, rail: r.id, currency: s.currency, amountMinor: s.amountMinor, ref: s.id, memo: `payout ${facts.batchRef.id} (reconciled)` }, tx);
       });
-      await trail(root, "paypal", "payout.reconciled", "OK", how.batchRef, { spend: s.id, by: how.by, status, note: how.note ?? null });
+      await trail(root, "paypal", "payout.reconciled", "OK", facts.batchRef.id, {
+        spend: s.id, ...evidence, batchStatus: facts.batchStatus, itemStatus: status, item: itemId,
+        transaction: facts.transactionId, amount: formatMoney(s.amountMinor, s.currency), provider: r.id,
+        // What the provider said about delivery, in plain words: submitted, credited, returned, or still pending.
+        funds: status === "SUCCESS" ? "credited" : PAYOUT_DEAD.includes(status) ? "returned" : "submitted, not yet credited",
+      });
     } else {
       const [u] = await db.update(spends).set({ payoutStatus: null })
-        .where(and(eq(spends.id, s.id), isNull(spends.payoutBatchId), eq(spends.payoutStatus, PAYOUT_IN_DOUBT))).returning({ id: spends.id });
-      await trail(root, "paypal", u ? "payout.doubt_cleared" : "payout.doubt_unresolved", "INFO", s.id, { spend: s.id, by: how.by, note: how.note ?? null, retrySafe: mayRetryAutomatically(r) });
+        .where(and(eq(spends.id, s.id), isNull(spends.payoutBatchId), eq(spends.payoutStatus, PAYOUT_IN_DOUBT), eq(spends.settleGeneration, generation))).returning({ id: spends.id });
+      await trail(root, "paypal", u ? "payout.doubt_cleared" : "payout.doubt_unresolved", "INFO", s.id, {
+        spend: s.id, by: how.by, source: how.source, checkedAt: how.checkedAt, rationale: how.rationale,
+        retrySafe: mayRetryAutomatically(r), lookupByReference: r.idempotency.lookupByReference,
+      });
     }
     return (await db.query.spends.findFirst({ where: eq(spends.id, spendId) }))!;
   } finally {
@@ -615,7 +695,18 @@ async function settleOnce(spendId: string, lease: SettlementLease): Promise<Spen
         // Another arrival of this same request may have sent the payout a moment ago, in which case the rail is refusing a duplicate, not the payment.
         const again = (await db.query.spends.findFirst({ where: eq(spends.id, s.id) }))!;
         if (again.payoutBatchId) s = again;
-        else if (e.code === "duplicate" || /duplicate/i.test(e.message)) return again; // a payout exists at the rail that we have no id for: do not refund on top of it
+        else if (e.code === "duplicate" || /duplicate/i.test(e.message)) {
+          // A duplicate refusal means a payout exists at the rail under this reference — but the refusal is
+          // not an item status, and a rail that answers a repeat with an error gives us nothing to record.
+          // Parked for reconciliation; never refunded on top of a payout that may be on its way.
+          await db.update(spends).set({ payoutStatus: PAYOUT_IN_DOUBT })
+            .where(and(eq(spends.id, s.id), eq(spends.settleGeneration, lease.generation), isNull(spends.payoutBatchId))).catch(() => undefined);
+          await trail(root, "paypal", "payout.duplicate_unresolved", "INFO", s.id, {
+            spend: s.id, issue: railCode(e), duplicateIsAnError: r.idempotency.duplicateIsAnError,
+            note: "the provider already has a payout for this reference; reconcile it with resolvePayoutDoubt()",
+          });
+          return { ...again, payoutStatus: PAYOUT_IN_DOUBT };
+        }
         else {
           // The money was captured but can't be sent: refund the owner. If the rail won't refund either, say so and keep counting it.
           const failed = await refundOrPark(s, root, `${r.label} refused the payout: ${railCode(e)}`, null);

@@ -33,7 +33,7 @@ import {
 } from "../paypal/payments";
 import {
   RailError, amount, declined, inDoubt, notFound, railRef, unsupported,
-  type ApprovalFacts, type ApprovalRequestArgs, type AuthorizeHoldRequest, type BalanceFacts, type Capability,
+  type Amount, type ApprovalFacts, type ApprovalRequestArgs, type AuthorizeHoldRequest, type BalanceFacts, type Capability,
   type CaptureFacts, type CaptureRequest, type DisputeFacts, type Guarantee, type HoldFacts, type OrderFacts,
   type PayoutFacts, type PayoutRequest, type Rail, type RailCall, type RailErrorCode, type RailEvent, type RailRef, type RefundFacts,
   type RefundRequest, type StatementLine, type VoidRequest, type WebhookRequest,
@@ -108,12 +108,15 @@ export class PayPalRail implements Rail {
   readonly id = PROVIDER;
   readonly label = "PayPal";
   readonly guarantees = GUARANTEES;
-  // PayPal deduplicates payouts by sender_batch_id, but it publishes neither how long it remembers one nor
-  // whether a repeat is safe while a batch is still processing, and there is no lookup by our reference.
-  // So an interrupted payout is parked and reconciled, never re-sent automatically.
+  // The one payout promise PayPal publishes: a sender_batch_id used in the last 30 days is rejected as a
+  // duplicate (with a link to the original batch), and a 5xx may be retried with the same sender_batch_id.
+  // It publishes nothing about a repeat while the batch is still being created, and offers no lookup by our
+  // reference. PayPal-Request-Id's longer retention (up to 45 days, where an API supports it) is a different
+  // mechanism and is not what this adapter relies on for payouts. So an interrupted payout is parked and
+  // reconciled, never re-sent automatically.
   readonly idempotency = {
-    sameReferenceIsSameOperation: true, retryWhileInFlight: false, memoryMs: null, lookupByReference: false,
-    note: "PayPal deduplicates payouts by sender_batch_id but publishes no retention window and no promise about repeats while a batch is processing. An interrupted payout is reconciled against PayPal, not retried blindly.",
+    sameReferenceIsSameOperation: true, retryWhileInFlight: false, memoryMs: 30 * 24 * 60 * 60 * 1000, duplicateIsAnError: true, lookupByReference: false,
+    note: "PayPal pays a sender_batch_id at most once within 30 days and answers a repeat with a duplicate error plus a link to the original batch. It does not promise that a repeat during processing is safe, and cannot be looked up by our reference. An interrupted payout is reconciled item by item, not retried blindly.",
   } as const;
   private memo: { mode: string; caps: Set<Capability> } | null = null;
 
@@ -315,11 +318,11 @@ function holdFacts(a: { id: string; orderId: string | null; status: string; amou
   };
 }
 
-function payoutFacts(p: { batchId: string; batchStatus: string; itemId: string | null; itemStatus: string | null; transactionId: string | null; receiver: string | null; error: string | null }, receiver: string | null): PayoutFacts {
+function payoutFacts(p: { batchId: string; batchStatus: string; itemId: string | null; itemStatus: string | null; amount: Amount | null; transactionId: string | null; receiver: string | null; error: string | null }, receiver: string | null): PayoutFacts {
   return {
     batchRef: railRef(PROVIDER, "payout", p.batchId),
     itemRef: p.itemId ? railRef(PROVIDER, "payout_item", p.itemId) : null,
-    batchStatus: p.batchStatus, itemStatus: p.itemStatus, transactionId: p.transactionId,
+    batchStatus: p.batchStatus, itemStatus: p.itemStatus, amount: p.amount, transactionId: p.transactionId,
     receiver: p.receiver ?? receiver, error: p.error,
   };
 }

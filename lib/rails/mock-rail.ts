@@ -62,7 +62,7 @@ export class MockRail implements Rail {
   // The simulator can promise this: it returns the recorded payout for the same reference, including
   // while a first call is still in flight. Real providers have to be described honestly (see paypal-rail).
   readonly idempotency = {
-    sameReferenceIsSameOperation: true, retryWhileInFlight: true, memoryMs: null, lookupByReference: true,
+    sameReferenceIsSameOperation: true, retryWhileInFlight: true, memoryMs: null, duplicateIsAnError: false, lookupByReference: true,
     note: "The simulator returns the same payout for the same reference, for the life of the process, including while the first call is in flight.",
   } as const;
 
@@ -455,7 +455,7 @@ export class MockRail implements Rail {
   private payoutFacts(p: MockPayout): PayoutFacts {
     return {
       batchRef: railRef(PROVIDER, "payout", p.batchId), itemRef: railRef(PROVIDER, "payout_item", p.itemId),
-      batchStatus: p.itemStatus === "SUCCESS" ? "SUCCESS" : "PENDING", itemStatus: p.itemStatus,
+      batchStatus: p.itemStatus === "SUCCESS" ? "SUCCESS" : "PENDING", itemStatus: p.itemStatus, amount: p.amount,
       transactionId: p.transactionId, receiver: p.receiver, error: p.itemStatus === "UNCLAIMED" ? "RECEIVER_UNREGISTERED" : p.itemStatus === "FAILED" ? "RECEIVER_ACCOUNT_LOCKED" : null,
     };
   }

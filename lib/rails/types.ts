@@ -197,8 +197,12 @@ export type CaptureFacts = {
 export type PayoutFacts = {
   batchRef: RailRef<"payout">;
   itemRef: RailRef<"payout_item"> | null;
+  /** The batch's own state. It says nothing about whether this recipient was paid. */
   batchStatus: string;
+  /** The recipient's state: the only evidence that money was credited, returned or is still pending. */
   itemStatus: string | null;
+  /** The amount the provider says this item pays. Null when the provider did not report it. */
+  amount: Amount | null;
   transactionId: string | null;
   receiver: string | null;
   /** The provider's own error name when it could not deliver, e.g. RECEIVER_UNREGISTERED. */
@@ -448,6 +452,12 @@ export type IdempotencyContract = {
   readonly retryWhileInFlight: boolean;
   /** How long the provider remembers the reference, in ms; null when it publishes no such guarantee. */
   readonly memoryMs: number | null;
+  /**
+   * True when a repeat is answered with a duplicate *refusal* (carrying a link to the original) instead of the
+   * original result. The operation still happens once, but the refusal is not an outcome to record: the
+   * caller must look the original up before it can say what happened.
+   */
+  readonly duplicateIsAnError: boolean;
   /** The operation can be found again from our own reference alone, without the provider's id. */
   readonly lookupByReference: boolean;
   /** Plain words for receipts, docs and refusals. */

@@ -26,13 +26,14 @@
  */
 import { PayPalApiError, type PayPalClient } from "./client";
 import { toDecimalString, toMinor } from "../money";
+import { amount, type Amount } from "../rails/types";
 
 type Money = { currency_code: string; value: string };
 type RawAuth = { id: string; status: string; amount: Money; expiration_time?: string; custom_id?: string };
 
 export type AuthorizationFacts = { id: string; orderId: string | null; status: string; amountMinor: number; currency: string; expiresAt: string | null; customId: string | null };
 export type CaptureFacts = { id: string; status: string; amountMinor: number; currency: string; invoiceId: string | null };
-export type PayoutFacts = { batchId: string; batchStatus: string; itemId: string | null; itemStatus: string | null; transactionId: string | null; receiver: string | null; error: string | null };
+export type PayoutFacts = { batchId: string; batchStatus: string; itemId: string | null; itemStatus: string | null; amount: Amount | null; transactionId: string | null; receiver: string | null; error: string | null };
 
 /**
  * PayPal's documented sandbox test cards (developer.paypal.com/tools/sandbox/card-testing: any future
@@ -159,14 +160,22 @@ export async function payout(pp: PayPalClient, a: { spendId: string; receiverEma
     },
   });
   const id = r.batch_header.payout_batch_id;
-  return getPayout(pp, id).catch(() => ({ batchId: id, batchStatus: r.batch_header.batch_status, itemId: null, itemStatus: null, transactionId: null, receiver: a.receiverEmail, error: null }));
+  return getPayout(pp, id).catch(() => ({
+    batchId: id, batchStatus: r.batch_header.batch_status, itemId: null, itemStatus: null,
+    // What we asked to pay is all we know when the read fails; it is the requested amount, not provider proof.
+    amount: amount(a.amountMinor, a.currency), transactionId: null, receiver: a.receiverEmail, error: null,
+  }));
 }
 
 export async function getPayout(pp: PayPalClient, batchId: string): Promise<PayoutFacts> {
-  const r = await pp.request<{ batch_header: { payout_batch_id: string; batch_status: string }; items?: Array<{ payout_item_id: string; transaction_id?: string; transaction_status?: string; payout_item?: { receiver?: string }; errors?: { name?: string; message?: string } }> }>(
+  const r = await pp.request<{ batch_header: { payout_batch_id: string; batch_status: string }; items?: Array<{ payout_item_id: string; transaction_id?: string; transaction_status?: string; payout_item?: { receiver?: string; amount?: { value?: string; currency?: string } }; errors?: { name?: string; message?: string } }> }>(
     "GET", `/v1/payments/payouts/${encodeURIComponent(batchId)}`);
   const it = r.items?.[0];
-  return { batchId: r.batch_header.payout_batch_id, batchStatus: r.batch_header.batch_status, itemId: it?.payout_item_id ?? null, itemStatus: it?.transaction_status ?? null, transactionId: it?.transaction_id ?? null, receiver: it?.payout_item?.receiver ?? null, error: it?.errors?.name ?? null };
+  // The item's own amount, not the batch's: a batch can carry several items, and only the item says what this
+  // recipient was paid.
+  const a = it?.payout_item?.amount;
+  const paid = a?.value && a.currency ? amount(toMinor(a.value, a.currency), a.currency) : null;
+  return { batchId: r.batch_header.payout_batch_id, batchStatus: r.batch_header.batch_status, itemId: it?.payout_item_id ?? null, itemStatus: it?.transaction_status ?? null, amount: paid, transactionId: it?.transaction_id ?? null, receiver: it?.payout_item?.receiver ?? null, error: it?.errors?.name ?? null };
 }
 
 /** Cancel a payout item PayPal is holding unclaimed. PayPal returns the money to the sender and reports the item RETURNED. */

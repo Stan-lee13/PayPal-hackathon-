@@ -293,17 +293,59 @@ first** — it deduplicates payouts by `sender_batch_id`, but publishes no reten
 about a repeat while a batch is processing, and offers no lookup by our reference. So an interrupted
 PayPal payout is not re-sent: it stays `IN_DOUBT` until someone establishes what PayPal did.
 
-That someone uses `resolvePayoutDoubt(spendId, …)`, which takes the settlement lease and records the
-evidence:
+That someone uses `resolvePayoutDoubt(spendId, how)`, which takes the settlement lease, requires the four
+facts an auditor needs, and — for `sent` — asks the provider rather than trusting what it was handed:
 
-* `{ kind: "sent", batchRef, itemRef?, status? }` — the payout exists; it is recorded once, with PayPal's
-  ids, and the position is posted in the same transaction (`payout.reconciled` on the trail).
-* `{ kind: "not-sent" }` — the provider has no such payout; the doubt is cleared and a retry becomes
-  legitimate (`payout.doubt_cleared`). Without this, a rail that promises nothing is never retried.
+* `by`, `source`, `checkedAt`, `rationale` — who decided, where the fact was observed, when, and why a
+  retry cannot produce a second payment. All four are required and all four are written to the trail.
+* `{ kind: "sent", batchRef, itemRef? }` — `batchRef` is a **lookup key, not proof**. The rail is asked
+  for the batch; only its answer is recorded, and only if it matches this payment: the item id, the item's
+  own amount and currency, and the receiver must all agree with the spend. The recorded status is the
+  provider's item status, never a caller's claim. The position is posted once, in the same transaction
+  (`payout.reconciled`, with the evidence and with `funds: credited | submitted | returned`).
+* `{ kind: "not-sent", …evidence }` — the provider has no such payout; the doubt is cleared and a retry
+  becomes legitimate (`payout.doubt_cleared`, recording the evidence and whether the rail can even be
+  looked up by our reference). Without this, a rail that promises nothing is never retried.
+
+A batch id typed by hand is refused when the provider does not know it, and a batch's own status is never
+treated as the recipient's:
+
+* **batch status is not item status** — PayPal reports a batch as `SUCCESS` while an individual item is
+  still `PENDING`, `UNCLAIMED`, `FAILED` or `RETURNED`. A read with no item status is refused (409); the
+  payment stays in doubt rather than being recorded as paid;
+* **amount and receiver are checked** — an item for another amount or another payee is refused, so a batch
+  found by hand cannot settle a different payment;
+* **submitted is not credited** — only `SUCCESS` means the payee was paid. `PENDING`/`UNCLAIMED` is
+  recorded as submitted, and the dead statuses lead to the normal refund path on the next `syncSpend`.
 
 Proven by `tests/settlement-lease.test.ts` › "a rail that cannot promise a safe repeat is parked and
-reconciled, never re-sent" and "clearing a doubt as not-sent is the only thing that makes a retry
-legitimate".
+reconciled from the provider's item record, never re-sent", "a batch the provider knows, but has no item
+status for, is not evidence that anyone was paid", "an item that pays a different amount is not this
+payment, and is refused", and "clearing a doubt as not-sent needs evidence, and records who said so and why
+a retry cannot duplicate".
+
+### 10.2 The PayPal guarantee this adapter uses, stated precisely
+
+PayPal offers more than one idempotency mechanism, and they are not interchangeable. This adapter relies
+on exactly one of them for payouts:
+
+| Mechanism | What PayPal documents | Used here? |
+| --- | --- | --- |
+| Payouts `sender_batch_id` | A batch id used in the last 30 days is rejected as a duplicate, with a link to the original batch; a request that failed with HTTP 5xx may be retried with the same id, and a payment completes only once per id in that window. | **Yes.** `payout-<spend id>` is the batch id, so our own reference is the provider's key. |
+| Payouts `PayPal-Request-Id` | Accepted and stored, but the Payouts reference describes duplicates through `sender_batch_id`; the store window is published as 30 days. | Sent, but not what reconciliation relies on. |
+| REST-wide `PayPal-Request-Id` | Stored for up to 45 days **where the specific API supports it**, returning the original result on a repeat. | Used for captures and refunds; not assumed for payouts. |
+
+Three consequences are encoded in `IdempotencyContract` rather than left to prose:
+
+* `sameReferenceIsSameOperation: true` and `memoryMs: 30 days` — within the window, our reference cannot
+  pay twice;
+* `duplicateIsAnError: true` — a repeat is answered with a **duplicate refusal** carrying a link to the
+  original batch, not with the original result. So a duplicate is not an outcome: the gateway parks the
+  payment as `IN_DOUBT` (`payout.duplicate_unresolved`) and reconciles it against the provider;
+* `retryWhileInFlight: false` — PayPal publishes nothing about a repeat while the batch is being created,
+  and there is no lookup by our reference. That is why an interrupted PayPal payout is never re-sent
+  automatically, even though the 30-day window would make a *late* repeat safe. The conservative choice
+  rests on the missing in-flight guarantee, not on an absent duplicate guarantee.
 
 ## 11. One rail, one provider account (enforced)
 
