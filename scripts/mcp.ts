@@ -23,7 +23,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
-import { Agent, EnvelopeError, Gateway, checkIntroduction, getReceipt, protocol as E, type Card, type GatewayReason, type SpendOutcome, type TransferOutcome } from "../sdk/src";
+import { Agent, EnvelopeError, Gateway, checkIntroduction, getReceipt, receiptView, protocol as E, type Card, type GatewayReason, type SpendOutcome, type TransferOutcome } from "../sdk/src";
 
 const GATEWAY = (process.env.GATEWAY ?? "http://localhost:3000").replace(/\/$/, "");
 const DIR = process.env.ENVELOPE_DIR ?? ".envelope";
@@ -172,13 +172,14 @@ const READ_TOOLS: Tool[] = [
       let r: Awaited<ReturnType<typeof getReceipt>>;
       try { r = await getReceipt(gateway, text(a.spend, "spend", 60)); } catch (e) { throw new ToolError(`Gateway: ${e instanceof EnvelopeError ? (e.kind === "network" ? e.message : e.detail) : (e as Error).message}`); }
       const local = await r.verify();
-      const req = r.receipt.request;
+      const rv = receiptView(r.receipt);
+      const req = rv.request;
       return [
         `${r.spend.status}: ${usd(req.amount)} to ${req.payee} for ${req.purpose}${r.spend.status === "PAID" ? "" : " (not delivered to the payee yet)"}`,
-        `PayPal hold ${r.receipt.paypal.authorizationId}, capture ${r.receipt.paypal.captureId}${r.receipt.paypal.payoutBatchId ? `, payout ${r.receipt.paypal.payoutBatchId} (${r.spend.payoutStatus ?? "pending"})` : ", no payout: credited to the payee agent's balance"} (${r.receipt.paypal.mode})`,
-        `Checked against PayPal just now: ${r.paypal.ok ? "all checks pass" : `MISMATCH: ${r.paypal.checks.filter((c) => !c.ok).map((c) => c.name).join("; ")}`}`,
+        `${rv.provider.rail} hold ${rv.ops.authorization}, capture ${rv.ops.capture}${rv.ops.payout ? `, payout ${rv.ops.payout} (${r.spend.payoutStatus ?? "pending"})` : ", no payout: credited to the payee agent's balance"} (${rv.provider.mode}, ${rv.version})`,
+        `Checked against ${rv.provider.label} just now: ${r.paypal.ok ? "all checks pass" : `MISMATCH: ${r.paypal.checks.filter((c) => !c.ok).map((c) => c.name).join("; ")}`}`,
         `Signatures checked on this machine: ${local.ok ? "all valid" : `INVALID: ${local.checks.filter((c) => !c.ok).map((c) => c.name).join("; ")}`}`,
-        `Authorized by: ${r.receipt.chain.map((c) => c.holderLabel).join(" → ")}, under the owner key ${E.fingerprint(r.receipt.principal)}`,
+        `Authorized by: ${rv.chain.map((c) => c.holderLabel).join(" → ")}, under the owner key ${E.fingerprint(rv.principal)}`,
         `${GATEWAY}/r/${r.spend.id}`,
       ].join("\n");
     },

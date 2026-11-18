@@ -5,7 +5,7 @@
  * Money is always integer minor units.
  */
 import { sql } from "drizzle-orm";
-import { bigserial, index, integer, jsonb, pgTable, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
+import { bigserial, boolean, index, integer, jsonb, pgTable, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
 import type { Block, Caps, SignedAccount, SignedCard, SignedCharge, SignedPromise, SignedSpend, SignedTransfer, Violation } from "../envelope/core";
 
 const ts = (name: string) => timestamp(name, { withTimezone: true, mode: "date" });
@@ -21,6 +21,8 @@ export const roots = pgTable("roots", {
   currency: text("currency").notNull(),
   limitMinor: integer("limit_minor").notNull(),
   status: text("status", { enum: ["ACTIVE", "CLOSED"] }).notNull().default("ACTIVE"),
+  /** Which financial rail placed this hold: "paypal" until another adapter is deployed (lib/rails). */
+  railProvider: text("rail_provider").notNull().default("paypal"),
   /** The hold on the principal's funding instrument. Spends are partial captures of it; closing voids the rest. */
   paypalOrderId: text("paypal_order_id"),
   authorizationId: text("authorization_id").unique(),
@@ -63,7 +65,14 @@ export const blocks = pgTable("blocks", {
 export const SPEND_STATES = ["DENIED", "PROMISED", "LAPSED", "RESERVED", "CAPTURED", "PAID", "PAYOUT_PENDING", "UNCLAIMED", "FAILED", "REFUND_DUE"] as const;
 export type SpendState = (typeof SPEND_STATES)[number];
 
-export type Receipt = {
+/**
+ * A financial receipt, as issued. `envelope-receipt/1` names PayPal in its structure; it is kept, signed and
+ * verifiable for ever, but nothing new is issued in it. `envelope-receipt/2` names whichever rail moved the
+ * money, so no other provider's identifiers are ever written into PayPal-shaped fields.
+ */
+export type Receipt = ReceiptV1 | ReceiptV2;
+
+export type ReceiptV1 = {
   v: "envelope-receipt/1";
   spend: string;
   decision: "PAID";
@@ -80,6 +89,66 @@ export type Receipt = {
   paypal: { mode: string; authorizationId: string; captureId: string; payoutBatchId: string | null; payoutItemId: string | null; /** PayPal's word on the payout at the moment of signing. A receipt records that money was captured and a payout was asked for; whether it was delivered is PayPal's to say, live. */ payoutStatus?: string | null };
   issuedAt: string;
   gateway: string;
+  sig: string;
+};
+
+/**
+ * The provider-neutral receipt (v2). It separates three things that v1 ran together:
+ *
+ *   • *authority* — who allowed this, provable offline from signatures;
+ *   • *provider operations* — which rail was asked to do what, by its own identifiers;
+ *   • *settlement* — what was true at issue time, in words, with the provider's status passed through.
+ *
+ * A valid signature says the gateway recorded this and the authority behind it. It never says the money
+ * arrived: `verification.external` names the operations to ask the provider about, and
+ * `verification.note` says so in a sentence.
+ */
+export type ReceiptV2 = {
+  v: "envelope-receipt/2";
+  operation: { kind: "payment"; ref: string };
+  /** The organization whose money this is: the principal who sealed the envelope. */
+  organization: { principal: string; name: string };
+  /** The paying agent, and the envelope it acted under. */
+  agent: { key: string; label: string; account: string };
+  authority: {
+    principal: string;
+    request: SignedSpend["request"] | SignedPromise["request"];
+    requestSig: string;
+    chain: Array<{ id: string; hash: string; holder: string; holderLabel: string }>;
+    releasedBy?: { key: string; work: string; note: string; at: string };
+  };
+  amount: { minor: number; currency: string };
+  /** Which financial rail moved (or did not move) the money, and where custody sits. */
+  provider: {
+    rail: string;
+    label: string;
+    mode: string;
+    custody: "provider" | "gateway-ledger" | "safeguarded-partner";
+    /** The provider's own account id when it issues one. */
+    externalAccountId: string | null;
+    /** False when nothing left this gateway: the money stayed as an internal balance. */
+    movedExternally: boolean;
+  };
+  /** The provider's identifiers, each labelled with what it is. Empty when the rail issued none. */
+  providerOps: Array<{ kind: "order" | "authorization" | "capture" | "refund" | "payout" | "payout_item"; id: string }>;
+  settlement: {
+    state: "credited" | "delivered" | "unclaimed" | "payout_pending" | "pending_capture" | "refunded";
+    asOf: string;
+    meaning: string;
+    /** The provider's own status word, unmodified. Never interpreted here. */
+    providerStatus: string | null;
+  };
+  paidTo?: ReceiptV1["paidTo"];
+  issuedAt: string;
+  /** The gateway's public key. The signature covers the body excluding `sig`. */
+  gateway: string;
+  verification: {
+    /** What the signature alone proves, with no trust in this server. */
+    offline: string[];
+    /** What only the provider can confirm, and which operation to ask about. */
+    external: string[];
+    note: string;
+  };
   sig: string;
 };
 
@@ -100,6 +169,20 @@ export const spends = pgTable("spends", {
   /** Free text from the agent: why it wants to pay. Shown to the principal; never used for decisions. */
   agentNote: text("agent_note"),
   status: text("status", { enum: SPEND_STATES }).notNull(),
+  /** Which financial rail moved (or refused) this payment: "paypal" until another adapter is deployed. */
+  railProvider: text("rail_provider").notNull().default("paypal"),
+  /**
+   * Claimed by the arrival that is finishing this payment. One arrival at a time captures and pays out; the
+   * others wait for it. A claim older than 30 seconds is taken over, so a process that died mid-way does not
+   * strand the money.
+   */
+  settlingAt: ts("settling_at"),
+  /**
+   * A fencing token: incremented every time an arrival claims the settlement. Every write that decides what
+   * happens to the money must still hold the current generation, so an arrival whose lease expired cannot
+   * finish a decision that a takeover already owns. See lib/gateway/service.ts › settle().
+   */
+  settleGeneration: integer("settle_generation").notNull().default(0),
   reasons: jsonb("reasons").$type<Violation[]>().notNull().default([]),
   captureId: text("capture_id"),
   payoutBatchId: text("payout_batch_id"),
@@ -183,7 +266,14 @@ export const cards = pgTable("cards", {
   createdAt: ts("created_at").notNull().defaultNow(),
 }, (t) => [index("cards_holder").on(t.holder, t.createdAt), index("cards_merchant").on(t.merchantAgent, t.createdAt)]);
 
-/** Every change to a balance, one row each. `(agent, kind, ref)` is unique so a credit or debit can never be applied twice. */
+/**
+ * Every change to a balance, one row each. `(agent, kind, ref)` is unique so a credit or debit can never be applied twice.
+ *
+ * `rail` and `currency` are the provenance of the claim, not decoration: a balance is only payable through a
+ * rail that actually funded it. Money credited by one provider cannot be withdrawn from another, however valid
+ * the ledger row is (docs/MULTI_RAIL_ACCOUNTING.md). Existing rows default to `paypal`/`USD`, which is what
+ * every balance in this deployment was in fact funded with.
+ */
 export const ledger = pgTable("ledger", {
   id: bigserial("id", { mode: "number" }).primaryKey(),
   agent: text("agent").notNull(),
@@ -192,22 +282,95 @@ export const ledger = pgTable("ledger", {
   ref: text("ref").notNull(),
   deltaMinor: integer("delta_minor").notNull(),
   balanceAfterMinor: integer("balance_after_minor").notNull(),
+  /** The financial rail that funded this claim (`mock`, `paypal`, a partner id). */
+  rail: text("rail").notNull().default("paypal"),
+  /** ISO-4217. A balance in one currency is not spendable in another without an explicit conversion. */
+  currency: text("currency").notNull().default("USD"),
   counterparty: text("counterparty"),
   memo: text("memo").notNull().default(""),
   createdAt: ts("created_at").notNull().defaultNow(),
-}, (t) => [uniqueIndex("ledger_once").on(t.agent, t.kind, t.ref), index("ledger_agent").on(t.agent, t.id)]);
+}, (t) => [uniqueIndex("ledger_once").on(t.agent, t.kind, t.ref), index("ledger_agent").on(t.agent, t.id), index("ledger_agent_rail").on(t.agent, t.rail, t.currency)]);
+
+/**
+ * One provider account this gateway may hold value in, and where that value actually is.
+ * `externalAccountId` is the provider's own account id when it issues one.
+ */
+export const railAccounts = pgTable("rail_accounts", {
+  id: text("id").primaryKey(),
+  /** The organization that owns the funds: the key of the principal who sealed the envelope. */
+  owner: text("owner").notNull(),
+  rail: text("rail").notNull(),
+  currency: text("currency").notNull(),
+  /** Where custody sits. `provider` is a payment account, not a safeguarded or escrow account. */
+  custody: text("custody", { enum: ["provider", "gateway-ledger", "safeguarded-partner"] }).notNull(),
+  externalAccountId: text("external_account_id"),
+  label: text("label").notNull().default(""),
+  createdAt: ts("created_at").notNull().defaultNow(),
+}, (t) => [uniqueIndex("rail_accounts_identity").on(t.owner, t.rail, t.currency, t.custody, sql`coalesce(${t.externalAccountId}, '-')`)]);
+
+export const POSITION_BUCKETS = ["available", "pending", "fee"] as const;
+export type PositionBucket = (typeof POSITION_BUCKETS)[number];
+export const POSITION_KINDS = ["capture", "capture_pending", "payout", "payout_return", "refund", "fee", "adjustment"] as const;
+export type PositionKind = (typeof POSITION_KINDS)[number];
+
+/**
+ * An external movement at a provider, append-only and idempotent per `(rail, currency, bucket, kind, ref)`.
+ * These rows are the provider side of the books: what is actually at each rail, in which currency.
+ * Internal balances (the `ledger`) are what the gateway owes; these are what backs them.
+ * Fees live in their own bucket so they never masquerade as spendable liquidity.
+ */
+export const positionEntries = pgTable("position_entries", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  owner: text("owner").notNull(),
+  rail: text("rail").notNull(),
+  currency: text("currency").notNull(),
+  custody: text("custody").notNull().default("provider"),
+  externalAccountId: text("external_account_id"),
+  bucket: text("bucket", { enum: POSITION_BUCKETS }).notNull(),
+  kind: text("kind", { enum: POSITION_KINDS }).notNull(),
+  deltaMinor: integer("delta_minor").notNull(),
+  /** The domain record that caused it: a spend, a transfer or a statement line. */
+  ref: text("ref").notNull(),
+  memo: text("memo").notNull().default(""),
+  at: ts("at").notNull().defaultNow(),
+}, (t) => [uniqueIndex("position_entries_once").on(t.rail, t.currency, t.bucket, t.kind, t.ref), index("position_entries_owner").on(t.owner, t.rail, t.currency, t.bucket)]);
+
+export type ReconciliationFinding = { code: string; severity: "error" | "warning" | "info"; detail: string; ref: string | null };
+
+/** One reconciliation attempt against a rail's own records, kept so "when was this last checked?" has an answer. */
+export const reconciliationRuns = pgTable("reconciliation_runs", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  owner: text("owner"),
+  rail: text("rail").notNull(),
+  currency: text("currency").notNull(),
+  fromAt: ts("from_at").notNull(),
+  toAt: ts("to_at").notNull(),
+  /** False when the rail could not give a statement: that is not a reconciliation. */
+  available: boolean("available").notNull(),
+  ok: boolean("ok").notNull(),
+  findings: jsonb("findings").$type<ReconciliationFinding[]>().notNull().default([]),
+  at: ts("at").notNull().defaultNow(),
+}, (t) => [index("reconciliation_runs_at").on(t.rail, t.at)]);
 
 export const TRANSFER_STATES = ["DENIED", "BOOKED", "SENDING", "PAID", "PAYOUT_PENDING", "UNCLAIMED", "FAILED"] as const;
+/**
+ * A movement out of a balance. v1 is PayPal-shaped (`to.kind: "paypal"`); v2 names the rail that paid, so a
+ * payout made through another provider is never described as a PayPal transfer. v1 receipts stay verifiable.
+ */
 export type TransferReceipt = {
-  v: "envelope-transfer-receipt/1";
+  v: "envelope-transfer-receipt/1" | "envelope-transfer-receipt/2";
   transfer: string;
   request: SignedTransfer["request"] | SignedCharge["request"];
   requestSig: string;
   /** Present when the money was pulled by a merchant through a card the agent issued. */
   card?: { id: string; number: string; label: string; charge: number; of: number };
   from: { account: string; agent: string; agentLabel: string };
-  /** A book transfer between two accounts here, or a PayPal payout. */
-  to: { kind: "account"; account: string; agent: string; agentLabel: string } | { kind: "paypal"; address: string; payoutBatchId: string; mode: string };
+  /** v2 only: which rail paid, and in what mode. */
+  provider?: { rail: string; mode: string };
+  /** A book transfer between two accounts here, or a payout through a rail. */
+  to: { kind: "account"; account: string; agent: string; agentLabel: string }
+    | { kind: "payout"; address: string; payoutBatchId: string; rail: string }
+    | { kind: "paypal"; address: string; payoutBatchId: string; mode: string };
   balanceAfterMinor: number;
   issuedAt: string; gateway: string; sig: string;
 };
@@ -229,6 +392,8 @@ export const transfers = pgTable("transfers", {
   requestHash: text("request_hash").notNull().unique(),
   signed: jsonb("signed").$type<SignedTransfer | SignedCharge>().notNull(),
   status: text("status", { enum: TRANSFER_STATES }).notNull(),
+  /** Which financial rail paid this out (or refused to): "paypal" until another adapter is deployed. */
+  railProvider: text("rail_provider").notNull().default("paypal"),
   reasons: jsonb("reasons").$type<Violation[]>().notNull().default([]),
   payoutBatchId: text("payout_batch_id"),
   payoutItemId: text("payout_item_id"),
@@ -325,3 +490,6 @@ export type Transfer = typeof transfers.$inferSelect;
 export type Card = typeof cards.$inferSelect;
 export type PayPalCall = typeof paypalCalls.$inferSelect;
 export type PayPalEvent = typeof paypalEvents.$inferSelect;
+export type RailAccount = typeof railAccounts.$inferSelect;
+export type PositionEntry = typeof positionEntries.$inferSelect;
+export type ReconciliationRun = typeof reconciliationRuns.$inferSelect;

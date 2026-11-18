@@ -44,7 +44,7 @@ d("cards (simulated PayPal)", async () => {
   beforeEach(async () => {
     resetSimMemory();
     G.forgetGatewayKey();
-    await getDb().execute(sql`truncate table audit_log, spends, blocks, roots, demo_keys, gateway_keys, emulator_state, rate_limits, accounts, ledger, transfers, cards restart identity cascade`);
+    await getDb().execute(sql`truncate table position_entries, rail_accounts, reconciliation_runs, audit_log, spends, blocks, roots, demo_keys, gateway_keys, emulator_state, rate_limits, accounts, ledger, transfers, cards restart identity cascade`);
   });
 
   it("a card is signed by the agent whose balance it charges, locked to one merchant that exists", async () => {
@@ -79,7 +79,7 @@ d("cards (simulated PayPal)", async () => {
     expect(await payouts()).toBe(1);
     expect(await bal(w.tr.publicKey)).toBe(8100);
     expect(r.card).toMatchObject({ charges: 1, chargedMinor: 900 });
-    expect(r.receipt).toMatchObject({ card: { id: c1.id, label: "Lexica Pro", charge: 1, of: 2 }, to: { kind: "paypal" }, balanceAfterMinor: 8100 });
+    expect(r.receipt).toMatchObject({ card: { id: c1.id, label: "Lexica Pro", charge: 1, of: 2 }, to: { kind: "payout" }, balanceAfterMinor: 8100 });
     expect(await B.verifyTransferReceipt(r.receipt!)).toBe(true);
     // the same signed charge again, or re-spelled, takes nothing more
     expect(await B.charge(signed)).toMatchObject({ duplicate: true, balanceMinor: 8100 });

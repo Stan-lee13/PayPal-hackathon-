@@ -15,9 +15,8 @@ import * as A from "../gateway/auditor";
 import { proof } from "../gateway/proof";
 import * as G from "../gateway/service";
 import * as S from "../gateway/settlement";
-import { flushJournal } from "../paypal/journal";
 import { verifyChain } from "../ledger/chain";
-import { paypalMode } from "../paypal/client";
+import { rail, railMode } from "../rails";
 import { REASON_TEXT } from "../reasons";
 
 export type Input = { params: Record<string, string>; body: unknown; /** Lower-cased request headers and the body as sent; only the webhook and sweep endpoints read them. */ headers?: Record<string, string>; raw?: string };
@@ -50,6 +49,29 @@ async function ownerAsks(body: unknown, principal: string): Promise<boolean> {
 }
 const spendStatus = (s: string) => (s === "DENIED" ? 403 : s === "FAILED" ? 502 : s === "LAPSED" ? 409 : 200);
 
+/**
+ * An event reported by whichever rail is configured. The rail parses its own event shape and asks its
+ * provider to confirm the signature; the event is then applied once, as a reason to read a record by id.
+ * Both routes below are this function: `/api/rails/webhook` is the neutral name, the PayPal path is kept
+ * because PayPal's dashboard already points at it.
+ */
+async function railEvent(i: Input): Promise<Output> {
+  const r = rail();
+  // The bytes that were signed are the bytes that are applied. The body never comes from a second source,
+  // so a request whose parsed body and raw text disagree cannot get an authenticated event applied with
+  // different content than the provider signed.
+  let parsed: unknown = i.body;
+  if (typeof i.raw === "string" && i.raw.length > 0) {
+    try { parsed = JSON.parse(i.raw); } catch { return { status: 400, body: { error: "The request body is not JSON." } }; }
+  }
+  const ev = r.events.parse(parsed);
+  if (!ev) return { status: 400, body: { error: `Not a ${r.label} event.` } };
+  const genuine = await S.genuineEvent(i.headers ?? {}, i.raw ?? JSON.stringify(parsed));
+  if (genuine === "unconfigured") return { status: 503, body: { error: "No webhook id is configured (ENVELOPE_WEBHOOK_ID, or PAYPAL_WEBHOOK_ID on existing deployments), so events cannot be verified and are not accepted." } };
+  if (genuine === "no") return { status: 401, body: { error: `${r.label} did not confirm this event.` } };
+  return { body: await S.applyPayPalEvent({ id: ev.id, event_type: ev.type, resource: ev.resource }, "webhook") };
+}
+
 async function sweepFor(headers: Record<string, string> | undefined): Promise<Output> {
   const secret = process.env.CRON_SECRET;
   if (secret && headers?.authorization !== `Bearer ${secret}`) return { status: 401, body: { error: "Not authorized." } };
@@ -76,7 +98,7 @@ export const handlers: Record<string, Handler> = {
   },
   /** The simulated payer approves in the simulated checkout. Exists only on the simulator. */
   "POST /api/sim/paypal/approve": async ({ body }) => {
-    if (paypalMode() !== "simulated") return { status: 404, body: { error: "There is no simulated checkout here: this gateway talks to PayPal." } };
+    if (railMode() !== "simulated") return { status: 404, body: { error: "There is no simulated checkout here: this gateway talks to a real rail." } };
     const b = z.object({ orderId: z.string().regex(/^[A-Z0-9]{6,40}$/) }).parse(body);
     const { simApproveOrder } = await import("../paypal/emulator");
     return (await simApproveOrder(b.orderId)) ? { body: { approved: true } } : { status: 409, body: { error: "There is no order with that id waiting for approval." } };
@@ -105,7 +127,7 @@ export const handlers: Record<string, Handler> = {
     const trail = await getDb().select().from(auditLog).where(eq(auditLog.subjectId, id)).orderBy(asc(auditLog.seq));
     const audit = verifyChain(t.root.principal, id, trail.map((x) => ({ ...x, createdAt: x.createdAt.toISOString() })) as never);
     return { body: {
-      mode: paypalMode(), root: t.root, demoAgents: await hasDemoAgents(id), payees: t.payees,
+      mode: railMode(), root: t.root, demoAgents: await hasDemoAgents(id), payees: t.payees,
       blocks: t.blocks.map(({ raw: _raw, ...b }) => b),
       spends: t.spends.map(({ signed: _s, receipt: _r, payoutTo: _p, ...s }) => ({ ...s, hasReceipt: Boolean(_r), releaseBy: (_s.request as E.PromiseRequest).releaseBy ?? null })),
       audit: { ok: audit.ok, length: audit.length, entries: trail.map((x) => ({ seq: x.seq, at: x.createdAt, actor: x.actor, action: x.action, ref: x.ref, outcome: x.outcome })) },
@@ -141,15 +163,10 @@ export const handlers: Record<string, Handler> = {
     return { status: s.status === "FAILED" && s.refundId ? 200 : 202, body: { status: s.status, spendId: s.id, refundId: s.refundId, payoutStatus: s.payoutStatus, reasons: withMeaning(s.reasons) } };
   },
 
-  /** PayPal reports something. Verified with PayPal, applied once, and only ever as a reason to ask PayPal by id. */
-  "POST /api/paypal/webhook": async ({ body, headers, raw }) => {
-    const ev = z.object({ id: z.string().min(1).max(100), event_type: z.string().min(1).max(100), resource: z.record(z.string(), z.unknown()).optional() }).safeParse(body);
-    if (!ev.success) return { status: 400, body: { error: "Not a PayPal event." } };
-    const genuine = await S.genuineEvent(headers ?? {}, raw ?? JSON.stringify(body));
-    if (genuine === "unconfigured") return { status: 503, body: { error: "No webhook id is configured (PAYPAL_WEBHOOK_ID), so events cannot be verified and are not accepted." } };
-    if (genuine === "no") return { status: 401, body: { error: "PayPal did not confirm this event." } };
-    return { body: await S.applyPayPalEvent(ev.data, "webhook") };
-  },
+  /** The configured rail reports something. Verified with that provider, applied once, and only ever as a reason to ask it by id. */
+  "POST /api/rails/webhook": railEvent,
+  /** The same endpoint under the name PayPal's dashboard already uses. */
+  "POST /api/paypal/webhook": railEvent,
 
   /** Move along everything unfinished. For a scheduler: with CRON_SECRET set, it must be presented as a bearer token. */
   "POST /api/sweep": async ({ headers }) => sweepFor(headers),
@@ -178,7 +195,7 @@ export const handlers: Record<string, Handler> = {
     }
     const p = await G.agentProfile(key);
     if (!p) return { status: 404, body: { error: "No agent with that key has been seen by this gateway." } };
-    return { body: { ...p, mode: paypalMode(), demo: await isDemoAgent(key), bankDemo: await isBankDemoAgent(key), cards: await B.cardsOf(key) } };
+    return { body: { ...p, mode: railMode(), demo: await isDemoAgent(key), bankDemo: await isBankDemoAgent(key), cards: await B.cardsOf(key) } };
   },
 
   /** An agent's record, signed by the gateway so the agent can show it to anyone. */
@@ -255,7 +272,7 @@ export const handlers: Record<string, Handler> = {
   "GET /api/cards": async () => {
     const [cards, books] = await Promise.all([B.allCards(), B.position()]);
     const accounts = await Promise.all(books.accounts.map(async (a) => ({ agent: a.agent, label: a.label, owner: a.owner, balanceMinor: a.balanceMinor, keepsIncome: a.mode === "hold", /** A built-in demo agent: its page has buttons that issue and charge a card. A real agent signs with its own key. */ demo: await isBankDemoAgent(a.agent) })));
-    return { body: { mode: paypalMode(), cards, accounts } };
+    return { body: { mode: railMode(), cards, accounts } };
   },
   /** A card's signed terms, what has been used, and every attempt to charge it. Nothing in it is secret. */
   "GET /api/cards/:id": async ({ params }) => {
@@ -328,7 +345,7 @@ export const handlers: Record<string, Handler> = {
   },
 
   /** The gateway's public key, so receipts, statements and promise notes can be checked offline. */
-  "GET /api/gateway/key": async () => ({ body: { publicKey: (await G.gatewayKey()).publicKey, signs: [G.RECEIPT_VERSION, G.STANDING_VERSION, G.PROMISE_NOTE_VERSION] } }),
+  "GET /api/gateway/key": async () => ({ body: { publicKey: (await G.gatewayKey()).publicKey, signs: [...G.RECEIPT_VERSIONS, G.STANDING_VERSION, G.PROMISE_NOTE_VERSION] } }),
 
   /** DEMO: create the console's scripted agents for a draft envelope; returns the key to seal it for. */
   "POST /api/demo/agents": async ({ body }) => {
@@ -367,7 +384,7 @@ export const handlers: Record<string, Handler> = {
   /** What the auditor can call: PayPal's own Agent Toolkit, cut down to its read tools, and the gateway's books. */
   "GET /api/auditor": async ({ headers }) => {
     const may = A.auditorMayAsk(headers);
-    return { body: { mode: paypalMode(), locked: may !== "yes", keyConfigured: may !== "unconfigured", proposals: A.PROPOSAL_KINDS, tools: await A.auditorTools() } };
+    return { body: { mode: railMode(), locked: may !== "yes", keyConfigured: may !== "unconfigured", proposals: A.PROPOSAL_KINDS, tools: await A.auditorTools() } };
   },
   /** One read. A tool the auditor does not have is refused here, before anything is asked of PayPal. */
   "POST /api/auditor/read": async ({ body, headers }) => {
@@ -385,7 +402,7 @@ export const handlers: Record<string, Handler> = {
   },
   /** DEMO, simulator only: a payer disputes the latest payment, as they could in PayPal's Resolution Center. The gateway is not told. */
   "POST /api/demo/dispute": async () => {
-    if (paypalMode() !== "simulated") return { status: 409, body: { error: "A dispute can be staged only on the simulator. On PayPal a payer opens one in the Resolution Center." } };
+    if (railMode() !== "simulated") return { status: 409, body: { error: "A dispute can be staged only on the simulator. On PayPal a payer opens one in the Resolution Center." } };
     const r = await A.stageDispute();
     return r ? { body: r } : { status: 409, body: { error: "There is no settled payment to dispute yet. Seal an envelope and let an agent pay first." } };
   },
@@ -415,10 +432,10 @@ export function match(method: string, path: string): { handler: Handler; params:
 export async function run(handler: Handler, input: Input): Promise<{ status: number; body: unknown }> {
   try {
     const out = await handler(input);
-    await flushJournal(); // records of PayPal calls made during this request
+    await rail().flush(); // records of the rail's calls made during this request
     return { status: out.status ?? 200, body: out.body };
   } catch (e) {
-    await flushJournal().catch(() => undefined);
+    await rail().flush().catch(() => undefined);
     const { UserFacingError } = await import("../errors");
     if (e instanceof UserFacingError) return { status: e.status, body: { error: e.message } };
     if (e instanceof z.ZodError) return { status: 400, body: { error: "Invalid request", issues: e.issues.map((i) => i.path.join(".") + ": " + i.message) } };

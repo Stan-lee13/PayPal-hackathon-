@@ -265,8 +265,12 @@ export async function runCorpus(deps: { G: G; B: Bank; sim: Sim; reset: () => Pr
   w = await world();
   const paidOk = await pay(w.artChain, w.art, { amount: 2500 });
   const st = await G.standing(await E.signHello(w.artChain, w.art, { amount: 1000, payee: "designer@example.com", purpose: "design" }));
-  await attack("Forged evidence", "receipt with the amount edited", async () => G.verifyReceipt({ ...paidOk.receipt!, request: { ...paidOk.receipt!.request, amount: 1 } }));
-  await attack("Forged evidence", "receipt with a different PayPal capture id", async () => G.verifyReceipt({ ...paidOk.receipt!, paypal: { ...paidOk.receipt!.paypal, captureId: "SIMCAPFAKE" } }));
+  await attack("Forged evidence", "receipt with the amount edited", async () => { const r = paidOk.receipt!; return G.verifyReceipt("amount" in r ? { ...r, amount: { ...r.amount, minor: 1 } } : { ...r, request: { ...r.request, amount: 1 } }); });
+  await attack("Forged evidence", "receipt with a different provider capture id", async () => {
+    const r = paidOk.receipt!;
+    // v2 names the provider operation explicitly; changing it must break the gateway's signature.
+    return G.verifyReceipt("providerOps" in r ? { ...r, providerOps: r.providerOps.map((o) => (o.kind === "capture" ? { ...o, id: "SIMCAPFAKE" } : o)) } : { ...r, paypal: { ...r.paypal, captureId: "SIMCAPFAKE" } });
+  });
   await attack("Forged evidence", "statement of standing with 'good' flipped", async () => G.verifyStanding({ ...st, good: !st.good }));
   await attack("Forged evidence", "statement of standing with more money available", async () => G.verifyStanding({ ...st, availableMinor: 999999 }));
   await attack("Forged evidence", "statement of standing used after it expired", async () => G.verifyStanding(st, new Date(Date.now() + 6 * 60_000)));
@@ -328,7 +332,7 @@ export async function runCorpus(deps: { G: G; B: Bank; sim: Sim; reset: () => Pr
     const done = await B.transfer(real);
     await guarded("replay a completed transfer to move the money again", async () => { const again = await B.transfer(real); return again.duplicate && again.status === "BOOKED" ? "ignored: already booked once" : { status: "MOVED TWICE" }; });
     await attack("Balance", "transfer receipt with the amount edited", async () => B.verifyTransferReceipt({ ...done.receipt!, request: { ...done.receipt!.request, amount: 1 } }));
-    await attack("Balance", "transfer receipt naming a different recipient", async () => B.verifyTransferReceipt({ ...done.receipt!, to: { kind: "paypal", address: "mallory@evil.example", payoutBatchId: "X", mode: "sandbox" } }));
+    await attack("Balance", "transfer receipt naming a different recipient", async () => B.verifyTransferReceipt({ ...done.receipt!, to: { kind: "payout", address: "mallory@evil.example", payoutBatchId: "X", rail: "paypal" } }));
     // eight transfers race for a balance that covers four
     await attack("Balance", "eight transfers at once for a balance that covers four", async () => {
       const rs = await Promise.all((await Promise.all(Array.from({ length: 8 }, () => E.signTransfer(tr!, { amount: 1000, payee: other })))).map((t) => B.transfer(t)));

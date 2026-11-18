@@ -59,7 +59,7 @@ d("the auditor (simulated PayPal, real PayPal Agent Toolkit)", async () => {
     K.forgetBalance();
     seen.length = 0;
     T.watchToolkit((r) => seen.push(r));
-    await getDb().execute(sql`truncate table audit_log, spends, blocks, roots, demo_keys, gateway_keys, emulator_state, rate_limits, accounts, ledger, transfers, cards, paypal_calls, paypal_events restart identity cascade`);
+    await getDb().execute(sql`truncate table position_entries, rail_accounts, reconciliation_runs, audit_log, spends, blocks, roots, demo_keys, gateway_keys, emulator_state, rate_limits, accounts, ledger, transfers, cards, paypal_calls, paypal_events restart identity cascade`);
   });
   afterEach(() => { T.watchToolkit(null); process.env.PAYPAL_MODE = "simulated"; delete process.env.AUDITOR_SECRET; });
 

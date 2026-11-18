@@ -35,7 +35,7 @@ d("gateway (simulated PayPal)", async () => {
   beforeEach(async () => {
     resetSimMemory();
     G.forgetGatewayKey();
-    await getDb().execute(sql`truncate table audit_log, spends, blocks, roots, demo_keys, gateway_keys, emulator_state, rate_limits, accounts, ledger, transfers, cards restart identity cascade`);
+    await getDb().execute(sql`truncate table position_entries, rail_accounts, reconciliation_runs, audit_log, spends, blocks, roots, demo_keys, gateway_keys, emulator_state, rate_limits, accounts, ledger, transfers, cards restart identity cascade`);
   });
 
   it("sealing places a PayPal hold for the whole limit", async () => {
@@ -59,14 +59,20 @@ d("gateway (simulated PayPal)", async () => {
 
     const rec = r.receipt!;
     expect(await G.verifyReceipt(rec)).toBe(true);
-    expect(rec.chain.map((c) => c.holderLabel)).toEqual(["ops-agent", "localization-agent"]);
-    expect(rec.principal).toBe(w.ada.publicKey);
-    expect(rec.paypal).toMatchObject({ authorizationId: w.root.authorizationId, captureId: r.spend!.captureId, payoutBatchId: r.spend!.payoutBatchId });
-    expect(await G.verifyReceipt({ ...rec, request: { ...rec.request, amount: 1 } })).toBe(false); // receipts can't be edited
+    const rv = (await import("../lib/gateway/receipts")).receiptView(rec);
+    // New receipts are provider-neutral: the rail is named, and its ids are labelled by kind.
+    expect(rv.version).toBe("envelope-receipt/2");
+    expect(rv.provider.rail).toBe("paypal");
+    expect(rv.chain.map((c) => c.holderLabel)).toEqual(["ops-agent", "localization-agent"]);
+    expect(rv.principal).toBe(w.ada.publicKey);
+    expect(rv.ops).toMatchObject({ authorization: w.root.authorizationId, capture: r.spend!.captureId, payout: r.spend!.payoutBatchId });
+    // receipts can't be edited: the signature covers the amount
+    const edited = "amount" in rec ? { ...rec, amount: { ...rec.amount, minor: 1 } } : { ...rec, request: { ...rec.request, amount: 1 } };
+    expect(await G.verifyReceipt(edited)).toBe(false);
 
     const rc = await G.reconcile(r.spend!.id);
     expect(rc.ok).toBe(true);
-    expect(rc.checks).toHaveLength(7); // the seventh: PayPal holds no dispute against the capture
+    expect(rc.checks).toHaveLength(7); // the seventh: the rail holds no dispute against the capture
   });
 
   it("a child can never spend more than any ancestor has left, however the limits were handed out", async () => {

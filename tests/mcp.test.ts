@@ -59,7 +59,7 @@ d("MCP server over stdio (simulated PayPal)", () => {
     const { getDb } = await import("../lib/db");
     const { sql } = await import("drizzle-orm");
     const { resetSimMemory } = await import("../lib/sim/store");
-    await getDb().execute(sql`truncate table audit_log, spends, blocks, roots, demo_keys, gateway_keys, emulator_state, rate_limits, accounts, ledger, transfers, cards restart identity cascade`);
+    await getDb().execute(sql`truncate table position_entries, rail_accounts, reconciliation_runs, audit_log, spends, blocks, roots, demo_keys, gateway_keys, emulator_state, rate_limits, accounts, ledger, transfers, cards restart identity cascade`);
     resetSimMemory();
     http = await startHttpGateway();
     gateway = new Gateway(http.url);
@@ -268,7 +268,7 @@ d("CLI over a local gateway (simulated PayPal)", () => {
     const { getDb } = await import("../lib/db");
     const { sql } = await import("drizzle-orm");
     const { resetSimMemory } = await import("../lib/sim/store");
-    await getDb().execute(sql`truncate table audit_log, spends, blocks, roots, demo_keys, gateway_keys, emulator_state, rate_limits, accounts, ledger, transfers, cards restart identity cascade`);
+    await getDb().execute(sql`truncate table position_entries, rail_accounts, reconciliation_runs, audit_log, spends, blocks, roots, demo_keys, gateway_keys, emulator_state, rate_limits, accounts, ledger, transfers, cards restart identity cascade`);
     resetSimMemory();
     http = await startHttpGateway();
     dir = mkdtempSync(join(tmpdir(), "envelope-cli-"));

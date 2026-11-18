@@ -76,7 +76,7 @@ d("randomized runs against the money rules (simulated PayPal)", async () => {
     resetSimMemory();
     G.forgetGatewayKey();
     K.forgetBalance();
-    await db.execute(sql`truncate table audit_log, spends, blocks, roots, demo_keys, gateway_keys, emulator_state, rate_limits, accounts, ledger, transfers, cards, paypal_calls, paypal_events restart identity cascade`);
+    await db.execute(sql`truncate table position_entries, rail_accounts, reconciliation_runs, audit_log, spends, blocks, roots, demo_keys, gateway_keys, emulator_state, rate_limits, accounts, ledger, transfers, cards, paypal_calls, paypal_events restart identity cascade`);
     if (fees) await sim.simChargeFees(true);
 
     // ---- the cast --------------------------------------------------------------------------------

@@ -27,8 +27,10 @@ export function route(key: keyof typeof handlers & string, opts: Opts = {}) {
       if (Number(req.headers.get("content-length") ?? 0) > MAX_BODY_BYTES) return json({ error: "Request too large." }, 413);
       try { const text = await req.text(); if (text.length > MAX_BODY_BYTES) return json({ error: "Request too large." }, 413); raw = text; body = text ? JSON.parse(text) : {}; } catch { return json({ error: "Send JSON." }, 400); }
     }
+    // Signature headers from whichever rail is configured, plus the bearer token for schedulers. The rail
+    // decides which of these it needs; the HTTP layer does not guess.
     const headers: Record<string, string> = {};
-    req.headers.forEach((v, k) => { if (k.startsWith("paypal-") || k === "authorization") headers[k] = v; });
+    req.headers.forEach((v, k) => { if (k.startsWith("paypal-") || k.startsWith("mock-") || k.startsWith("x-rail-") || k === "authorization") headers[k] = v; });
     const out = await run(handler, { params: (await ctx.params) ?? {}, body, headers, raw });
     return json(out.body, out.status);
   };

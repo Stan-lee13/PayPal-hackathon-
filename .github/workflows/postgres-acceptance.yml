@@ -1,0 +1,127 @@
+# Real-Postgres acceptance: concurrency, migrations, and the whole suite.
+#
+# Why this workflow exists: every other test in this repository can run against one serialized database
+# connection, which cannot show whether the advisory locks, the unique indexes and the settlement claim
+# actually hold when two payments overlap. This workflow runs the gateway against a real PostgreSQL service
+# with a real connection pool, applies the migration sequence to a clean database, upgrades a database that
+# is already at migration 0009, and only then runs the suite.
+#
+# The concurrency suite is not "skipped" here: it FAILS if it finds a PGlite stand-in, one backend, or a
+# single-connection pool. See docs/MILESTONE_3_INDEPENDENT_AUDIT.md for what has and has not been run.
+
+name: postgres-acceptance
+
+on:
+  push:
+    branches: ["main", "freebuff/**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: postgres-acceptance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  acceptance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: envelope
+          POSTGRES_PASSWORD: envelope
+          POSTGRES_DB: envelope_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U envelope -d envelope_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      TEST_DATABASE_URL: postgres://envelope:envelope@127.0.0.1:5432/envelope_test
+      DATABASE_URL: postgres://envelope:envelope@127.0.0.1:5432/envelope_test
+      DB_POOL_MAX: "8"
+      PGPASSWORD: envelope
+      CI: "true"
+      # A missing database must fail the run, not silently skip the suites that need one.
+      REQUIRE_TEST_DB: "1"
+      # Opts the concurrency suite in. Its preflight fails the run if this is not a real multi-connection server.
+      REAL_DATABASE_URL: postgres://envelope:envelope@127.0.0.1:5432/envelope_test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install from the lockfile
+        run: npm ci --no-audit --no-fund
+
+      - name: Wait for Postgres
+        run: |
+          for i in $(seq 1 30); do
+            pg_isready -h 127.0.0.1 -p 5432 -U envelope -d envelope_test && break
+            sleep 1
+          done
+          psql "$DATABASE_URL" -c "select version();"
+
+      - name: Clean installation — the whole migration sequence on an empty database
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "drop schema if exists public cascade; drop schema if exists drizzle cascade; create schema public;"
+          npm run db:migrate
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "\dt" | tee /tmp/tables.txt
+          grep -q "position_entries" /tmp/tables.txt
+          grep -q "rail_accounts" /tmp/tables.txt
+          grep -q "reconciliation_runs" /tmp/tables.txt
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "select settle_generation, settling_at, rail_provider from spends limit 1;"
+
+      - name: Upgrade — a database already at migration 0009 reaches the head without losing records
+        run: node scripts/migration-upgrade-check.mjs
+
+      - name: Multi-connection concurrency acceptance (must actually execute)
+        run: npx vitest run tests/concurrency.postgres.test.ts --reporter=verbose 2>&1 | tee /tmp/concurrency.log
+        # A skipped suite is not a pass: require the tests to have run.
+        # (The preflight throws if the server or pool cannot be exercised concurrently.)
+
+      - name: Assert the concurrency suite did not skip
+        run: |
+          if grep -Eq "skipped|SKIPPED" /tmp/concurrency.log; then
+            echo "The concurrency suite skipped; that is not an acceptance run." >&2
+            exit 1
+          fi
+          grep -q "Postgres concurrency acceptance" /tmp/concurrency.log
+          grep -Eq "[0-9]+ passed" /tmp/concurrency.log
+
+      - name: Whole suite against real Postgres (several connections)
+        run: npx vitest run --reporter=basic 2>&1 | tee /tmp/suite.log
+
+      - name: Assert the whole suite ran and nothing failed
+        run: |
+          grep -E "Tests +[0-9]+ passed" /tmp/suite.log
+          if grep -E "^ +Tests .*failed" /tmp/suite.log; then
+            echo "The suite reported failures." >&2
+            exit 1
+          fi
+          # The database suites must have executed, not skipped: a skipped suite is not a pass.
+          if grep -q "Test Files  0 passed" /tmp/suite.log; then
+            echo "No test file ran against the database." >&2
+            exit 1
+          fi
+
+      - name: Typecheck
+        run: npm run lint
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: postgres-acceptance-logs
+          path: |
+            /tmp/concurrency.log
+            /tmp/suite.log
+          if-no-files-found: ignore

@@ -14,12 +14,12 @@
  */
 import { and, asc, eq, inArray, or, type SQL } from "drizzle-orm";
 import { getDb } from "../db";
-import { paypalEvents, roots, spends, transfers, type PayPalCall, type Spend } from "../db/schema";
+import { paypalEvents, roots, spends, transfers, type Spend } from "../db/schema";
 import * as E from "../envelope/core";
 import { UserFacingError } from "../errors";
-import { getPayPal, PayPalApiError, paypalMode } from "../paypal/client";
-import { callsFor, MOVES, OP_TEXT } from "../paypal/journal";
-import { cancelPayoutItem, listEvents, verifyWebhookSignature, type EventHeaders, type PayPalEventBody } from "../paypal/payments";
+// Every call to a provider goes through the rail (lib/rails). Even the record of what the provider did
+// for one envelope is asked of the rail: the engine never reads a provider's journal itself.
+import { isRailError, rail, railCode, railMode, railRef, type RailCall, type RailEvent } from "../rails";
 import { settleRefunds, syncTransfer } from "./bank";
 import { settleDisputes } from "./books";
 import { checkHold, sweepExpired, syncSpend, trail } from "./service";
@@ -31,7 +31,7 @@ const str = (x: unknown): string | null => (typeof x === "string" && x ? x : nul
 // What PayPal did for one envelope
 // ---------------------------------------------------------------------------
 
-export type RailCall = Pick<PayPalCall, "id" | "op" | "method" | "path" | "httpStatus" | "paypalStatus" | "resourceId" | "amountMinor" | "currency" | "debugId" | "ms" | "error" | "requestId"> & { at: string; text: string; moves: boolean; /** The same request sent again (a retry): PayPal returned its first answer and did nothing new. */ repeat: boolean };
+export type { RailCall } from "../rails";
 
 export async function paypalTrail(rootId: string) {
   const db = getDb();
@@ -39,15 +39,12 @@ export async function paypalTrail(rootId: string) {
   if (!root) return null;
   const ss = await db.select({ id: spends.id, captureId: spends.captureId, payoutBatchId: spends.payoutBatchId, payoutItemId: spends.payoutItemId }).from(spends).where(eq(spends.rootId, rootId));
   const keys = [root.id, root.authorizationId, root.paypalOrderId, ...ss.flatMap((s) => [s.id, s.captureId, s.payoutBatchId, s.payoutItemId])].filter((x): x is string => Boolean(x));
-  const rows = await callsFor(keys);
-  const first = new Set<string>();
-  const again = (c: PayPalCall) => { if (!c.requestId || c.httpStatus >= 300) return false; const k = `${c.op}|${c.requestId}`; if (first.has(k)) return true; first.add(k); return false; };
-  const calls: RailCall[] = rows.map((c) => ({ repeat: again(c), id: c.id, at: c.at.toISOString(), op: c.op, text: OP_TEXT[c.op] ?? c.op, moves: MOVES.includes(c.op), method: c.method, path: c.path, httpStatus: c.httpStatus, paypalStatus: c.paypalStatus, resourceId: c.resourceId, amountMinor: c.amountMinor, currency: c.currency, debugId: c.debugId, ms: c.ms, error: c.error, requestId: c.requestId }));
+  const calls: RailCall[] = await rail().trail.calls(keys);
   const ok = calls.filter((c) => c.httpStatus >= 200 && c.httpStatus < 300 && !c.repeat);
   const count = (op: string) => ok.filter((c) => c.op === op).length;
   const events = await db.select().from(paypalEvents).where(inArray(paypalEvents.subject, keys)).orderBy(asc(paypalEvents.receivedAt)).limit(100);
   return {
-    mode: paypalMode(), currency: root.currency, calls,
+    mode: railMode(), currency: root.currency, calls,
     summary: {
       total: calls.length, changed: ok.filter((c) => c.moves).length, asked: ok.filter((c) => !c.moves).length, repeats: calls.filter((c) => c.repeat).length, refused: calls.filter((c) => c.httpStatus < 200 || c.httpStatus >= 300).length,
       holds: count("hold.place"), captures: count("capture"), payouts: count("payout.send"), refunds: count("refund"), cancels: count("payout.cancel"), voids: count("hold.void"),
@@ -74,14 +71,19 @@ export async function recall(spendId: string, signed: E.SignedRead): Promise<Spe
   const s = await syncSpend(spendId); // PayPal's current word first
   if (s.status === "FAILED" && s.refundId) return s; // already back
   if (s.status !== "UNCLAIMED" || !s.payoutItemId) throw new UserFacingError(s.status === "PAID" ? "PayPal has delivered this payment; it cannot be recalled." : "Only a payout PayPal is holding unclaimed can be recalled.", 409);
+  // A rail that cannot cancel a payout cannot recall one. Refuse before asking, and change nothing.
+  if (!rail().capabilities.has("payout.cancel")) {
+    throw new UserFacingError(`This gateway's rail (${rail().label}) cannot cancel a payout, so it cannot recall one. Nothing changed.`, 501);
+  }
   try {
-    await cancelPayoutItem(getPayPal(), s.payoutItemId);
+    await rail().payouts.cancel(railRef(rail().id, "payout_item", s.payoutItemId));
   } catch (e) {
     // Seen on the sandbox: for a short while after a payout is sent, PayPal holds the item unclaimed but is still closing the batch, and refuses to cancel.
-    if (e instanceof PayPalApiError && (e.issue === "BATCH_NOT_COMPLETED" || e.paypalName === "BATCH_NOT_COMPLETED")) throw new UserFacingError("PayPal is still processing this payout batch and will not cancel it yet. Nothing changed; try again in a minute.", 409);
-    // PayPal may have moved on in the meantime (claimed, already returned): its current word decides.
+    // The rail says `not_ready`, which means exactly "try the same request again shortly"; nothing was changed.
+    if (isRailError(e) && e.code === "not_ready") throw new UserFacingError(`${rail().label} is still processing this payout batch and will not cancel it yet. Nothing changed; try again in a minute.`, 409);
+    // The rail may have moved on in the meantime (claimed, already returned): its current word decides.
     const now = await syncSpend(spendId);
-    if (now.status === "UNCLAIMED") throw new UserFacingError(`PayPal would not cancel the payout${e instanceof PayPalApiError ? ` (${e.issue ?? e.paypalName})` : ""}. Nothing changed.`, 502);
+    if (now.status === "UNCLAIMED") throw new UserFacingError(`${rail().label} would not cancel the payout${isRailError(e) ? ` (${railCode(e)})` : ""}. Nothing changed.`, 502);
     return now;
   }
   await trail(root, "principal", "payout.recalled", "OK", s.payoutItemId, { spend: s.id, payee: s.payee, amount: s.amountMinor });
@@ -99,20 +101,27 @@ export async function recall(spendId: string, signed: E.SignedRead): Promise<Spe
 
 /** Is this webhook really from PayPal? PayPal itself answers, given the headers it signed with and the body exactly as received. */
 export async function genuineEvent(headers: Record<string, string>, raw: string): Promise<"yes" | "no" | "unconfigured"> {
-  const webhookId = process.env.PAYPAL_WEBHOOK_ID || (paypalMode() === "simulated" ? "SIM-WEBHOOK" : null);
+  // ENVELOPE_WEBHOOK_ID is the neutral name; PAYPAL_WEBHOOK_ID is kept for existing deployments.
+  const webhookId = process.env.ENVELOPE_WEBHOOK_ID || process.env.PAYPAL_WEBHOOK_ID || (railMode() === "simulated" ? "SIM-WEBHOOK" : null);
   if (!webhookId) return "unconfigured";
-  const h = { authAlgo: headers["paypal-auth-algo"], certUrl: headers["paypal-cert-url"], transmissionId: headers["paypal-transmission-id"], transmissionSig: headers["paypal-transmission-sig"], transmissionTime: headers["paypal-transmission-time"] };
-  if (Object.values(h).some((x) => !x)) return "no";
-  try { return (await verifyWebhookSignature(getPayPal(), webhookId, h as EventHeaders, raw)) ? "yes" : "no"; } catch { return "no"; }
+  // The rail reads whichever headers its provider signs with; the caller passes them through untouched.
+  try { return (await rail().events.verify({ headers, rawBody: raw, endpointId: webhookId })) ? "yes" : "no"; } catch { return "no"; }
 }
 
 export type EventOutcome = { event: string; type: string; duplicate: boolean; subject: string | null; outcome: string };
 
 /**
+ * An event as a provider reports it, reduced to the three things this gateway uses: which event it is,
+ * what kind it says it is, and the resource it points at. The provider's own schema is enforced at its
+ * ingress (`POST /api/paypal/webhook`), which is the only place that shape is known.
+ */
+export type EventBody = { id: string; event_type: string; create_time?: string; resource?: Record<string, unknown> };
+
+/**
  * Apply one PayPal event, once. The event only tells the gateway where to look: the payment,
  * transfer or hold it names is then read from PayPal by id, and that reading is what changes the books.
  */
-export async function applyPayPalEvent(ev: PayPalEventBody, source: "webhook" | "feed"): Promise<EventOutcome> {
+export async function applyPayPalEvent(ev: EventBody, source: "webhook" | "feed"): Promise<EventOutcome> {
   const db = getDb();
   const r = (ev.resource ?? {}) as Loose;
   const type = String(ev.event_type);
@@ -129,7 +138,7 @@ export async function applyPayPalEvent(ev: PayPalEventBody, source: "webhook" | 
   }
 }
 
-async function applyFresh(ev: PayPalEventBody, type: string, r: Loose): Promise<EventOutcome> {
+async function applyFresh(ev: EventBody, type: string, r: Loose): Promise<EventOutcome> {
   const db = getDb();
   const ours = [r.invoice_id, r.payout_item?.sender_item_id, r.sender_batch_id, r.batch_header?.sender_batch_header?.sender_batch_id].map(str).filter((x): x is string => Boolean(x));
   const batch = str(r.payout_batch_id) ?? str(r.batch_header?.payout_batch_id);
@@ -178,11 +187,12 @@ async function applyFresh(ev: PayPalEventBody, type: string, r: Loose): Promise<
 
 /** Read PayPal's own event feed and apply what has not been seen. Works without an inbound endpoint. */
 export async function pullPayPalEvents(): Promise<{ seen: number; applied: EventOutcome[] }> {
-  const events = await listEvents(getPayPal(), new Date(Date.now() - 3 * 86400_000));
+  const events: RailEvent[] = await rail().events.list(new Date(Date.now() - 3 * 86400_000));
   const applied: EventOutcome[] = [];
   for (const ev of [...events].reverse()) { // oldest first
-    if (!ev?.id || !ev.event_type) continue;
-    const out = await applyPayPalEvent(ev, "feed");
+    if (!ev?.id || !ev.type) continue;
+    // An event is a hint: it names a record, and that record is read from the rail before anything changes.
+    const out = await applyPayPalEvent({ id: ev.id, event_type: ev.type, resource: ev.resource }, "feed");
     if (!out.duplicate) applied.push(out);
   }
   return { seen: events.length, applied };
@@ -212,5 +222,5 @@ export async function sweepUnfinished(limit = 40) {
   // Refunds PayPal has not confirmed yet, and whatever payers have disputed.
   for (const r of await settleRefunds().catch(() => [])) if (r.status === "REFUNDED") moved.push({ id: r.spend, from: "PAID", to: "REFUNDED" });
   const disputes = await settleDisputes().catch(() => ({ asked: false, disputes: 0, ours: [] }));
-  return { mode: paypalMode(), events: { seen: feed.seen, applied: feed.applied.length, outcomes: feed.applied.map((e) => ({ type: e.type, subject: e.subject, outcome: e.outcome })) }, checked: openSpends.length + openTransfers.length, moved, disputes: { asked: disputes.asked, atPayPal: disputes.disputes, aboutPaymentsHere: disputes.ours } };
+  return { mode: railMode(), events: { seen: feed.seen, applied: feed.applied.length, outcomes: feed.applied.map((e) => ({ type: e.type, subject: e.subject, outcome: e.outcome })) }, checked: openSpends.length + openTransfers.length, moved, disputes: { asked: disputes.asked, atPayPal: disputes.disputes, aboutPaymentsHere: disputes.ours } };
 }

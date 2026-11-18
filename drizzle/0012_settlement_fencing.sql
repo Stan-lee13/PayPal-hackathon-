@@ -1,0 +1,1 @@
+ALTER TABLE "spends" ADD COLUMN "settle_generation" integer DEFAULT 0 NOT NULL;

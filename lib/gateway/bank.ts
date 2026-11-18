@@ -21,12 +21,25 @@ import { accounts, cards, ledger, spends, transfers, type Account, type Card, ty
 import { UserFacingError } from "../errors";
 import * as E from "../envelope/core";
 import { newId } from "../ids";
-import { getPayPal, PayPalApiError, paypalMode } from "../paypal/client";
-import { getPayout, payout, refundCapture } from "../paypal/payments";
+// Money leaves a balance through a rail, never through a provider (lib/rails).
+import { amount, isRailError, rail, railCode, railMode, railRef, refId } from "../rails";
+// A balance is a claim; a provider position is money. Paying out needs the second (docs/MULTI_RAIL_ACCOUNTING.md).
+import { postPayout, postPayoutReturn, postRefund, requireProviderLiquidity } from "../accounting";
 import { audit } from "../services/audit";
 import { gatewayKey, HELD, lockAccount, markRefundedByPayee } from "./service";
 
 type Tx = Parameters<Parameters<ReturnType<typeof getDb>["transaction"]>[0]>[0];
+/**
+ * The rail that funded an account's balance in one currency, when its entries agree on one. This is the
+ * provenance a book transfer carries: money does not silently change provider because it changed agent.
+ */
+async function fundedRail(tx: Tx, agent: string, currency: string): Promise<string> {
+  const rows = await tx.select({ rail: ledger.rail, total: sql<number>`coalesce(sum(${ledger.deltaMinor}), 0)::int` })
+    .from(ledger).where(and(eq(ledger.agent, agent), eq(ledger.currency, currency))).groupBy(ledger.rail);
+  const positive = rows.filter((r) => r.total > 0);
+  // A balance funded by more than one rail has no single provenance; the configured rail is what pays it out.
+  return positive.length === 1 ? positive[0]!.rail : rail().id;
+}
 /** What left an account in the last 24 hours through payments and card charges (withdrawals to the owner don't count; refused payouts are netted off). */
 async function spentToday(tx: Tx, agent: string): Promise<number> {
   const rows = await tx.select({ kind: ledger.kind, ref: ledger.ref, delta: ledger.deltaMinor }).from(ledger)
@@ -50,16 +63,19 @@ async function ownerRules(tx: Tx, live: Account, amount: number, capped: boolean
   return why;
 }
 
-export const TRANSFER_RECEIPT_VERSION = "envelope-transfer-receipt/1" as const;
+/** The version new transfer receipts are issued in. v1 receipts stay verifiable for ever. */
+export const TRANSFER_RECEIPT_VERSION = "envelope-transfer-receipt/2" as const;
+export const TRANSFER_RECEIPT_VERSIONS = ["envelope-transfer-receipt/1", TRANSFER_RECEIPT_VERSION] as const;
 export type TransferResult = { status: Transfer["status"]; transfer: Transfer | null; reasons: E.Violation[]; receipt: TransferReceipt | null; duplicate: boolean; balanceMinor: number | null };
 
 const note = (a: Account, action: string, outcome: "OK" | "REJECTED" | "FAILED" | "PENDING" | "INFO", ref: string, detail: Record<string, unknown>) =>
   audit(getDb(), { scopeId: a.owner, subjectId: `acct:${a.account}`, actor: "agent", action, ref, outcome, detail });
 
 export async function verifyTransferReceipt(r: TransferReceipt): Promise<boolean> {
-  if (!r || r.v !== TRANSFER_RECEIPT_VERSION) return false;
+  if (!r || !(TRANSFER_RECEIPT_VERSIONS as readonly string[]).includes(r.v)) return false;
   const { sig, ...body } = r;
-  return E.verifyDetached(r.gateway, TRANSFER_RECEIPT_VERSION, body, sig);
+  // The version string is the signing domain: a v1 receipt cannot be passed off as v2, or the reverse.
+  return E.verifyDetached(r.gateway, r.v, body, sig);
 }
 
 /** An agent moves money out of its own balance. Only that agent's key can ask; the gateway checks the balance, the owner's cap and the freeze. */
@@ -102,18 +118,21 @@ export async function transfer(signed: E.SignedTransfer): Promise<TransferResult
     if (why.length === 0) why.push(...(await ownerRules(tx, live, r.amount, r.kind === "pay")));
     const id = newId("tr");
     if (why.length) {
-      const [row] = await tx.insert(transfers).values({ id, ...base, status: "DENIED", reasons: why }).returning();
+      const [row] = await tx.insert(transfers).values({ id, railProvider: rail().id, ...base, status: "DENIED", reasons: why }).returning();
       return { row: row!, fresh: true, balance: live.balanceMinor };
     }
     const after = live.balanceMinor - r.amount;
+    // The claim keeps the provenance of the funds behind it: a book transfer moves money between agents here,
+    // it does not move it between providers.
+    const sourceRail = await fundedRail(tx, live.agent, r.currency);
     await tx.update(accounts).set({ balanceMinor: after }).where(eq(accounts.agent, live.agent));
-    await tx.insert(ledger).values({ agent: live.agent, kind: book ? "transfer_out" : r.kind === "withdraw" ? "withdrawal" : "payout", ref: id, deltaMinor: -r.amount, balanceAfterMinor: after, counterparty: book ? to!.label : payoutTo, memo: base.memo || base.purpose });
+    await tx.insert(ledger).values({ agent: live.agent, rail: sourceRail, currency: r.currency, kind: book ? "transfer_out" : r.kind === "withdraw" ? "withdrawal" : "payout", ref: id, deltaMinor: -r.amount, balanceAfterMinor: after, counterparty: book ? to!.label : payoutTo, memo: base.memo || base.purpose });
     if (book) {
       const dest = (await tx.query.accounts.findFirst({ where: eq(accounts.agent, to!.agent) }))!;
       await tx.update(accounts).set({ balanceMinor: dest.balanceMinor + r.amount }).where(eq(accounts.agent, dest.agent));
-      await tx.insert(ledger).values({ agent: dest.agent, kind: "transfer_in", ref: id, deltaMinor: r.amount, balanceAfterMinor: dest.balanceMinor + r.amount, counterparty: live.label, memo: base.memo || base.purpose });
+      await tx.insert(ledger).values({ agent: dest.agent, rail: sourceRail, currency: r.currency, kind: "transfer_in", ref: id, deltaMinor: r.amount, balanceAfterMinor: dest.balanceMinor + r.amount, counterparty: live.label, memo: base.memo || base.purpose });
     }
-    const [row] = await tx.insert(transfers).values({ id, ...base, status: book ? "BOOKED" : "SENDING" }).returning();
+    const [row] = await tx.insert(transfers).values({ id, railProvider: rail().id, ...base, status: book ? "BOOKED" : "SENDING" }).returning();
     return { row: row!, fresh: true, balance: after };
   });
 
@@ -139,32 +158,55 @@ async function finish(from: Account, to: Account | null, out: { row: Transfer; f
 async function send(from: Account, t: Transfer): Promise<Transfer> {
   const db = getDb();
   try {
-    const po = await payout(getPayPal(), { spendId: t.id, receiverEmail: t.payoutTo!, amountMinor: t.amountMinor, currency: t.currency, note: `${t.memo || t.purpose || "Payment"} · from ${from.label}'s Envelope account (${t.id})` });
+    const rl = rail();
+    // The debit is an internal claim. Before asking the rail to pay it out, the rail itself must hold the
+    // settled funds in this currency: a balance credited through another provider is not liquidity here.
+    // The check is on the provider account, which is where the money actually is. The owner is passed too:
+    // in the default pooled treasury it is ignored, and in ENVELOPE_TREASURY_MODE=allocated the organization's
+    // own position must also cover it.
+    try {
+      await requireProviderLiquidity({ rail: rl.id, currency: t.currency, amountMinor: t.amountMinor, what: "This transfer", fundedByRail: t.railProvider, owner: from.owner });
+    } catch (e) {
+      // A definite refusal, not a network doubt: put the debit back once and report it. Nothing was sent.
+      if (e instanceof UserFacingError) return reverse(t, { code: "INSUFFICIENT_PROVIDER_LIQUIDITY", at: null, detail: e.message }, null);
+      throw e;
+    }
+    const po = await rl.payouts.send({ reference: t.id, receiver: t.payoutTo!, amount: amount(t.amountMinor, t.currency), note: `${t.memo || t.purpose || "Payment"} · from ${from.label}'s Envelope account (${t.id})` });
     const st = po.itemStatus ?? po.batchStatus;
     const status: Transfer["status"] = st === "SUCCESS" ? "PAID" : st === "UNCLAIMED" ? "UNCLAIMED" : "PAYOUT_PENDING";
-    const [u] = await db.update(transfers).set({ status, payoutBatchId: po.batchId, payoutItemId: po.itemId, payoutStatus: st }).where(and(eq(transfers.id, t.id), eq(transfers.status, "SENDING"))).returning();
+    const [u] = await db.transaction(async (tx) => {
+      const [updated] = await tx.update(transfers).set({ status, payoutBatchId: po.batchRef.id, payoutItemId: refId(po.itemRef), payoutStatus: st }).where(and(eq(transfers.id, t.id), eq(transfers.status, "SENDING"))).returning();
+      if (updated) await postPayout({ owner: from.owner, rail: rl.id, currency: t.currency, amountMinor: t.amountMinor, ref: t.id, memo: `payout ${po.batchRef.id}` }, tx);
+      return [updated];
+    });
     return u ?? (await db.query.transfers.findFirst({ where: eq(transfers.id, t.id) }))!;
   } catch (e) {
-    if (!(e instanceof PayPalApiError) || e.retryable) return t; // in doubt: stays SENDING; presenting the same request again resumes here
-    // Another arrival of the same request may already have sent it; then PayPal is refusing a duplicate, not the payment.
+    if (!isRailError(e) || e.retryable) return t; // in doubt: stays SENDING; presenting the same request again resumes here
+    // Another arrival of the same request may already have sent it; then the rail is refusing a duplicate, not the payment.
     const again = (await db.query.transfers.findFirst({ where: eq(transfers.id, t.id) }))!;
     if (again.payoutBatchId || again.status !== "SENDING") return again;
-    if (e.issue === "DUPLICATE_REQUEST_ID" || /duplicate/i.test(e.message)) return again;
-    // PayPal refused: put the money back, exactly once.
-    return reverse(t, { code: "PAYPAL_PAYOUT_FAILED", at: null, detail: `PayPal refused the payout: ${e.issue ?? e.paypalName}; the amount is back in the balance` }, null);
+    if (e.code === "duplicate" || /duplicate/i.test(e.message)) return again;
+    // The rail refused: put the money back, exactly once.
+    return reverse(t, { code: "PAYPAL_PAYOUT_FAILED", at: null, detail: `${rail().label} refused the payout: ${railCode(e)}; the amount is back in the balance` }, null);
   }
 }
 
 const DEAD = ["FAILED", "RETURNED", "BLOCKED", "REFUNDED", "REVERSED", "DENIED", "CANCELED"];
-/** Put a debit back, exactly once (the ledger's unique index is the guard). */
-async function reverse(t: Transfer, reason: E.Violation, payoutStatus: string | null): Promise<Transfer> {
+/**
+ * Put a debit back, exactly once (the ledger's unique index is the guard). `payoutLeft` says whether the money
+ * actually left the provider: only then is a return recorded against the provider position.
+ */
+async function reverse(t: Transfer, reason: E.Violation, payoutStatus: string | null, payoutLeft = false): Promise<Transfer> {
   return getDb().transaction(async (tx) => {
     await lockAccount(tx, t.fromAgent);
     const [u] = await tx.update(transfers).set({ status: "FAILED", reasons: [reason], ...(payoutStatus ? { payoutStatus } : {}) }).where(and(eq(transfers.id, t.id), inArray(transfers.status, ["SENDING", "PAYOUT_PENDING", "UNCLAIMED", "PAID"]))).returning();
     if (!u) return (await tx.query.transfers.findFirst({ where: eq(transfers.id, t.id) }))!;
     const live = (await tx.query.accounts.findFirst({ where: eq(accounts.agent, t.fromAgent) }))!;
-    const [row] = await tx.insert(ledger).values({ agent: live.agent, kind: "reversal", ref: t.id, deltaMinor: t.amountMinor, balanceAfterMinor: live.balanceMinor + t.amountMinor, counterparty: t.payoutTo, memo: "the payout did not go through" }).onConflictDoNothing().returning();
-    if (row) await tx.update(accounts).set({ balanceMinor: live.balanceMinor + t.amountMinor }).where(eq(accounts.agent, live.agent));
+    const [row] = await tx.insert(ledger).values({ agent: live.agent, rail: t.railProvider, currency: t.currency, kind: "reversal", ref: t.id, deltaMinor: t.amountMinor, balanceAfterMinor: live.balanceMinor + t.amountMinor, counterparty: t.payoutTo, memo: "the payout did not go through" }).onConflictDoNothing().returning();
+    if (row) {
+      await tx.update(accounts).set({ balanceMinor: live.balanceMinor + t.amountMinor }).where(eq(accounts.agent, live.agent));
+      if (payoutLeft) await postPayoutReturn({ owner: (await tx.query.accounts.findFirst({ where: eq(accounts.agent, live.agent) }))!.owner, rail: t.railProvider, currency: t.currency, amountMinor: t.amountMinor, ref: t.id, memo: `payout returned (${payoutStatus ?? "unknown"})` }, tx);
+    }
     // A card charge that did not go through does not count against the card.
     if (row && t.cardId) await tx.update(cards).set({ charges: sql`greatest(${cards.charges} - 1, 0)`, chargedMinor: sql`greatest(${cards.chargedMinor} - ${t.amountMinor}, 0)` }).where(eq(cards.id, t.cardId));
     return u;
@@ -176,12 +218,13 @@ export async function syncTransfer(id: string): Promise<Transfer | null> {
   const db = getDb();
   const t = await db.query.transfers.findFirst({ where: eq(transfers.id, id) });
   if (!t || !t.payoutBatchId || !["PAYOUT_PENDING", "UNCLAIMED"].includes(t.status)) return t ?? null;
-  const po = await getPayout(getPayPal(), t.payoutBatchId).catch(() => null);
+  const rl = rail();
+  const po = await rl.payouts.read(railRef(rl.id, "payout", t.payoutBatchId)).catch(() => null);
   if (!po) return t;
   const st = po.itemStatus ?? po.batchStatus;
-  if (DEAD.includes(st)) return reverse(t, { code: "PAYPAL_PAYOUT_FAILED", at: null, detail: `PayPal could not deliver the payout (${po.error ?? st}); the amount is back in the balance` }, st);
+  if (DEAD.includes(st)) return reverse(t, { code: "PAYPAL_PAYOUT_FAILED", at: null, detail: `${rl.label} could not deliver the payout (${po.error ?? st}); the amount is back in the balance` }, st, true);
   const status: Transfer["status"] = st === "SUCCESS" ? "PAID" : st === "UNCLAIMED" ? "UNCLAIMED" : "PAYOUT_PENDING";
-  const [u] = await db.update(transfers).set({ status, payoutStatus: st, payoutItemId: po.itemId ?? t.payoutItemId }).where(and(eq(transfers.id, t.id), inArray(transfers.status, ["PAYOUT_PENDING", "UNCLAIMED"]))).returning();
+  const [u] = await db.update(transfers).set({ status, payoutStatus: st, payoutItemId: refId(po.itemRef) ?? t.payoutItemId }).where(and(eq(transfers.id, t.id), inArray(transfers.status, ["PAYOUT_PENDING", "UNCLAIMED"]))).returning();
   return u ?? t;
 }
 
@@ -189,11 +232,16 @@ async function receipt(from: Account, to: Account | null, t: Transfer): Promise<
   const db = getDb();
   const gw = await gatewayKey();
   const entry = await db.query.ledger.findFirst({ where: and(eq(ledger.agent, from.agent), eq(ledger.ref, t.id)), orderBy: desc(ledger.id) });
+  const railId = rail().id;
   const body: Omit<TransferReceipt, "sig"> = {
     v: TRANSFER_RECEIPT_VERSION, transfer: t.id, request: t.signed.request, requestSig: t.signed.sig,
     ...(await cardOnReceipt(t)),
     from: { account: from.account, agent: from.agent, agentLabel: from.label },
-    to: t.toAgent && to && !t.payoutTo ? { kind: "account", account: to.account, agent: to.agent, agentLabel: to.label } : { kind: "paypal", address: t.payoutTo!.replace(/^(.)[^@]*(@.*)$/, "$1•••$2"), payoutBatchId: t.payoutBatchId!, mode: paypalMode() },
+    provider: { rail: railId, mode: railMode() },
+    // A payout is a payout: it is not called a PayPal transfer unless PayPal is what paid it.
+    to: t.toAgent && to && !t.payoutTo
+      ? { kind: "account", account: to.account, agent: to.agent, agentLabel: to.label }
+      : { kind: "payout", address: t.payoutTo!.replace(/^(.)[^@]*(@.*)$/, "$1•••$2"), payoutBatchId: t.payoutBatchId!, rail: railId },
     balanceAfterMinor: entry?.balanceAfterMinor ?? 0,
     issuedAt: new Date().toISOString(), gateway: gw.publicKey,
   };
@@ -287,20 +335,21 @@ export async function charge(signed: E.SignedCharge): Promise<TransferResult & {
     }
     const id = newId("ch");
     if (why.length) {
-      const [row] = await tx.insert(transfers).values({ id, ...base, status: "DENIED", reasons: why }).returning();
+      const [row] = await tx.insert(transfers).values({ id, railProvider: rail().id, ...base, status: "DENIED", reasons: why }).returning();
       return { row: row!, fresh: true, balance: live.balanceMinor };
     }
     const after = live.balanceMinor - amount;
     const memo = `Card · ${c.label}${base.memo ? ` · ${base.memo}` : ""}`.slice(0, 200);
+    const sourceRail = await fundedRail(tx, live.agent, r.currency);
     await tx.update(accounts).set({ balanceMinor: after }).where(eq(accounts.agent, live.agent));
-    await tx.insert(ledger).values({ agent: live.agent, kind: book ? "transfer_out" : "payout", ref: id, deltaMinor: -amount, balanceAfterMinor: after, counterparty: book ? to.label : to.settleTo, memo });
+    await tx.insert(ledger).values({ agent: live.agent, rail: sourceRail, currency: r.currency, kind: book ? "transfer_out" : "payout", ref: id, deltaMinor: -amount, balanceAfterMinor: after, counterparty: book ? to.label : to.settleTo, memo });
     if (book) {
       const dest = (await tx.query.accounts.findFirst({ where: eq(accounts.agent, to.agent) }))!;
       await tx.update(accounts).set({ balanceMinor: dest.balanceMinor + amount }).where(eq(accounts.agent, dest.agent));
-      await tx.insert(ledger).values({ agent: dest.agent, kind: "transfer_in", ref: id, deltaMinor: amount, balanceAfterMinor: dest.balanceMinor + amount, counterparty: live.label, memo });
+      await tx.insert(ledger).values({ agent: dest.agent, rail: sourceRail, currency: r.currency, kind: "transfer_in", ref: id, deltaMinor: amount, balanceAfterMinor: dest.balanceMinor + amount, counterparty: live.label, memo });
     }
     await tx.update(cards).set({ charges: c.charges + 1, chargedMinor: c.chargedMinor + amount, lastChargeAt: new Date(now) }).where(eq(cards.id, c.id));
-    const [row] = await tx.insert(transfers).values({ id, ...base, status: book ? "BOOKED" : "SENDING" }).returning();
+    const [row] = await tx.insert(transfers).values({ id, railProvider: rail().id, ...base, status: book ? "BOOKED" : "SENDING" }).returning();
     return { row: row!, fresh: true, balance: after };
   });
   const done = await finish(from, to, out);
@@ -424,7 +473,7 @@ export async function refund(signed: E.SignedRefund): Promise<RefundResult> {
     if (s.amountMinor > live.balanceMinor) no.push({ code: "INSUFFICIENT_BALANCE", at: null, detail: `the balance is ${E.money(live.balanceMinor)}; this payment was ${E.money(s.amountMinor)}` });
     if (no.length) return { refused: no, balance: live.balanceMinor };
     const after = live.balanceMinor - s.amountMinor;
-    await tx.insert(ledger).values({ agent: live.agent, kind: "refund", ref: s.id, deltaMinor: -s.amountMinor, balanceAfterMinor: after, counterparty: s.leafLabel, memo: r.memo || "refund" });
+    await tx.insert(ledger).values({ agent: live.agent, rail: s.railProvider, currency: s.currency, kind: "refund", ref: s.id, deltaMinor: -s.amountMinor, balanceAfterMinor: after, counterparty: s.leafLabel, memo: r.memo || "refund" });
     await tx.update(accounts).set({ balanceMinor: after }).where(eq(accounts.agent, live.agent));
     return { refused: null, balance: after };
   });
@@ -438,25 +487,28 @@ async function finishRefund(s: Spend, acct: Account, memo: string): Promise<Refu
   const db = getDb();
   let refundId: string | null = null;
   try {
-    refundId = (await refundCapture(getPayPal(), s.captureId!, s.id, memo || "Refunded by the payee")).id;
+    const rl = rail();
+    refundId = (await rl.refunds.refund({ capture: railRef(rl.id, "capture", s.captureId!), reference: s.id, note: memo || "Refunded by the payee" })).ref.id;
   } catch (e) {
-    if (e instanceof PayPalApiError && e.issue === "CAPTURE_FULLY_REFUNDED") refundId = "already-refunded";
-    else if (e instanceof PayPalApiError && !e.retryable) {
+    if (isRailError(e) && (e.code === "duplicate" || (e.code === "not_found" && s.refundId))) refundId = "already-refunded";
+    else if (isRailError(e) && !e.retryable) {
       // PayPal said no. Put the money back in the balance, once, and say so.
       const balance = await db.transaction(async (tx) => {
         await lockAccount(tx, acct.agent);
         const live = (await tx.query.accounts.findFirst({ where: eq(accounts.agent, acct.agent) }))!;
-        const [row] = await tx.insert(ledger).values({ agent: live.agent, kind: "refund_reversal", ref: s.id, deltaMinor: s.amountMinor, balanceAfterMinor: live.balanceMinor + s.amountMinor, counterparty: s.leafLabel, memo: "PayPal refused the refund" }).onConflictDoNothing().returning();
+        const [row] = await tx.insert(ledger).values({ agent: live.agent, rail: s.railProvider, currency: s.currency, kind: "refund_reversal", ref: s.id, deltaMinor: s.amountMinor, balanceAfterMinor: live.balanceMinor + s.amountMinor, counterparty: s.leafLabel, memo: "the rail refused the refund" }).onConflictDoNothing().returning();
         if (row) await tx.update(accounts).set({ balanceMinor: live.balanceMinor + s.amountMinor }).where(eq(accounts.agent, live.agent));
         return live.balanceMinor + (row ? s.amountMinor : 0);
       });
-      await note(acct, "balance.refund_refused", "FAILED", s.id, { issue: e.issue ?? e.paypalName });
-      return { status: "FAILED", spendId: s.id, refundId: null, reasons: [{ code: "PAYPAL_REFUND_FAILED", at: null, detail: `PayPal refused the refund (${e.issue ?? e.paypalName}); the money is back in the balance` }], balanceMinor: balance };
+      await note(acct, "balance.refund_refused", "FAILED", s.id, { issue: railCode(e) });
+      return { status: "FAILED", spendId: s.id, refundId: null, reasons: [{ code: "PAYPAL_REFUND_FAILED", at: null, detail: `${rail().label} refused the refund (${railCode(e)}); the money is back in the balance` }], balanceMinor: balance };
     } else {
       // PayPal could not be reached. The debit stands; settleRefunds asks again.
       return { status: "PENDING", spendId: s.id, refundId: null, reasons: [], balanceMinor: (await db.query.accounts.findFirst({ where: eq(accounts.agent, acct.agent) }))?.balanceMinor ?? null };
     }
   }
+  // The provider sent the money back to the payer. Recorded once: the refund's own reference is the spend.
+  await postRefund({ owner: acct.owner, rail: rail().id, currency: s.currency, amountMinor: s.amountMinor, ref: s.id, memo: `refund ${refundId}` });
   const u = await markRefundedByPayee(s.id, refundId, acct.label, memo);
   await note(acct, "balance.refunded", "OK", s.id, { amount: s.amountMinor, refund: refundId, capture: s.captureId });
   return { status: "REFUNDED", spendId: s.id, refundId: u.refundId, reasons: u.reasons, balanceMinor: (await db.query.accounts.findFirst({ where: eq(accounts.agent, acct.agent) }))?.balanceMinor ?? null };
@@ -492,7 +544,7 @@ export async function position() {
   const refunded = -((by.refund?.total ?? 0) + (by.refund_reversal?.total ?? 0));
   const bookTransfers = by.transfer_out?.n ?? 0;
   return {
-    mode: paypalMode(),
+    mode: railMode(),
     accounts: accts.map((a) => ({ agent: a.agent, account: a.account, label: a.label, owner: a.ownerName, mode: a.mode, balanceMinor: a.balanceMinor, frozen: Boolean(a.frozenAt), perPaymentMinor: a.perPaymentMinor })),
     totals: { accounts: accts.length, holding: accts.filter((a) => a.mode === "hold").length, balancesMinor: balances, capturedInMinor: capturedIn, paidOutMinor: paidOut, refundedMinor: refunded, bookTransfers, bookTransferredMinor: by.transfer_in?.total ?? 0 },
     // balances == ledger, and ledger == captured in − paid out (book transfers net to zero)

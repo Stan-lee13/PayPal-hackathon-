@@ -10,6 +10,8 @@
     "start": "next start -p ${PORT:-3000}",
     "lint": "tsc --noEmit",
     "test": "vitest run",
+    "test:concurrency": "REAL_DATABASE_URL=${REAL_DATABASE_URL:-$TEST_DATABASE_URL} DB_POOL_MAX=${DB_POOL_MAX:-8} vitest run tests/concurrency.postgres.test.ts",
+    "db:upgrade-check": "node scripts/migration-upgrade-check.mjs",
     "test:watch": "vitest",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx scripts/migrate.ts",
