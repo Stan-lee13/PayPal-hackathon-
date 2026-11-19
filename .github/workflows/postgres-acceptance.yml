@@ -109,18 +109,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npx vitest run tests/concurrency.postgres.test.ts --reporter=default --reporter=json --outputFile=/tmp/concurrency.json 2>&1 | tee /tmp/concurrency.log
-          # A skipped suite is not a pass: require the tests to have run, and none to have failed.
+          npx vitest run tests/concurrency.postgres.test.ts --reporter=verbose --reporter=json --outputFile=/tmp/concurrency.json 2>&1 | tee /tmp/concurrency.log
+          # A skipped suite is not a pass: every concurrency test must have run and passed. The suite replaces
+          # itself with a single "is not being exercised in this run" test when the server or pool is not real.
           node -e '
             const r = require("/tmp/concurrency.json");
+            const tests = (r.testResults ?? []).flatMap((f) => f.assertionResults ?? []);
             const passed = r.numPassedTests ?? 0, failed = r.numFailedTests ?? 0, pending = r.numPendingTests ?? 0;
-            console.log(`concurrency: ${passed} passed, ${failed} failed, ${pending} skipped`);
-            if (!r.success || failed > 0 || pending > 0 || passed < 8) {
+            const stand_in = tests.filter((t) => /not being exercised/.test(t.title ?? ""));
+            console.log(`concurrency: ${tests.length} tests, ${passed} passed, ${failed} failed, ${pending} skipped`);
+            if (!r.success || failed > 0 || pending > 0 || passed < 8 || stand_in.length > 0) {
               console.error("The concurrency suite did not run cleanly on a real multi-connection database.");
               process.exit(1);
             }
           '
-          grep -q "Postgres concurrency acceptance" /tmp/concurrency.log
 
       - name: Whole suite against real Postgres (several connections)
         shell: bash
