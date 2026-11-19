@@ -347,19 +347,77 @@ Three consequences are encoded in `IdempotencyContract` rather than left to pros
   automatically, even though the 30-day window would make a *late* repeat safe. The conservative choice
   rests on the missing in-flight guarantee, not on an absent duplicate guarantee.
 
-## 11. One rail, one provider account (enforced)
+### 10.3 Batch status is not item status
+
+A payout has two levels of fact and they answer different questions. The **batch** says whether PayPal accepted
+and closed the batch. The **items** say what happened to each recipient. PayPal reports a batch as `SUCCESS`
+while an item inside it is `UNCLAIMED`, `PENDING` or `FAILED`, so the batch status is diagnosis only.
+
+`PayoutFacts` in `lib/rails/types.ts` therefore keeps them apart, and nothing fills an item field from the
+request:
+
+| Field | Meaning |
+| --- | --- |
+| `batchRef`, `batchStatus` | PayPal's batch and its own status |
+| `senderBatchId` | PayPal's echo of the `sender_batch_id` we sent, or null |
+| `items[]` | one entry per item PayPal reports: `itemRef` (PayPal's item id), `senderItemId` (PayPal's echo of our item reference), `status`, `amount`, `receiver`, `transactionId`, `error` |
+| `itemCount` | how many items PayPal says the batch holds, or null |
+
+A payout is attributed to a spend **only** when `payoutItemFor(facts, spendId)` finds exactly one item whose
+provider-echoed `senderItemId` equals that spend id, and `itemCount` (when reported) matches the number of
+items returned. No item, several matching items, or an incomplete page leaves the payment unresolved.
+
+PayPal's item status is mapped deliberately in one place (`classifyPayoutItem`):
+
+| `transaction_status` | Outcome | Gateway effect |
+| --- | --- | --- |
+| `SUCCESS` | `credited` | the only status that may produce `PAID` |
+| `PENDING`, `PROCESSING`, `ONHOLD` | `submitted` | `PAYOUT_PENDING`; no refund |
+| `UNCLAIMED` | `unclaimed` | `UNCLAIMED`; recallable by the owner |
+| `RETURNED`, `REFUNDED`, `REVERSED` | `returned` | return posted, then refund |
+| `FAILED`, `BLOCKED`, `DENIED` | `failed` | return posted, then refund |
+| `CANCELED` | `cancelled` | return posted, then refund |
+| anything else, or missing | `unknown` | parked: neither `PAID` nor refunded, with the raw status on the trail |
+
+A batch accepted before its items are readable is recorded as `payoutStatus = SUBMITTED` with no item id. That
+is a state of its own: it is never a promotion of the batch status, it never produces a receipt that claims
+delivery, and the next read either finds the item or leaves the payment where it is.
+
+Proven by `tests/payout-identity.test.ts` (batch `SUCCESS` with `PENDING`/`UNCLAIMED`/`FAILED`/missing item
+status, batch `PENDING` with item `SUCCESS`, missing/wrong item id, receiver, amount and currency, another
+payment's item, an ambiguous batch, an incomplete page, a read failure after submission, and a future status)
+and by `tests/rails-contract.test.ts` (the provider's own item record, not the first item in a list).
+
+## 11. One rail, one provider account (enforced, with a real identity)
 
 Positions are keyed by rail and currency; the external account id lives on `rail_accounts`. That is only
 sound if every position is attributable to exactly one account — otherwise two accounts at the same rail
-would quietly share liquidity. This deployment does not support that, so it is **enforced, not assumed**:
+would quietly share liquidity. This deployment does not support that, so it is **enforced, not assumed**.
 
-* `assertProviderAccountAttribution()` refuses (HTTP 409, nothing sent) when more than one distinct
-  `external_account_id` is recorded for a rail and currency;
-* it runs inside `requireProviderLiquidity()`, before every payout;
-* the supported topology is documented here and in `docs/RAIL_GUARANTEES.md`, instead of implying
-  multi-account support that the schema cannot express.
+**Where the identity comes from.** Only the provider. For PayPal it is `account_id` on the Reporting balance
+response; for the mock rail, its own account id. `providerAccountIdentity()` in `lib/gateway/service.ts` reads
+it once per rail and currency, caches a success (an account does not change under a running gateway), and
+does not cache a failure. It is never derived from a display label, an environment-variable name, an
+organization id, a payment reference or operator input.
 
-Proven by `tests/accounting.test.ts` › "refuses to attribute liquidity to an ambiguous provider account".
+**Where it is recorded.** `ensureRailAccount()` writes it onto `rail_accounts` once and attaches it to every
+movement it can: captures (including pending and settled), payouts, returned payouts, refunds, and provider
+fees read from the statement. `ensureRailAccount()` runs inside the same transaction as the movement.
+
+**What is refused.**
+
+* a second distinct `external_account_id` for one rail and currency (409, nothing sent; checked by
+  `assertProviderAccountAttribution()`, which runs inside `requireProviderLiquidity()` before every payout);
+* a position that has no account identity at all, once any position exists for that rail and currency: a
+  payout is refused with 409 rather than paid from funds whose account cannot be shown;
+* a change of identity on an existing account row: the id is write-once, so a row that names one account is
+  never rewritten to another (409). Historical rows written before identities were recorded keep their null
+  and stay distinguishable; a null is completed once from the provider, and the movements recorded before it
+  keep their null (history is not rewritten).
+
+Proven by `tests/provider-attribution.test.ts` (identity learned and recorded, idempotent registration,
+immutable identity, unattributed positions fail closed, null completed once without rewriting history) and
+`tests/accounting.test.ts` › "refuses to attribute liquidity to an ambiguous provider account".
 
 ## 12. Cross-rail funding is not atomic, and is not implemented
 
