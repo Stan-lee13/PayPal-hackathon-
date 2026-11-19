@@ -49,6 +49,23 @@ const WORDS = new Set(["v1", "v2", "v3", "checkout", "orders", "authorize", "pay
 type Loose = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 const str = (x: unknown): string | null => (typeof x === "string" && x ? x : null);
 
+/**
+ * Nothing this journal records may be shaped like a payment instrument.
+ *
+ * The journal keeps no request or response bodies, which is where a card number would come from. But ids are
+ * long opaque strings, and an id drawn from a hex alphabet can happen to be thirteen or more digits in a row —
+ * indistinguishable from a PAN by any reader, human or machine. Rather than rely on that never happening, the
+ * record masks every run of 13–19 digits wherever one appears. Audit value is kept (which id, which operation,
+ * how long, what status); a number that could be read as a card number is not.
+ */
+export function redactIdentifiers(value: string | null): string | null {
+  if (value === null) return null;
+  // A bare run, and the same digits grouped the way cards are printed (4111-1111-1111-1111 or 4111 1111 1111 1111).
+  return value
+    .replace(/\d(?:[ -]?\d){12,18}/g, (run) => `‹${run.replace(/\D/g, "").length} digits›`)
+    .replace(/\d{13,19}/g, (run) => `‹${run.length} digits›`);
+}
+
 function describe(c: CallRecord): Omit<PayPalCall, "id" | "at"> | null {
   const found = OPS.find(([m, re]) => m === c.method && re.test(c.path))?.[2];
   if (!found) return null;
@@ -73,10 +90,10 @@ function describe(c: CallRecord): Omit<PayPalCall, "id" | "at"> | null {
     ? (op === "hold.place" ? str(auth?.status) : op === "hold.void" ? "VOIDED" : str(item?.transaction_status) ?? str(res.transaction_status) ?? str(res.status) ?? str(res.batch_header?.batch_status) ?? str(res.verification_status) ?? (op === "event.feed" ? `${res.events?.length ?? 0} events` : null))
     : null;
   return {
-    mode: paypalMode(), op, method: c.method, path: c.path.split("/").map((x) => (x === "" || WORDS.has(x) ? x : "{id}")).join("/"), requestId: c.requestId, httpStatus: c.status, paypalStatus,
-    resourceId: ok ? (op === "hold.place" ? str(auth?.id) : str(res.id) ?? str(res.batch_header?.payout_batch_id) ?? str(res.payout_item_id) ?? inPath[inPath.length - 1] ?? null) : inPath[inPath.length - 1] ?? null,
-    amountMinor, currency, debugId: c.debugId, ms: c.ms,
-    error: ok ? null : [str(res.name), str(res.details?.[0]?.issue)].filter(Boolean).join("/") || `HTTP ${c.status}`,
+    mode: paypalMode(), op, method: c.method, path: redactIdentifiers(c.path.split("/").map((x) => (x === "" || WORDS.has(x) ? x : "{id}")).join("/"))!, requestId: redactIdentifiers(c.requestId), httpStatus: c.status, paypalStatus: redactIdentifiers(paypalStatus),
+    resourceId: redactIdentifiers(ok ? (op === "hold.place" ? str(auth?.id) : str(res.id) ?? str(res.batch_header?.payout_batch_id) ?? str(res.payout_item_id) ?? inPath[inPath.length - 1] ?? null) : inPath[inPath.length - 1] ?? null),
+    amountMinor, currency, debugId: redactIdentifiers(c.debugId), ms: c.ms,
+    error: redactIdentifiers(ok ? null : [str(res.name), str(res.details?.[0]?.issue)].filter(Boolean).join("/") || `HTTP ${c.status}`),
     keys,
   };
 }
