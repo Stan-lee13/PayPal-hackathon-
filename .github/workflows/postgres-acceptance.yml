@@ -25,12 +25,12 @@ on:
   pull_request:
   workflow_dispatch:
 
-concurrency:
-  group: postgres-acceptance-${{ github.ref }}-${{ matrix.postgres }}
-  cancel-in-progress: true
-
+# Job-level, because `matrix` is not available in a workflow-level concurrency group.
 jobs:
   acceptance:
+    concurrency:
+      group: postgres-acceptance-${{ github.ref }}-${{ matrix.postgres }}
+      cancel-in-progress: true
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     strategy:
