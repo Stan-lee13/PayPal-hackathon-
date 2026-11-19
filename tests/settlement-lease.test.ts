@@ -179,9 +179,9 @@ d("settlement lease", async () => {
     const { first, batchId } = await doubtful();
     const realRead = rail.payouts.read.bind(rail.payouts);
     // A closed batch whose item has not been reported yet: batch SUCCESS says nothing about this recipient.
-    rail.payouts.read = async (p) => ({ ...(await realRead(p)), batchStatus: "SUCCESS", itemStatus: null });
+    rail.payouts.read = async (p) => ({ ...(await realRead(p)), batchStatus: "SUCCESS", items: [], itemCount: null });
     await expect(G.resolvePayoutDoubt(first.spend!.id, { kind: "sent", batchRef: batchId, ...evidence() }))
-      .rejects.toThrow(/Batch status is not item status/);
+      .rejects.toThrow(/reported no payout items/);
     expect((await spendRow(first.spend!.id)).payoutBatchId).toBeNull();
   });
 
@@ -189,7 +189,10 @@ d("settlement lease", async () => {
     setRailForTesting(withoutRetryPromise());
     const { first, batchId } = await doubtful();
     const realRead = rail.payouts.read.bind(rail.payouts);
-    rail.payouts.read = async (p) => ({ ...(await realRead(p)), amount: { minor: 99, currency: "USD" } });
+    rail.payouts.read = async (p) => {
+      const facts = await realRead(p);
+      return { ...facts, items: facts.items.map((i) => ({ ...i, amount: { minor: 99, currency: "USD" } })) };
+    };
     await expect(G.resolvePayoutDoubt(first.spend!.id, { kind: "sent", batchRef: batchId, ...evidence() }))
       .rejects.toThrow(/this payment owes/);
     expect((await spendRow(first.spend!.id)).payoutBatchId).toBeNull();
@@ -244,4 +247,42 @@ d("settlement lease", async () => {
     const blocks = await getDb().select().from(schema.blocks).where(eq(schema.blocks.depth, 0));
     expect(blocks[0]).toMatchObject({ spentMinor: 600, reservedMinor: 0 });
   }, 30_000);
+
+  it("a reconciliation that loses its generation writes no success event and no second booking", async () => {
+    setRailForTesting(withoutRetryPromise());
+    const { first, batchId } = await doubtful();
+    const realRead = rail.payouts.read.bind(rail.payouts);
+    // Another worker takes the payment over while this one is reading the provider.
+    rail.payouts.read = async (p) => {
+      const facts = await realRead(p);
+      await getDb().execute(sql`update spends set settle_generation = settle_generation + 1, settling_at = now()`);
+      return facts;
+    };
+    // The call reports the state it now sees, and claims nothing it did not do.
+    const after = await G.resolvePayoutDoubt(first.spend!.id, { kind: "sent", batchRef: batchId, ...evidence() });
+    expect(after.payoutBatchId).toBeNull();
+    // The fenced write lost, so nothing claims the payout happened: no audit success, no payout booking, no batch id.
+    const trails = (await getDb().execute(sql`select detail from audit_log where action = 'payout.reconciled'`)) as unknown as Array<{ detail: Record<string, unknown> }>;
+    expect(trails).toHaveLength(0);
+    expect((await positions()).filter((p) => p.kind === "payout")).toHaveLength(0);
+    expect((await spendRow(first.spend!.id)).payoutBatchId).toBeNull();
+  });
+
+  it("a refund decided under a settlement lease is fenced: a lost worker refunds nothing and records nothing", async () => {
+    const signed = await ask(800);
+    const realSend = rail.payouts.send.bind(rail.payouts);
+    // The provider refuses the payout, and by the time the gateway decides to refund, the lease has been taken over.
+    swallowed(rail).payouts.send = async (a) => {
+      await getDb().execute(sql`update spends set settle_generation = settle_generation + 1, settling_at = now()`);
+      const out = await realSend(a).catch((e: unknown) => { throw e; });
+      return out;
+    };
+    rail.declineNext("payout.send", 1);
+    const out = await G.spend(signed);
+    // The refusal is the provider's, but this worker no longer owns the payment: it may not refund it.
+    expect(out.spend!.refundId).toBeNull();
+    expect(rail.refundCount()).toBe(0);
+    expect((await positions()).map((p) => p.kind)).toEqual(["capture"]);
+    expect((await spendRow(out.spend!.id)).status).toBe("CAPTURED");
+  });
 });

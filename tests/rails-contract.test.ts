@@ -13,6 +13,7 @@ import {
   type Amount, type Rail, type WebhookRequest,
 } from "../lib/rails";
 import { mockEmptyRail, mockPayoutOnlyRail, mockRail } from "../lib/rails/mock-rail";
+import { payoutItemFor } from "../lib/rails/types";
 
 const USD = (minor: number): Amount => amount(minor, "USD");
 const holdRef = (r: Rail, id: string) => railRef(r.id, "authorization", id);
@@ -178,12 +179,19 @@ for (const spec of FIXTURES) {
       const hold = await r.holds.authorize({ reference: "root-5", title: "Budget", amount: USD(5000) });
       const cap = await r.holds.capture({ hold: hold.ref, reference: "spend-5", amount: USD(2500), note: "design" });
       const po = await r.payouts.send({ reference: "spend-5", receiver: "designer@example.com", amount: USD(2500), note: "design" });
-      expect(po.itemStatus).toBe("SUCCESS");
+      // The batch and the item are separate facts; the item is the only evidence about this recipient.
       expect(po.batchRef.id).toBeTruthy();
-      expect(po.itemRef?.id).toBeTruthy();
+      const sent = payoutItemFor(po, "spend-5");
+      expect(sent.ok).toBe(true);
+      expect(sent.ok && sent.item.status).toBe("SUCCESS");
+      expect(sent.ok && sent.item.itemRef?.id).toBeTruthy();
       const read = await r.payouts.read(po.batchRef);
-      expect(read.itemStatus).toBe("SUCCESS");
-      expect(read.receiver).toBe("designer@example.com");
+      const item = payoutItemFor(read, "spend-5");
+      expect(item.ok && item.item.status).toBe("SUCCESS");
+      expect(item.ok && item.item.receiver).toBe("designer@example.com");
+      // The provider's item proves which payment it belongs to: another spend cannot claim it, and a batch
+      // status is not needed to say so.
+      expect(payoutItemFor(read, "spend-6").ok).toBe(false);
       // A different reference is a different payout; the same one never pays twice.
       const dup = await r.payouts.send({ reference: "spend-5", receiver: "designer@example.com", amount: USD(2500), note: "design" });
       expect(dup.batchRef.id).toBe(po.batchRef.id);
@@ -289,7 +297,8 @@ for (const spec of FIXTURES) {
       expect(balance).not.toBeNull();
       expect(balance!.availableMinor).toBe(0);
       // The payout's own identifiers are recoverable from the rail, which is what reconciliation needs.
-      expect((await r.payouts.read(po.batchRef)).itemStatus).toBe("SUCCESS");
+      const readBack = payoutItemFor(await r.payouts.read(po.batchRef), "spend-13");
+      expect(readBack.ok && readBack.item.status).toBe("SUCCESS");
     });
 
     it("reports a missing or wrong provider reference as not found, never as success", async () => {
@@ -312,9 +321,11 @@ for (const spec of FIXTURES) {
       const hold = await r.holds.authorize({ reference: "root-12", title: "Budget", amount: USD(2000) });
       await r.holds.capture({ hold: hold.ref, reference: "spend-15", amount: USD(800), note: "design" });
       const po = await r.payouts.send({ reference: "spend-15", receiver: "unclaimed.designer@example.com", amount: USD(800), note: "design" });
-      expect(po.itemStatus).toBe("UNCLAIMED");
+      const first = payoutItemFor(po, "spend-15");
+      expect(first.ok && first.item.status).toBe("UNCLAIMED");
       await f.settlePayout(po.batchRef.id, "SUCCESS");
-      expect((await r.payouts.read(po.batchRef)).itemStatus).toBe("SUCCESS");
+      const after = payoutItemFor(await r.payouts.read(po.batchRef), "spend-15");
+      expect(after.ok && after.item.status).toBe("SUCCESS");
     });
   });
 }

@@ -53,8 +53,8 @@ export type Movement = {
   externalAccountId?: string | null;
 };
 
-/** Anything that can insert: the pool, or a transaction on it. Posting must be able to join the same transaction. */
-export type Query = Pick<DB, "insert">;
+/** Anything that can insert and read the account rows: the pool, or a transaction on it. */
+export type Query = Pick<DB, "insert" | "query" | "update">;
 
 const ISO = /^[A-Z]{3}$/;
 
@@ -68,8 +68,13 @@ function coherent(bucket: PositionBucket, kind: PositionKind): boolean {
 }
 
 /**
- * Register (once) the provider account an organization's money sits in. Idempotent: the same identity
- * returns the same row, so recording a movement can call it every time.
+ * Register (once) the provider account an organization's money sits in, and attach the provider's own account
+ * identity as soon as it is known. Idempotent: the same identity returns the same row, so recording a movement
+ * can call it every time.
+ *
+ * The identity is write-once. A row that already names an account is never rewritten to a different one: an
+ * account change is not a bookkeeping detail, it means the money moved, and history must keep saying where it
+ * actually was. A conflicting identity is refused instead.
  */
 export async function ensureRailAccount(a: {
   owner: string;
@@ -78,18 +83,41 @@ export async function ensureRailAccount(a: {
   custody?: Custody;
   externalAccountId?: string | null;
   label?: string;
-}): Promise<RailAccount> {
-  const db = getDb();
+}, q: Query = getDb()): Promise<RailAccount> {
   const railId = a.rail ?? rail().id;
   const custody = a.custody ?? "provider";
   if (!a.owner) throw new Error("A provider position needs an owner.");
   if (!ISO.test(a.currency)) throw new Error(`A provider position needs an ISO-4217 currency, got ${a.currency}`);
-  const values = { owner: a.owner, rail: railId, currency: a.currency, custody, externalAccountId: a.externalAccountId ?? null, label: a.label ?? "" };
-  await db.insert(railAccounts).values({ id: `ra_${railId}_${a.currency}_${a.owner.slice(0, 16)}`, ...values }).onConflictDoNothing();
-  const row = await db.query.railAccounts.findFirst({
-    where: and(eq(railAccounts.owner, a.owner), eq(railAccounts.rail, railId), eq(railAccounts.currency, a.currency), eq(railAccounts.custody, custody)),
-  });
-  return row!;
+  const id = a.externalAccountId ?? null;
+  const values = { owner: a.owner, rail: railId, currency: a.currency, custody, externalAccountId: id, label: a.label ?? "" };
+  await q.insert(railAccounts).values({ id: `ra_${railId}_${a.currency}_${a.owner.slice(0, 16)}`, ...values }).onConflictDoNothing();
+  const where = and(eq(railAccounts.owner, a.owner), eq(railAccounts.rail, railId), eq(railAccounts.currency, a.currency), eq(railAccounts.custody, custody));
+  const rows = await q.query.railAccounts.findMany({ where });
+  // First identity wins. This is what makes "the same account" a fact instead of an assumption.
+  if (id && rows.some((r) => r.externalAccountId && r.externalAccountId !== id)) {
+    const other = rows.find((r) => r.externalAccountId && r.externalAccountId !== id)!.externalAccountId!;
+    throw new UserFacingError(
+      `The ${railId} ${a.currency} provider account for this organization is recorded as ${other.slice(0, 12)}, ` +
+      `but the provider now reports ${id.slice(0, 12)}. A position cannot migrate between provider accounts: ` +
+      `nothing was recorded against the new one.`,
+      409,
+    );
+  }
+  const known = rows.find((r) => r.externalAccountId) ?? rows[0]!;
+  if (!known.externalAccountId && id) {
+    // Fill the identity in once. Historical rows that never had it stay distinguishable in the audit trail; the row
+    // itself is not rewritten to a different account, only completed from null to the provider's answer.
+    await q.update(railAccounts).set({ externalAccountId: id }).where(and(eq(railAccounts.id, known.id), sql`${railAccounts.externalAccountId} is null`));
+    return (await q.query.railAccounts.findFirst({ where: eq(railAccounts.id, known.id) }))!;
+  }
+  return known;
+}
+
+/** The provider account identity already on record for this rail and currency, or null when none is known. */
+export async function railAccountIdentity(a: { rail: string; currency: string }): Promise<string | null> {
+  const rows = await getDb().select({ id: railAccounts.externalAccountId }).from(railAccounts)
+    .where(and(eq(railAccounts.rail, a.rail), eq(railAccounts.currency, a.currency), sql`${railAccounts.externalAccountId} is not null`)).limit(1);
+  return rows[0]?.id ?? null;
 }
 
 /**
@@ -101,10 +129,10 @@ export async function ensureRailAccount(a: {
  * The day a partner offers per-organization accounts, this becomes a real attribution key on positions;
  * until then, one rail + currency maps to one account, and that is enforced here, not assumed.
  */
-export async function assertProviderAccountAttribution(a: { rail: string; currency: string }): Promise<void> {
+export async function assertProviderAccountAttribution(a: { rail: string; currency: string; requireIdentity?: boolean }): Promise<string | null> {
   const rows = await getDb().select({ externalAccountId: railAccounts.externalAccountId }).from(railAccounts)
-    .where(and(eq(railAccounts.rail, a.rail), eq(railAccounts.currency, a.currency), sql`${railAccounts.externalAccountId} is not null`));
-  const ids = [...new Set(rows.map((r) => r.externalAccountId!))];
+    .where(and(eq(railAccounts.rail, a.rail), eq(railAccounts.currency, a.currency)));
+  const ids = [...new Set(rows.map((r) => r.externalAccountId).filter((x): x is string => Boolean(x)))];
   if (ids.length > 1) {
     throw new UserFacingError(
       `This deployment supports one ${a.rail} ${a.currency} provider account, but ${ids.length} distinct accounts are recorded ` +
@@ -113,6 +141,17 @@ export async function assertProviderAccountAttribution(a: { rail: string; curren
       409,
     );
   }
+  // Positions exist for this rail and currency, but at least one of them does not name the provider account it sits
+  // in. That is not a verified attribution, and money must not leave on the strength of it.
+  if (a.requireIdentity && rows.some((r) => !r.externalAccountId)) {
+    throw new UserFacingError(
+      `A ${a.rail} ${a.currency} position is recorded without the provider's account identity. This deployment cannot ` +
+      `show that the funds it would pay from are the funds it recorded, so nothing was sent. Establish the account ` +
+      `identity from the provider (a balance read) before paying out.`,
+      409,
+    );
+  }
+  return ids[0] ?? null;
 }
 
 /**
@@ -259,9 +298,10 @@ export async function requireProviderLiquidity(a: {
 }): Promise<void> {
   // Nothing tracked for this rail (a database from before migration 0010, or a balance credited directly):
   // fall back to the provenance on the record itself, and say so rather than guessing.
-  // A production install must have chosen its treasury model, and one rail must map to one account.
+  // A production install must have chosen its treasury model, and one rail must map to one account. The payout
+  // also requires that account's identity to be established: an unattributed position is not liquidity.
   assertTreasuryPolicy();
-  await assertProviderAccountAttribution({ rail: a.rail, currency: a.currency });
+  await assertProviderAccountAttribution({ rail: a.rail, currency: a.currency, requireIdentity: true });
   const tracked = await positionsFor(null);
   if (tracked.length === 0) {
     if (a.fundedByRail === a.rail) return;

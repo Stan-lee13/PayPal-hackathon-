@@ -25,9 +25,9 @@ import * as E from "../envelope/core";
 // The financial engine talks to a rail, never to a provider (lib/rails): the PayPal adapter, or the
 // deterministic mock, or a partner adapter registered later. See docs/AGENTIC_FINANCE_ARCHITECTURE.md.
 import { amount, declined, isRailError, rail, railCode, railMode, railRef, refId, type DisputeFacts, type HoldFacts } from "../rails";
-import { mayRetryAutomatically } from "../rails/types";
+import { classifyPayoutItem, mayRetryAutomatically, payoutCameBack, payoutItemFor } from "../rails/types";
 // Where money actually arrived, per provider and currency (docs/MULTI_RAIL_ACCOUNTING.md).
-import { ensureRailAccount, postCapture, postCaptureSettled, postPayout, postPayoutReturn, postRefund, requireProviderLiquidity } from "../accounting";
+import { ensureRailAccount, postCapture, postCaptureSettled, postPayout, postPayoutReturn, postRefund, railAccountIdentity, requireProviderLiquidity } from "../accounting";
 // Receipts are provider-neutral from v2 on; v1 verification is kept for ever (lib/gateway/receipts.ts).
 import { RECEIPT_V1, RECEIPT_VERSIONS, RECEIPT_V2, paymentReceiptV2, settlementStateOf, verifyReceiptSignature } from "./receipts";
 import { openJwk, sealJwk } from "../keystore";
@@ -372,6 +372,28 @@ async function release(spendRow: Spend, status: "FAILED", reason: E.Violation, e
  * (found by the real-Postgres concurrency suite, tests/concurrency.postgres.test.ts).
  */
 /** Read per call, not at import, so a deployment (or a test) can tune the lease without a rebuild. */
+/**
+ * The provider's own identity for the account money moves through, as the provider reports it.
+ *
+ * Identities are only ever learned from the provider (PayPal's reporting balance carries its account id); never
+ * from a label, an environment variable, an organization or a typed value. Cached once established: an account
+ * does not change under a running gateway, and if it did, that is a migration, not a silent re-read. A failed
+ * read is not cached, so the next settlement tries again.
+ */
+const accountIdentities = new Map<string, string>();
+async function providerAccountIdentity(r: ReturnType<typeof rail>, currency: string): Promise<string | null> {
+  const key = `${r.id}|${currency}`;
+  const known = accountIdentities.get(key);
+  if (known) return known;
+  if (!r.capabilities.has("reporting.balance")) return null;
+  const facts = await r.reporting.balance(currency).catch(() => null);
+  if (!facts?.accountId) return null;
+  accountIdentities.set(key, facts.accountId);
+  return facts.accountId;
+}
+/** Tests switch databases and simulated accounts; forget what was learned. */
+export function forgetProviderAccountIdentity() { accountIdentities.clear(); }
+
 const leaseMs = () => Math.max(5_000, Number(process.env.SETTLEMENT_LEASE_MS ?? 30_000));
 const heartbeatMs = () => Math.max(500, Math.min(5_000, Math.floor(leaseMs() / 3)));
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -503,6 +525,7 @@ export async function resolvePayoutDoubt(spendId: string, how: PayoutDoubt): Pro
     const s = (await db.query.spends.findFirst({ where: eq(spends.id, spendId) }))!;
     const root = (await db.query.roots.findFirst({ where: eq(roots.id, s.rootId) }))!;
     if (s.payoutBatchId) return s; // already recorded: nothing to resolve
+    const evidence = { by: how.by, source: how.source, checkedAt: how.checkedAt, rationale: how.rationale };
     if (how.kind === "sent") {
       // Ask the provider, rather than trusting the id we were handed. A batch nobody at the provider knows is
       // not evidence, and a batch id is not an item.
@@ -515,51 +538,76 @@ export async function resolvePayoutDoubt(spendId: string, how: PayoutDoubt): Pro
       if (facts.batchRef.id !== how.batchRef) {
         throw new UserFacingError(`The provider returned batch ${facts.batchRef.id} for ${how.batchRef}; refusing to record a payout that is not the one that was looked up.`, 409);
       }
-      // A payout batch has a status of its own, and it is not the recipient's. Only an item status says whether
-      // money reached the payee: a SUCCESS batch can hold an UNCLAIMED or FAILED item.
-      if (!facts.itemStatus) {
-        throw new UserFacingError(`Batch ${how.batchRef} is ${facts.batchStatus}, but the provider reported no item status, so there is no evidence about this recipient. Batch status is not item status.`, 409);
+      // The batch must carry this payment's own sender reference, as the provider echoes it. A missing echo is
+      // not a match either: the item below has to prove which payment it belongs to.
+      if (facts.senderBatchId !== null && facts.senderBatchId !== s.id) {
+        throw new UserFacingError(`Batch ${how.batchRef} belongs to the sender reference ${facts.senderBatchId}, not to this payment; refusing to record it.`, 409);
       }
-      const providerItem = refId(facts.itemRef);
-      if (how.itemRef && providerItem && how.itemRef !== providerItem) {
-        throw new UserFacingError(`Item ${how.itemRef} is not the provider's item ${providerItem} in batch ${how.batchRef}.`, 409);
+      // A payout batch has a status of its own, and it is not the recipient's. Only an item that carries this
+      // payment's sender reference says anything about this payee: a SUCCESS batch can hold an UNCLAIMED item.
+      const match = payoutItemFor(facts, s.id);
+      if (!match.ok) {
+        throw new UserFacingError(`Batch ${how.batchRef} is ${facts.batchStatus}, but ${match.problem}. A batch status says nothing about this recipient, so the payout stays unresolved.`, 409);
       }
-      const itemId = providerItem ?? how.itemRef ?? null;
-      if (!itemId) {
-        throw new UserFacingError(`Batch ${how.batchRef} has no item id and none was given, so this payout cannot be attributed to a recipient.`, 409);
+      const item = match.item;
+      // The provider's own item id is the attribution. An id typed by a person cannot stand in for it.
+      if (!item.itemRef) {
+        throw new UserFacingError(`The provider reported no item id for this payment in batch ${how.batchRef}; an item id given by hand is not provider evidence.`, 409);
       }
-      // Match the item to THIS payment before recording it: a batch for a different amount or payee must never
+      const itemId = item.itemRef.id;
+      if (how.itemRef && how.itemRef !== itemId) {
+        throw new UserFacingError(`Item ${how.itemRef} is not the provider's item ${itemId} in batch ${how.batchRef}.`, 409);
+      }
+      if (!item.status) {
+        throw new UserFacingError(`The provider reported no status for item ${itemId}, so there is no evidence about this recipient.`, 409);
+      }
+      const outcome = classifyPayoutItem(item.status);
+      if (outcome === "unknown") {
+        throw new UserFacingError(`The provider's item status "${item.status}" is not one this gateway recognises. The payout stays unresolved: it is neither paid nor refunded on a guess.`, 409);
+      }
+      // Match the item to THIS payment before recording it: an item for a different amount or payee must never
       // settle this spend.
-      if (!facts.amount) {
+      if (!item.amount) {
         throw new UserFacingError(`The provider reported no amount for item ${itemId}; it cannot be matched to this payment.`, 409);
       }
-      if (facts.amount.minor !== s.amountMinor || facts.amount.currency !== s.currency) {
-        throw new UserFacingError(`Item ${itemId} is ${formatMoney(facts.amount.minor, facts.amount.currency)}, not the ${formatMoney(s.amountMinor, s.currency)} this payment owes.`, 409);
+      if (item.amount.minor !== s.amountMinor || item.amount.currency !== s.currency) {
+        throw new UserFacingError(`Item ${itemId} is ${formatMoney(item.amount.minor, item.amount.currency)}, not the ${formatMoney(s.amountMinor, s.currency)} this payment owes.`, 409);
       }
-      if (facts.receiver && !sameReceiver(facts.receiver, s.payoutTo ?? s.payee)) {
+      if (!item.receiver) {
+        throw new UserFacingError(`The provider reported no receiver for item ${itemId}; a missing receiver is not a match.`, 409);
+      }
+      if (!sameReceiver(item.receiver, s.payoutTo ?? s.payee)) {
         throw new UserFacingError(`Item ${itemId} pays a different recipient than this payment's payee; refusing to record it.`, 409);
       }
-      const status = facts.itemStatus; // the provider's own word, never a caller's
-      const evidence = { by: how.by, source: how.source, checkedAt: how.checkedAt, rationale: how.rationale };
-      await db.transaction(async (tx) => {
+      const status = item.status; // the provider's own word, never a caller's
+      const reconciledAccountId = await railAccountIdentity({ rail: r.id, currency: s.currency });
+      // The state change, the accounting row and the decision to report success are one transaction. A worker
+      // that lost the generation (or lost the race to another operator) records nothing and reports nothing.
+      const recorded = await db.transaction(async (tx) => {
         const [u] = await tx.update(spends)
-          .set({ payoutBatchId: facts.batchRef.id, payoutItemId: itemId, payoutTransactionId: facts.transactionId, payoutStatus: status, settleGeneration: generation })
+          .set({ payoutBatchId: facts.batchRef.id, payoutItemId: itemId, payoutTransactionId: item.transactionId, payoutStatus: status, settleGeneration: generation })
           .where(and(eq(spends.id, s.id), isNull(spends.payoutBatchId), eq(spends.settleGeneration, generation))).returning({ id: spends.id });
-        if (!u) return;
+        if (!u) return false;
         // The money did leave: record the position in the same transaction, once (the reference is unique).
-        await postPayout({ owner: root.principal, rail: r.id, currency: s.currency, amountMinor: s.amountMinor, ref: s.id, memo: `payout ${facts.batchRef.id} (reconciled)` }, tx);
+        await postPayout({ owner: root.principal, rail: r.id, currency: s.currency, externalAccountId: reconciledAccountId, amountMinor: s.amountMinor, ref: s.id, memo: `payout ${facts.batchRef.id} (reconciled)` }, tx);
+        return true;
       });
+      // A stale worker's reconciliation is not a fact: no success event, and no second payment row, is written.
+      if (!recorded) return (await db.query.spends.findFirst({ where: eq(spends.id, spendId) }))!;
       await trail(root, "paypal", "payout.reconciled", "OK", facts.batchRef.id, {
         spend: s.id, ...evidence, batchStatus: facts.batchStatus, itemStatus: status, item: itemId,
-        transaction: facts.transactionId, amount: formatMoney(s.amountMinor, s.currency), provider: r.id,
-        // What the provider said about delivery, in plain words: submitted, credited, returned, or still pending.
-        funds: status === "SUCCESS" ? "credited" : PAYOUT_DEAD.includes(status) ? "returned" : "submitted, not yet credited",
+        transaction: item.transactionId, amount: formatMoney(s.amountMinor, s.currency), provider: r.id,
+        // What the provider said about delivery, in plain words: credited, unclaimed, returned, or merely submitted.
+        funds: outcome === "credited" ? "credited" : outcome === "unclaimed" ? "unclaimed" : payoutCameBack(outcome) ? "returned" : "submitted, not yet credited",
       });
     } else {
       const [u] = await db.update(spends).set({ payoutStatus: null })
         .where(and(eq(spends.id, s.id), isNull(spends.payoutBatchId), eq(spends.payoutStatus, PAYOUT_IN_DOUBT), eq(spends.settleGeneration, generation))).returning({ id: spends.id });
-      await trail(root, "paypal", u ? "payout.doubt_cleared" : "payout.doubt_unresolved", "INFO", s.id, {
-        spend: s.id, by: how.by, source: how.source, checkedAt: how.checkedAt, rationale: how.rationale,
+      // Only the arrival that actually cleared the doubt writes the event. A worker that lost the generation
+      // reports the state it now sees, and nothing else.
+      if (!u) return (await db.query.spends.findFirst({ where: eq(spends.id, spendId) }))!;
+      await trail(root, "paypal", "payout.doubt_cleared", "OK", s.id, {
+        spend: s.id, ...evidence,
         retrySafe: mayRetryAutomatically(r), lookupByReference: r.idempotency.lookupByReference,
       });
     }
@@ -589,6 +637,9 @@ async function settleOnce(spendId: string, lease: SettlementLease): Promise<Spen
       await lease.assert(); // still ours? then spend the provider's money
       const cap = await r.holds.capture({ hold: railRef(r.id, "authorization", root.authorizationId!), reference: s.id, amount: amount(s.amountMinor, s.currency), note: `Envelope spend ${s.id}` });
       if (cap.status !== "COMPLETED" && cap.status !== "PENDING") throw declined(r.id, "CAPTURE_NOT_COMPLETED", `capture ${cap.status}`);
+      // The provider's own account identity for the account the money arrived in. It is asked of the rail, not
+      // inferred, and it is attached to the arrival below so the position is attributable to one account.
+      const externalAccountId = await providerAccountIdentity(r, s.currency);
       // The same request can arrive many times at once, and each arrival gets the same capture back from
       // PayPal (one idempotency key). Only the one that records the capture id counts the money.
       const claimed = await db.transaction(async (tx) => {
@@ -596,10 +647,11 @@ async function settleOnce(spendId: string, lease: SettlementLease): Promise<Spen
           .where(and(eq(spends.id, s.id), eq(spends.status, "RESERVED"), isNull(spends.captureId))).returning();
         if (u) {
           await tx.update(roots).set({ capturedMinor: sql`${roots.capturedMinor} + ${s.amountMinor}` }).where(eq(roots.id, root.id));
-          // The money arrived at the provider, in the same transaction that records the capture: an arrival
-          // and its accounting row cannot disagree, and a retry cannot count it twice.
-          await postCapture({ owner: root.principal, rail: r.id, currency: s.currency, amountMinor: s.amountMinor, ref: s.id, memo: `capture ${cap.ref.id}`, pending: cap.status === "PENDING" }, tx);
-          await ensureRailAccount({ owner: root.principal, rail: r.id, currency: s.currency, label: r.label });
+          // The account first, so the arrival can name it; then the money arrived at the provider, in the same
+          // transaction that records the capture: an arrival and its accounting row cannot disagree, and a retry
+          // cannot count it twice.
+          const account = await ensureRailAccount({ owner: root.principal, rail: r.id, currency: s.currency, externalAccountId, label: r.label }, tx);
+          await postCapture({ owner: root.principal, rail: r.id, currency: s.currency, externalAccountId: account.externalAccountId, amountMinor: s.amountMinor, ref: s.id, memo: `capture ${cap.ref.id}`, pending: cap.status === "PENDING" }, tx);
         }
         return u ?? null;
       });
@@ -623,6 +675,7 @@ async function settleOnce(spendId: string, lease: SettlementLease): Promise<Spen
     if (!cap || cap.status === "PENDING") return s;
     if (cap.status !== "COMPLETED") {
       const reason: E.Violation = { code: "PAYPAL_CAPTURE_FAILED", at: root.id, detail: `${r.label} did not complete the capture (${cap.status}); nothing was paid` };
+      const externalAccountId = await railAccountIdentity({ rail: r.id, currency: s.currency });
       const failed = await db.transaction(async (tx) => {
         await lockRoot(tx, s.rootId);
         const [u] = await tx.update(spends).set({ status: "FAILED", payoutStatus: null, reasons: [reason], settledAt: new Date() }).where(and(eq(spends.id, s.id), eq(spends.status, "CAPTURED"), eq(spends.payoutStatus, AWAITING_CAPTURE))).returning();
@@ -630,17 +683,18 @@ async function settleOnce(spendId: string, lease: SettlementLease): Promise<Spen
           await tx.update(blocks).set({ reservedMinor: sql`${blocks.reservedMinor} - ${s.amountMinor}` }).where(inArray(blocks.id, s.chainIds));
           await tx.update(roots).set({ capturedMinor: sql`${roots.capturedMinor} - ${s.amountMinor}` }).where(eq(roots.id, root.id));
           // The money never arrived at the provider: the pending arrival is taken back off the books.
-          await postCapture({ owner: root.principal, rail: r.id, currency: s.currency, amountMinor: s.amountMinor, ref: s.id, memo: "capture not completed", pending: true }, tx);
+          await postCapture({ owner: root.principal, rail: r.id, currency: s.currency, externalAccountId, amountMinor: s.amountMinor, ref: s.id, memo: "capture not completed", pending: true }, tx);
         }
         return u ?? (await tx.query.spends.findFirst({ where: eq(spends.id, s.id) }))!;
       });
       await trail(root, "paypal", "hold.capture_not_completed", "FAILED", s.captureId, { spend: s.id, status: cap.status });
       return failed;
     }
+    const settledAccountId = await railAccountIdentity({ rail: r.id, currency: s.currency });
     await db.transaction(async (tx) => {
       await tx.update(spends).set({ payoutStatus: null }).where(and(eq(spends.id, s.id), eq(spends.payoutStatus, AWAITING_CAPTURE)));
       // What was pending at the provider is now settled there, and only now is it spendable.
-      await postCaptureSettled({ owner: root.principal, rail: r.id, currency: s.currency, amountMinor: s.amountMinor, ref: s.id, memo: `capture ${s.captureId} completed` }, tx);
+      await postCaptureSettled({ owner: root.principal, rail: r.id, currency: s.currency, externalAccountId: settledAccountId, amountMinor: s.amountMinor, ref: s.id, memo: `capture ${s.captureId} completed` }, tx);
     });
     s = { ...s, payoutStatus: null };
   }
@@ -679,16 +733,37 @@ async function settleOnce(spendId: string, lease: SettlementLease): Promise<Spen
       }
       await lease.assert(); // the provider call may be slow; prove we still own the payment before sending
       const po = await r.payouts.send({ reference: s.id, receiver: s.payoutTo ?? s.payee, amount: amount(s.amountMinor, s.currency), note: `${s.memo || s.purpose} · paid from an Envelope (${s.id})` });
-      const batchId = po.batchRef.id, itemId = refId(po.itemRef), itemStatus = po.itemStatus ?? po.batchStatus;
+      // The provider's own echo of the sender batch reference, and the one item carrying this payment's sender
+      // reference, are the evidence. A batch id by itself says nothing about which payment it belongs to.
+      if (po.senderBatchId !== null && po.senderBatchId !== s.id) {
+        // The batch the provider answered is not this payment's. Refunding on top of it could pay twice, so
+        // nothing is recorded as ours and nothing is refunded: a person resolves it against the provider.
+        await db.update(spends).set({ payoutStatus: PAYOUT_IN_DOUBT })
+          .where(and(eq(spends.id, s.id), eq(spends.settleGeneration, lease.generation), isNull(spends.payoutBatchId)));
+        await trail(root, "paypal", "payout.reference_mismatch", "FAILED", po.batchRef.id, { spend: s.id, expected: s.id, reported: po.senderBatchId });
+        return { ...s, payoutStatus: PAYOUT_IN_DOUBT };
+      }
+      const match = payoutItemFor(po, s.id);
+      const item = match.ok ? match.item : null;
+      const batchId = po.batchRef.id;
+      const itemId = item?.itemRef?.id ?? null;
+      const transactionId = item?.transactionId ?? null;
+      // No item status is a state of its own ("submitted"), never a promotion of the batch's status. It is not
+      // delivery, and a later read either finds the item or leaves the payment where it is.
+      const payoutStatus = item?.status ?? PAYOUT_SUBMITTED;
+      const payoutAccountId = await railAccountIdentity({ rail: r.id, currency: s.currency });
       await db.transaction(async (tx) => {
-        const [wrote] = await tx.update(spends).set({ payoutBatchId: batchId, payoutItemId: itemId, payoutTransactionId: po.transactionId, payoutStatus: itemStatus })
+        const [wrote] = await tx.update(spends).set({ payoutBatchId: batchId, payoutItemId: itemId, payoutTransactionId: transactionId, payoutStatus })
           .where(and(eq(spends.id, s.id), eq(spends.settleGeneration, lease.generation))).returning({ id: spends.id });
         // The payout exists at the provider under this payment's idempotency reference, so a takeover that
         // retries it gets the same payout back. If we no longer own the record, the new owner records it.
         if (!wrote) throw new LeaseLost(s.id);
-        await postPayout({ owner: root.principal, rail: r.id, currency: s.currency, amountMinor: s.amountMinor, ref: s.id, memo: `payout ${batchId}` }, tx);
+        await postPayout({ owner: root.principal, rail: r.id, currency: s.currency, externalAccountId: payoutAccountId, amountMinor: s.amountMinor, ref: s.id, memo: `payout ${batchId}` }, tx);
       });
-      s = { ...s, payoutBatchId: batchId, payoutItemId: itemId, payoutTransactionId: po.transactionId, payoutStatus: itemStatus };
+      if (!match.ok) {
+        await trail(root, "paypal", "payout.item_unresolved", "INFO", batchId, { spend: s.id, batchStatus: po.batchStatus, problem: match.problem });
+      }
+      s = { ...s, payoutBatchId: batchId, payoutItemId: itemId, payoutTransactionId: transactionId, payoutStatus };
     } catch (e) {
       if (e instanceof LeaseLost) throw e;
       if (isRailError(e) && !e.retryable) {
@@ -709,7 +784,9 @@ async function settleOnce(spendId: string, lease: SettlementLease): Promise<Spen
         }
         else {
           // The money was captured but can't be sent: refund the owner. If the rail won't refund either, say so and keep counting it.
-          const failed = await refundOrPark(s, root, `${r.label} refused the payout: ${railCode(e)}`, null);
+          // The refund is a compensating external call made while this worker holds the settlement lease: it
+          // proves ownership immediately before the call and writes its outcome only under this generation.
+          const failed = await refundOrPark(s, root, `${r.label} refused the payout: ${railCode(e)}`, null, { lease });
           await trail(root, "paypal", "payout.refused", "FAILED", s.id, { issue: railCode(e), refunded: failed.refundId, status: failed.status });
           return failed;
         }
@@ -757,16 +834,22 @@ async function settleOnce(spendId: string, lease: SettlementLease): Promise<Spen
   if (!mine) return final;
   if (credit) { await trail(root, "gateway", "balance.credited", "OK", s.captureId, { spend: s.id, account: s.payee, amount: formatMoney(s.amountMinor, s.currency), ledgerEntry: credit.id }); return final; }
   await trail(root, "paypal", "payout.sent", "OK", s.payoutBatchId, { spend: s.id, to: s.payoutTo ?? s.payee, ...(s.payeeAgent ? { account: s.payee } : {}), amount: formatMoney(s.amountMinor, s.currency), item: s.payoutItemId, status: s.payoutStatus });
-  if (s.payoutStatus && PAYOUT_DEAD.includes(s.payoutStatus)) return undoDeadPayout(final, s.payoutStatus, null);
+  if (s.payoutStatus && payoutCameBack(classifyPayoutItem(s.payoutStatus))) return undoDeadPayout(final, s.payoutStatus, null);
   return final;
 }
 
-const PAYOUT_DEAD = ["FAILED", "RETURNED", "BLOCKED", "REFUNDED", "REVERSED", "DENIED", "CANCELED"];
 /** The provider call was interrupted: the payout may or may not exist. Parked, never treated as unsent. */
 const PAYOUT_IN_DOUBT = "IN_DOUBT";
+/** The provider accepted the batch, but has not reported an item for this recipient yet. Not delivery. */
+const PAYOUT_SUBMITTED = "SUBMITTED";
+/**
+ * A spend's state, from the provider's own item status. Only `credited` may mean PAID; a batch status never
+ * reaches this function, and `unknown` cannot produce PAID or a refund.
+ */
 function payoutState(itemStatus: string | null): Spend["status"] {
-  if (itemStatus === "SUCCESS") return "PAID";
-  if (itemStatus === "UNCLAIMED") return "UNCLAIMED";
+  const outcome = classifyPayoutItem(itemStatus);
+  if (outcome === "credited") return "PAID";
+  if (outcome === "unclaimed") return "UNCLAIMED";
   return "PAYOUT_PENDING";
 }
 
@@ -785,6 +868,8 @@ async function refundOrPark(s: Spend, root: Root, why: string, payoutStatus: str
   const r = rail();
   // A worker that lost its lease must not send a refund: the new owner decides what this payment is.
   if (opts.lease) await opts.lease.assert();
+  // Every movement below belongs to the provider account the capture arrived in.
+  const accountId = await railAccountIdentity({ rail: r.id, currency: s.currency });
   try { refundId = (await r.refunds.refund({ capture: railRef(r.id, "capture", s.captureId!), reference: s.id, note: "Payout could not be delivered" })).ref.id; }
   catch (e) { if (isRailError(e) && e.code === "duplicate") refundId = "already-refunded"; }
   const reason: E.Violation = { code: "PAYPAL_PAYOUT_FAILED", at: root.id, detail: `${why}${refundId ? "; the capture was refunded to the owner (that part of the hold stays used: PayPal does not return it)" : "; the refund also failed, so the owner has been charged and the amount stays counted until PayPal accepts the refund"}` };
@@ -800,7 +885,7 @@ async function refundOrPark(s: Spend, root: Root, why: string, payoutStatus: str
     // A payout that was sent and did not arrive comes back to the provider account. Record the return before the
     // refund leaves, or the provider position would show money leaving twice for one capture.
     if (live.payoutBatchId) {
-      await postPayoutReturn({ owner: root.principal, rail: r.id, currency: s.currency, amountMinor: s.amountMinor, ref: s.id, memo: `payout ${live.payoutBatchId} returned (${payoutStatus ?? "not delivered"})` }, tx);
+      await postPayoutReturn({ owner: root.principal, rail: r.id, currency: s.currency, externalAccountId: accountId, amountMinor: s.amountMinor, ref: s.id, memo: `payout ${live.payoutBatchId} returned (${payoutStatus ?? "not delivered"})` }, tx);
     }
     if (refundId) {
       const [u] = await tx.update(spends).set({ status: "FAILED", reasons: [reason], refundId, settledAt: new Date(), ...(payoutStatus ? { payoutStatus } : {}) })
@@ -809,7 +894,7 @@ async function refundOrPark(s: Spend, root: Root, why: string, payoutStatus: str
       if (inFlight) await tx.update(blocks).set({ reservedMinor: sql`${blocks.reservedMinor} - ${s.amountMinor}`, spentMinor: sql`${blocks.spentMinor} + ${s.amountMinor}` }).where(inArray(blocks.id, s.chainIds));
       await tx.update(roots).set({ capturedMinor: sql`${roots.capturedMinor} - ${s.amountMinor}`, refundedMinor: sql`${roots.refundedMinor} + ${s.amountMinor}` }).where(eq(roots.id, root.id));
       // The provider sent the money back to the payer's funding source.
-      await postRefund({ owner: root.principal, rail: r.id, currency: s.currency, amountMinor: s.amountMinor, ref: s.id, memo: `refund ${refundId}` }, tx);
+      await postRefund({ owner: root.principal, rail: r.id, currency: s.currency, externalAccountId: accountId, amountMinor: s.amountMinor, ref: s.id, memo: `refund ${refundId}` }, tx);
       return u;
     }
     if (live.status === "REFUND_DUE") return live;
@@ -884,9 +969,23 @@ export async function syncSpend(spendId: string): Promise<Spend> {
   const r = rail();
   const po = await r.payouts.read(railRef(r.id, "payout", s.payoutBatchId)).catch(() => null);
   if (!po) return s;
-  const st = po.itemStatus ?? po.batchStatus;
-  if (PAYOUT_DEAD.includes(st)) return undoDeadPayout(s, st, po.error);
-  const [u] = await db.update(spends).set({ payoutStatus: st, payoutItemId: refId(po.itemRef) ?? s.payoutItemId, payoutTransactionId: po.transactionId ?? s.payoutTransactionId, status: payoutState(st) }).where(and(eq(spends.id, s.id), inArray(spends.status, ["PAYOUT_PENDING", "UNCLAIMED"]))).returning();
+  // Only the item that carries this payment's sender reference says anything about this payee. The batch's own
+  // status is never used in its place: a SUCCESS batch can hold an UNCLAIMED or FAILED item.
+  const match = payoutItemFor(po, s.id);
+  if (!match.ok) {
+    await trail((await db.query.roots.findFirst({ where: eq(roots.id, s.rootId) }))!, "paypal", "payout.item_unresolved", "INFO", s.payoutBatchId, { spend: s.id, batchStatus: po.batchStatus, problem: match.problem });
+    return s;
+  }
+  const item = match.item;
+  const outcome = classifyPayoutItem(item.status);
+  if (outcome === "unknown") {
+    // A status this gateway does not recognise. Record it for a person; never read it as paid or as failed.
+    await trail((await db.query.roots.findFirst({ where: eq(roots.id, s.rootId) }))!, "paypal", "payout.status_unrecognized", "INFO", s.payoutBatchId, { spend: s.id, item: item.itemRef?.id ?? null, reported: item.status });
+    return s;
+  }
+  const st = item.status!;
+  if (payoutCameBack(outcome)) return undoDeadPayout(s, st, item.error);
+  const [u] = await db.update(spends).set({ payoutStatus: st, payoutItemId: item.itemRef?.id ?? s.payoutItemId, payoutTransactionId: item.transactionId ?? s.payoutTransactionId, status: payoutState(st) }).where(and(eq(spends.id, s.id), inArray(spends.status, ["PAYOUT_PENDING", "UNCLAIMED"]))).returning();
   return u ?? (await db.query.spends.findFirst({ where: eq(spends.id, s.id) }))!;
 }
 
@@ -1506,7 +1605,16 @@ export async function reconcile(spendId: string) {
     { name: "The capture carries this spend's id", ok: Boolean(cap && (cap.externalRef === s.id || cap.externalRef === null)), detail: cap?.externalRef ?? "the rail returned no reference" },
     held
       ? { name: "Credited once to the account the agent signed for", ok: Boolean(entry && entry.deltaMinor === s.amountMinor && s.receipt.paidTo?.held?.ledgerEntry === entry.id), detail: entry ? `ledger entry ${entry.id} · ${formatMoney(entry.deltaMinor, s.currency)} · no payout: the money stays in the agent's balance` : "not found" }
-      : { name: "The payout went to the payee the agent signed for", ok: Boolean(po && po.receiver?.toLowerCase() === (s.payoutTo ?? s.payee)), detail: po ? `${po.batchRef.id} · ${po.itemStatus ?? po.batchStatus} · ${po.receiver}` : "not found" },
+      : (() => {
+          const match = po ? payoutItemFor(po, s.id) : null;
+          const item = match?.ok ? match.item : null;
+          const outcome = classifyPayoutItem(item?.status ?? null);
+          return {
+            name: "The payout went to the payee the agent signed for",
+            ok: Boolean(item && item.receiver && item.receiver.toLowerCase() === (s.payoutTo ?? s.payee) && !payoutCameBack(outcome)),
+            detail: po ? `${po.batchRef.id} · ${match?.ok ? `${item!.status}` : match?.problem} · ${item?.receiver ?? "the provider reported no receiver"}` : "not found",
+          };
+        })(),
     { name: "The hold belongs to this envelope", ok: Boolean(auth && (auth.externalRef === root.id || auth.externalRef === null)), detail: auth ? `${auth.ref.id} · ${auth.status}` : "not found" },
     // PayPal's Disputes API, asked about this capture. Left out when PayPal could not be asked: silence is not "no dispute".
     ...(disputed ? [{ name: "The rail holds no dispute against this capture", ok: !disputed.dispute, detail: disputed.dispute ? `${disputed.dispute.ref.id} · ${disputed.dispute.status}${disputed.dispute.reason ? ` · ${disputed.dispute.reason}` : ""}` : "none" }] : []),

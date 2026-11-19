@@ -22,9 +22,10 @@ import { UserFacingError } from "../errors";
 import * as E from "../envelope/core";
 import { newId } from "../ids";
 // Money leaves a balance through a rail, never through a provider (lib/rails).
-import { amount, isRailError, rail, railCode, railMode, railRef, refId } from "../rails";
+import { amount, isRailError, rail, railCode, railMode, railRef } from "../rails";
+import { classifyPayoutItem, payoutCameBack, payoutItemFor } from "../rails/types";
 // A balance is a claim; a provider position is money. Paying out needs the second (docs/MULTI_RAIL_ACCOUNTING.md).
-import { postPayout, postPayoutReturn, postRefund, requireProviderLiquidity } from "../accounting";
+import { postPayout, postPayoutReturn, postRefund, railAccountIdentity, requireProviderLiquidity } from "../accounting";
 import { audit } from "../services/audit";
 import { gatewayKey, HELD, lockAccount, markRefundedByPayee } from "./service";
 
@@ -172,13 +173,25 @@ async function send(from: Account, t: Transfer): Promise<Transfer> {
       throw e;
     }
     const po = await rl.payouts.send({ reference: t.id, receiver: t.payoutTo!, amount: amount(t.amountMinor, t.currency), note: `${t.memo || t.purpose || "Payment"} · from ${from.label}'s Envelope account (${t.id})` });
-    const st = po.itemStatus ?? po.batchStatus;
-    const status: Transfer["status"] = st === "SUCCESS" ? "PAID" : st === "UNCLAIMED" ? "UNCLAIMED" : "PAYOUT_PENDING";
+    // A batch id is not evidence about this recipient, and a batch the provider says belongs to another sender
+    // reference is not this transfer's. Both stay in doubt: nothing is recorded and nothing is reversed.
+    if (po.senderBatchId !== null && po.senderBatchId !== t.id) {
+      await note(from, "transfer.payout_reference_mismatch", "FAILED", t.id, { expected: t.id, reported: po.senderBatchId, batch: po.batchRef.id });
+      return t;
+    }
+    const match = payoutItemFor(po, t.id);
+    const item = match.ok ? match.item : null;
+    const st = item?.status ?? "SUBMITTED";
+    const outcome = classifyPayoutItem(item?.status ?? null);
+    const status: Transfer["status"] = outcome === "credited" ? "PAID" : outcome === "unclaimed" ? "UNCLAIMED" : "PAYOUT_PENDING";
+    // The payout leaves the provider account the balance was funded in, and the movement says which account that is.
+    const accountId = await railAccountIdentity({ rail: rl.id, currency: t.currency });
     const [u] = await db.transaction(async (tx) => {
-      const [updated] = await tx.update(transfers).set({ status, payoutBatchId: po.batchRef.id, payoutItemId: refId(po.itemRef), payoutStatus: st }).where(and(eq(transfers.id, t.id), eq(transfers.status, "SENDING"))).returning();
-      if (updated) await postPayout({ owner: from.owner, rail: rl.id, currency: t.currency, amountMinor: t.amountMinor, ref: t.id, memo: `payout ${po.batchRef.id}` }, tx);
+      const [updated] = await tx.update(transfers).set({ status, payoutBatchId: po.batchRef.id, payoutItemId: item?.itemRef?.id ?? null, payoutStatus: st }).where(and(eq(transfers.id, t.id), eq(transfers.status, "SENDING"))).returning();
+      if (updated) await postPayout({ owner: from.owner, rail: rl.id, currency: t.currency, externalAccountId: accountId, amountMinor: t.amountMinor, ref: t.id, memo: `payout ${po.batchRef.id}` }, tx);
       return [updated];
     });
+    if (!match.ok && u) await note(from, "transfer.payout_item_unresolved", "INFO", t.id, { batch: po.batchRef.id, batchStatus: po.batchStatus, problem: match.problem });
     return u ?? (await db.query.transfers.findFirst({ where: eq(transfers.id, t.id) }))!;
   } catch (e) {
     if (!isRailError(e) || e.retryable) return t; // in doubt: stays SENDING; presenting the same request again resumes here
@@ -191,12 +204,12 @@ async function send(from: Account, t: Transfer): Promise<Transfer> {
   }
 }
 
-const DEAD = ["FAILED", "RETURNED", "BLOCKED", "REFUNDED", "REVERSED", "DENIED", "CANCELED"];
 /**
  * Put a debit back, exactly once (the ledger's unique index is the guard). `payoutLeft` says whether the money
  * actually left the provider: only then is a return recorded against the provider position.
  */
 async function reverse(t: Transfer, reason: E.Violation, payoutStatus: string | null, payoutLeft = false): Promise<Transfer> {
+  const accountId = await railAccountIdentity({ rail: t.railProvider, currency: t.currency });
   return getDb().transaction(async (tx) => {
     await lockAccount(tx, t.fromAgent);
     const [u] = await tx.update(transfers).set({ status: "FAILED", reasons: [reason], ...(payoutStatus ? { payoutStatus } : {}) }).where(and(eq(transfers.id, t.id), inArray(transfers.status, ["SENDING", "PAYOUT_PENDING", "UNCLAIMED", "PAID"]))).returning();
@@ -205,7 +218,7 @@ async function reverse(t: Transfer, reason: E.Violation, payoutStatus: string | 
     const [row] = await tx.insert(ledger).values({ agent: live.agent, rail: t.railProvider, currency: t.currency, kind: "reversal", ref: t.id, deltaMinor: t.amountMinor, balanceAfterMinor: live.balanceMinor + t.amountMinor, counterparty: t.payoutTo, memo: "the payout did not go through" }).onConflictDoNothing().returning();
     if (row) {
       await tx.update(accounts).set({ balanceMinor: live.balanceMinor + t.amountMinor }).where(eq(accounts.agent, live.agent));
-      if (payoutLeft) await postPayoutReturn({ owner: (await tx.query.accounts.findFirst({ where: eq(accounts.agent, live.agent) }))!.owner, rail: t.railProvider, currency: t.currency, amountMinor: t.amountMinor, ref: t.id, memo: `payout returned (${payoutStatus ?? "unknown"})` }, tx);
+      if (payoutLeft) await postPayoutReturn({ owner: (await tx.query.accounts.findFirst({ where: eq(accounts.agent, live.agent) }))!.owner, rail: t.railProvider, currency: t.currency, externalAccountId: accountId, amountMinor: t.amountMinor, ref: t.id, memo: `payout returned (${payoutStatus ?? "unknown"})` }, tx);
     }
     // A card charge that did not go through does not count against the card.
     if (row && t.cardId) await tx.update(cards).set({ charges: sql`greatest(${cards.charges} - 1, 0)`, chargedMinor: sql`greatest(${cards.chargedMinor} - ${t.amountMinor}, 0)` }).where(eq(cards.id, t.cardId));
@@ -221,10 +234,18 @@ export async function syncTransfer(id: string): Promise<Transfer | null> {
   const rl = rail();
   const po = await rl.payouts.read(railRef(rl.id, "payout", t.payoutBatchId)).catch(() => null);
   if (!po) return t;
-  const st = po.itemStatus ?? po.batchStatus;
-  if (DEAD.includes(st)) return reverse(t, { code: "PAYPAL_PAYOUT_FAILED", at: null, detail: `${rl.label} could not deliver the payout (${po.error ?? st}); the amount is back in the balance` }, st, true);
-  const status: Transfer["status"] = st === "SUCCESS" ? "PAID" : st === "UNCLAIMED" ? "UNCLAIMED" : "PAYOUT_PENDING";
-  const [u] = await db.update(transfers).set({ status, payoutStatus: st, payoutItemId: refId(po.itemRef) ?? t.payoutItemId }).where(and(eq(transfers.id, t.id), inArray(transfers.status, ["PAYOUT_PENDING", "UNCLAIMED"]))).returning();
+  // Only the item carrying this transfer's sender reference speaks for this payee. The batch's status is not
+  // a substitute: it can be SUCCESS while the item is UNCLAIMED or FAILED.
+  const match = payoutItemFor(po, t.id);
+  if (!match.ok) return t;
+  const item = match.item;
+  const outcome = classifyPayoutItem(item.status);
+  // An unrecognised status is parked as it is: not delivered, and not reversed on a guess.
+  if (outcome === "unknown" || !item.status) return t;
+  const st = item.status;
+  if (payoutCameBack(outcome)) return reverse(t, { code: "PAYPAL_PAYOUT_FAILED", at: null, detail: `${rl.label} could not deliver the payout (${item.error ?? st}); the amount is back in the balance` }, st, true);
+  const status: Transfer["status"] = outcome === "credited" ? "PAID" : outcome === "unclaimed" ? "UNCLAIMED" : "PAYOUT_PENDING";
+  const [u] = await db.update(transfers).set({ status, payoutStatus: st, payoutItemId: item.itemRef?.id ?? t.payoutItemId }).where(and(eq(transfers.id, t.id), inArray(transfers.status, ["PAYOUT_PENDING", "UNCLAIMED"]))).returning();
   return u ?? t;
 }
 
@@ -508,7 +529,7 @@ async function finishRefund(s: Spend, acct: Account, memo: string): Promise<Refu
     }
   }
   // The provider sent the money back to the payer. Recorded once: the refund's own reference is the spend.
-  await postRefund({ owner: acct.owner, rail: rail().id, currency: s.currency, amountMinor: s.amountMinor, ref: s.id, memo: `refund ${refundId}` });
+  await postRefund({ owner: acct.owner, rail: rail().id, currency: s.currency, externalAccountId: await railAccountIdentity({ rail: rail().id, currency: s.currency }), amountMinor: s.amountMinor, ref: s.id, memo: `refund ${refundId}` });
   const u = await markRefundedByPayee(s.id, refundId, acct.label, memo);
   await note(acct, "balance.refunded", "OK", s.id, { amount: s.amountMinor, refund: refundId, capture: s.captureId });
   return { status: "REFUNDED", spendId: s.id, refundId: u.refundId, reasons: u.reasons, balanceMinor: (await db.query.accounts.findFirst({ where: eq(accounts.agent, acct.agent) }))?.balanceMinor ?? null };

@@ -14,7 +14,7 @@
 import { and, desc, eq, gt, inArray, isNotNull, lte, sql } from "drizzle-orm";
 import { getDb } from "../db";
 import { accounts, ledger, roots, spends, transfers, type ReconciliationFinding } from "../db/schema";
-import { movementsFor, positionsFor, postFee, recordReconciliation } from "../accounting";
+import { movementsFor, positionsFor, postFee, railAccountIdentity, recordReconciliation } from "../accounting";
 import * as E from "../envelope/core";
 import { UserFacingError } from "../errors";
 import { formatMoney } from "../money";
@@ -222,6 +222,8 @@ export async function reconcilePositions(hours = 72, currency = "USD"): Promise<
   }
 
   // Fees: recorded once per statement line, in their own bucket, and reported as a cost the app never charged.
+  // A fee left the account the statement was read from, so it carries that account's identity.
+  const feeAccountId = await railAccountIdentity({ rail: railId, currency });
   let charged = 0, recorded = 0;
   for (const m of st.matches) {
     if (!m.feeMinor) continue;
@@ -229,7 +231,7 @@ export async function reconcilePositions(hours = 72, currency = "USD"): Promise<
     const fresh = await postFee({
       owner: owners.get(m.spend) ?? `rail:${railId}`,
       rail: railId, currency, feeMinor: m.feeMinor, ref: m.paypalId,
-      memo: `provider fee on ${m.what} ${m.spend}`, externalAccountId: null,
+      memo: `provider fee on ${m.what} ${m.spend}`, externalAccountId: feeAccountId,
     });
     if (fresh) recorded += Math.abs(m.feeMinor);
     add("unexpected_fee", "warning", `${railId} charged ${formatMoney(Math.abs(m.feeMinor), currency)} on ${m.what} ${m.spend}; the application credited the full ${formatMoney(m.amountMinor, currency)}, so this cost falls on the gateway operator.`, m.spend);

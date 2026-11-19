@@ -193,9 +193,9 @@ export class PayPalRail implements Rail {
       this.has("payout.send");
       return call(async () => payoutFacts(await payout(this.pp(), {
         spendId: r.reference, receiverEmail: r.receiver, amountMinor: r.amount.minor, currency: r.amount.currency, note: r.note,
-      }), r.receiver));
+      })));
     },
-    read: (p: RailRef<"payout">): Promise<PayoutFacts> => call(async () => payoutFacts(await getPayout(this.pp(), p.id), null)),
+    read: (p: RailRef<"payout">): Promise<PayoutFacts> => call(async () => payoutFacts(await getPayout(this.pp(), p.id))),
     cancel: (item: RailRef<"payout_item">) => {
       this.has("payout.cancel");
       return call(async () => {
@@ -318,12 +318,21 @@ function holdFacts(a: { id: string; orderId: string | null; status: string; amou
   };
 }
 
-function payoutFacts(p: { batchId: string; batchStatus: string; itemId: string | null; itemStatus: string | null; amount: Amount | null; transactionId: string | null; receiver: string | null; error: string | null }, receiver: string | null): PayoutFacts {
+/**
+ * PayPal's payout response, in the neutral vocabulary. Every value is what PayPal reported: nothing is filled
+ * in from the request, and no batch status is ever promoted to an item status.
+ */
+function payoutFacts(p: { batchId: string; batchStatus: string; senderBatchId: string | null; items: Array<{ itemId: string | null; senderItemId: string | null; status: string | null; amount: Amount | null; receiver: string | null; transactionId: string | null; error: string | null }>; itemCount: number | null }): PayoutFacts {
   return {
     batchRef: railRef(PROVIDER, "payout", p.batchId),
-    itemRef: p.itemId ? railRef(PROVIDER, "payout_item", p.itemId) : null,
-    batchStatus: p.batchStatus, itemStatus: p.itemStatus, amount: p.amount, transactionId: p.transactionId,
-    receiver: p.receiver ?? receiver, error: p.error,
+    batchStatus: p.batchStatus,
+    senderBatchId: p.senderBatchId,
+    items: p.items.map((i) => ({
+      itemRef: i.itemId ? railRef(PROVIDER, "payout_item", i.itemId) : null,
+      senderItemId: i.senderItemId, status: i.status, amount: i.amount, receiver: i.receiver,
+      transactionId: i.transactionId, error: i.error,
+    })),
+    itemCount: p.itemCount,
   };
 }
 

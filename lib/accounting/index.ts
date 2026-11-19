@@ -4,7 +4,7 @@
  */
 export {
   ensureRailAccount, fundedByFor, internalLiabilities, lastReconciliations, liquidityAt, movementsFor,
-  positionOf, positionsFor, postCapture, postCaptureSettled, postFee, postPayout, postPayoutReturn, postRefund,
+  positionOf, positionsFor, postCapture, postCaptureSettled, postFee, postPayout, postPayoutReturn, postRefund, railAccountIdentity,
   assertProviderAccountAttribution, recordExternalMovement, recordReconciliation, requireProviderLiquidity,
 } from "./positions";
 export type { Custody, Movement, Position } from "./positions";

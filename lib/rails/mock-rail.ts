@@ -452,11 +452,19 @@ export class MockRail implements Rail {
     void reference;
     return { ref: railRef(PROVIDER, "capture", c.id), status: c.status, amount: c.amount, externalRef: c.invoiceId };
   }
+  /** The mock's own batch is one item, and its echo of the sender references is its own record, not the request. */
   private payoutFacts(p: MockPayout): PayoutFacts {
     return {
-      batchRef: railRef(PROVIDER, "payout", p.batchId), itemRef: railRef(PROVIDER, "payout_item", p.itemId),
-      batchStatus: p.itemStatus === "SUCCESS" ? "SUCCESS" : "PENDING", itemStatus: p.itemStatus, amount: p.amount,
-      transactionId: p.transactionId, receiver: p.receiver, error: p.itemStatus === "UNCLAIMED" ? "RECEIVER_UNREGISTERED" : p.itemStatus === "FAILED" ? "RECEIVER_ACCOUNT_LOCKED" : null,
+      batchRef: railRef(PROVIDER, "payout", p.batchId),
+      // A batch status of its own, independent of the item: it says nothing about this recipient.
+      batchStatus: p.itemStatus === "SUCCESS" ? "SUCCESS" : "PENDING",
+      senderBatchId: p.reference,
+      items: [{
+        itemRef: railRef(PROVIDER, "payout_item", p.itemId), senderItemId: p.reference, status: p.itemStatus,
+        amount: p.amount, receiver: p.receiver, transactionId: p.transactionId,
+        error: p.itemStatus === "UNCLAIMED" ? "RECEIVER_UNREGISTERED" : p.itemStatus === "FAILED" ? "RECEIVER_ACCOUNT_LOCKED" : null,
+      }],
+      itemCount: 1,
     };
   }
   private disputeFacts(d: MockDispute): DisputeFacts {

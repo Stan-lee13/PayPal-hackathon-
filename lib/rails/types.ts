@@ -194,20 +194,113 @@ export type CaptureFacts = {
   externalRef: string | null;
 };
 
-export type PayoutFacts = {
-  batchRef: RailRef<"payout">;
+/**
+ * One payout item, exactly as the provider reported it.
+ *
+ * Every field answers "what did the provider say?", never "what did we ask for?". A field the provider did
+ * not report is null, and null is not a match: the gateway refuses to attribute a payout on a missing value
+ * rather than filling the gap with the request it sent.
+ */
+export type PayoutItemFacts = {
+  /** The provider's own id for this item. Null when it reported none. */
   itemRef: RailRef<"payout_item"> | null;
-  /** The batch's own state. It says nothing about whether this recipient was paid. */
-  batchStatus: string;
-  /** The recipient's state: the only evidence that money was credited, returned or is still pending. */
-  itemStatus: string | null;
-  /** The amount the provider says this item pays. Null when the provider did not report it. */
+  /** The provider's echo of the `sender_item_id` this gateway sent. Null when it reported none. */
+  senderItemId: string | null;
+  /** The provider's status for this item. The only evidence about this recipient. Null when absent. */
+  status: string | null;
+  /** What the provider says this item pays. Null when it did not report it. */
   amount: Amount | null;
-  transactionId: string | null;
+  /** The address the provider says it pays. Null when it did not report one. */
   receiver: string | null;
+  transactionId: string | null;
   /** The provider's own error name when it could not deliver, e.g. RECEIVER_UNREGISTERED. */
   error: string | null;
 };
+
+/**
+ * What the provider reports about a payout batch, with batch-level and item-level facts kept apart.
+ *
+ * A batch has a state of its own and it says nothing about whether any particular recipient was paid:
+ * PayPal reports a batch as SUCCESS while an item inside it is UNCLAIMED, PENDING or FAILED. So the batch
+ * status is here for diagnosis only. The items are the evidence.
+ */
+export type PayoutFacts = {
+  /** The provider's batch. */
+  batchRef: RailRef<"payout">;
+  /** The batch's own state. Never evidence about a recipient. */
+  batchStatus: string;
+  /** The provider's echo of the `sender_batch_id` this gateway sent. Null when it reported none. */
+  senderBatchId: string | null;
+  /** Every item the provider reported for the batch, in provider order. Empty when none were returned. */
+  items: PayoutItemFacts[];
+  /** How many items the provider says the batch contains; null when it did not say. */
+  itemCount: number | null;
+};
+
+/** What a provider item status means for the recipient. One vocabulary, used everywhere. */
+export type PayoutItemOutcome =
+  /** The provider reports the recipient was credited. The only outcome that may mean PAID. */
+  | "credited"
+  /** The provider accepted it and has not finished: submitted, on hold, processing. Not delivery. */
+  | "submitted"
+  /** The provider holds it because the payee has not claimed it. Not delivery, and reversible. */
+  | "unclaimed"
+  /** The money came back to the sender (returned, refunded or reversed at the provider). */
+  | "returned"
+  /** The provider refused to deliver it. No money reached the payee. */
+  | "failed"
+  /** The provider cancelled it. No money reached the payee. */
+  | "cancelled"
+  /** A status this adapter does not recognise. Fails closed: not paid, and not refunded on a guess. */
+  | "unknown";
+
+/**
+ * PayPal's `transaction_status` vocabulary for a payout item, mapped deliberately rather than guessed:
+ *
+ *   SUCCESS                             → credited
+ *   PENDING / PROCESSING / ONHOLD       → submitted
+ *   UNCLAIMED                           → unclaimed
+ *   RETURNED / REFUNDED / REVERSED      → returned
+ *   FAILED / BLOCKED / DENIED           → failed
+ *   CANCELED                            → cancelled
+ *   anything else (or null)             → unknown
+ *
+ * A provider that adds a status this table does not know therefore produces `unknown`, which the gateway
+ * parks for a person to look at. It never becomes paid, and it is never refunded automatically.
+ */
+export function classifyPayoutItem(status: string | null | undefined): PayoutItemOutcome {
+  switch (status) {
+    case "SUCCESS": return "credited";
+    case "PENDING": case "PROCESSING": case "ONHOLD": return "submitted";
+    case "UNCLAIMED": return "unclaimed";
+    case "RETURNED": case "REFUNDED": case "REVERSED": return "returned";
+    case "FAILED": case "BLOCKED": case "DENIED": return "failed";
+    case "CANCELED": case "CANCELLED": return "cancelled";
+    default: return "unknown";
+  }
+}
+
+/** True when the provider says the money left the sender and did not reach the payee. */
+export const payoutCameBack = (o: PayoutItemOutcome) => o === "returned" || o === "failed" || o === "cancelled";
+
+/**
+ * Pick the one provider item that belongs to `reference` — the spend's or transfer's own id.
+ *
+ * Nothing is assumed: not that the batch holds one item, not that the first item is ours, not that a
+ * missing sender reference can be substituted with the id we sent. A batch that reports more items than it
+ * lists, no matching item, or several matching items is *not attributable*, and the caller must leave the
+ * payout unresolved rather than settle the wrong spend.
+ */
+export function payoutItemFor(facts: PayoutFacts, reference: string): { ok: true; item: PayoutItemFacts } | { ok: false; problem: string } {
+  if (facts.itemCount !== null && facts.itemCount !== facts.items.length) {
+    return { ok: false, problem: `the provider says the batch holds ${facts.itemCount} item(s) but reported ${facts.items.length}` };
+  }
+  if (facts.items.length === 0) return { ok: false, problem: "the provider reported no payout items" };
+  const matches = facts.items.filter((i) => i.senderItemId !== null && i.senderItemId === reference);
+  if (matches.length === 0) return { ok: false, problem: `no item carries the sender reference ${reference}` };
+  if (matches.length > 1) return { ok: false, problem: `${matches.length} items carry the sender reference ${reference}` };
+  return { ok: true, item: matches[0]! };
+}
 
 export type RefundFacts = { ref: RailRef<"refund">; status: string };
 
