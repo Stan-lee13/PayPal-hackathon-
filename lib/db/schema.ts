@@ -5,7 +5,7 @@
  * Money is always integer minor units.
  */
 import { sql } from "drizzle-orm";
-import { bigserial, boolean, index, integer, jsonb, pgTable, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
+import { bigint, bigserial, boolean, index, integer, jsonb, pgTable, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
 import type { Block, Caps, SignedAccount, SignedCard, SignedCharge, SignedPromise, SignedSpend, SignedTransfer, Violation } from "../envelope/core";
 
 const ts = (name: string) => timestamp(name, { withTimezone: true, mode: "date" });
@@ -335,6 +335,34 @@ export const positionEntries = pgTable("position_entries", {
   at: ts("at").notNull().defaultNow(),
 }, (t) => [uniqueIndex("position_entries_once").on(t.rail, t.currency, t.bucket, t.kind, t.ref), index("position_entries_owner").on(t.owner, t.rail, t.currency, t.bucket)]);
 
+/**
+ * Evidence that one recorded provider movement belongs to a known provider account.
+ *
+ * A movement written while the provider's account identity was unavailable is deliberately left with a null
+ * `external_account_id`: history says what was known when it was recorded. A later balance read establishes the
+ * account's *current* identity; it does not prove that this older movement arrived there. Only a match against a
+ * reliable provider record for that specific movement — a statement line, a transaction — is evidence, and it is
+ * stored here, beside the movement, never by rewriting it.
+ *
+ * Liquidity counts a movement only when it carries the account identity itself or has one of these rows.
+ */
+export const positionAttributions = pgTable("position_attributions", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  /** The exact `position_entries` row this evidence is about. One row per movement. */
+  positionEntryId: bigint("position_entry_id", { mode: "number" }).notNull().references(() => positionEntries.id),
+  rail: text("rail").notNull(),
+  currency: text("currency").notNull(),
+  /** The provider account the movement is now proven to belong to. Never null: an attribution is a proof. */
+  externalAccountId: text("external_account_id").notNull(),
+  /** Where the matching provider record was read, e.g. "PayPal Transaction Search 2026-11-18". */
+  source: text("source").notNull(),
+  /** The provider's own id for that record (a transaction id), so the match can be re-checked. */
+  evidence: text("evidence").notNull(),
+  /** Who recorded the match: an operator id or a reconciliation job. */
+  attributedBy: text("attributed_by"),
+  at: ts("at").notNull().defaultNow(),
+}, (t) => [uniqueIndex("position_attributions_once").on(t.positionEntryId)]);
+
 export type ReconciliationFinding = { code: string; severity: "error" | "warning" | "info"; detail: string; ref: string | null };
 
 /** One reconciliation attempt against a rail's own records, kept so "when was this last checked?" has an answer. */
@@ -492,4 +520,5 @@ export type PayPalCall = typeof paypalCalls.$inferSelect;
 export type PayPalEvent = typeof paypalEvents.$inferSelect;
 export type RailAccount = typeof railAccounts.$inferSelect;
 export type PositionEntry = typeof positionEntries.$inferSelect;
+export type PositionAttribution = typeof positionAttributions.$inferSelect;
 export type ReconciliationRun = typeof reconciliationRuns.$inferSelect;

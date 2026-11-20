@@ -28,7 +28,7 @@
 import { and, eq, sql } from "drizzle-orm";
 import { getDb, type DB } from "../db";
 import {
-  accounts, ledger, positionEntries, railAccounts, reconciliationRuns,
+  accounts, ledger, positionAttributions, positionEntries, railAccounts, reconciliationRuns,
   type PositionBucket, type PositionKind, type RailAccount, type ReconciliationFinding,
 } from "../db/schema";
 import { UserFacingError } from "../errors";
@@ -213,12 +213,17 @@ export type Position = {
   pendingMinor: number;
   /** What the provider took, as a **positive cost**. Never spendable: `spendable = available - feesMinor`. */
   feesMinor: number;
+  /**
+   * Available money recorded before the provider account's identity was known, with no separate attribution.
+   * It is tracked, but not proven to sit in the account a payout would leave from, so it is **not spendable**.
+   */
+  unverifiedMinor: number;
   /** available + pending − fees: what the provider should actually be holding for this organization. */
   netAtProviderMinor: number;
   entries: number;
 };
 
-const ZERO = { availableMinor: 0, pendingMinor: 0, feesMinor: 0, netAtProviderMinor: 0, entries: 0 };
+const ZERO = { availableMinor: 0, pendingMinor: 0, feesMinor: 0, unverifiedMinor: 0, netAtProviderMinor: 0, entries: 0 };
 
 /**
  * Every provider position, one row per rail and currency. Pass an owner to see one organization's slice; pass
@@ -232,11 +237,14 @@ export async function positionsFor(owner: string | null): Promise<Position[]> {
     pending: sql<number>`coalesce(sum(${positionEntries.deltaMinor}) filter (where ${positionEntries.bucket} = 'pending'), 0)::int`,
     // Stored negative (money taken); reported positive so callers never add a cost to liquidity.
     fees: sql<number>`coalesce(sum(-${positionEntries.deltaMinor}) filter (where ${positionEntries.bucket} = 'fee'), 0)::int`,
+    // Money recorded without the provider's account identity, and with no separate proof for this exact
+    // movement. It stays visible in the position, and it never counts as liquidity.
+    unverified: sql<number>`coalesce(sum(${positionEntries.deltaMinor}) filter (where ${positionEntries.bucket} = 'available' and ${positionEntries.externalAccountId} is null and not exists (select 1 from ${positionAttributions} pa where pa.position_entry_id = ${positionEntries.id})), 0)::int`,
     entries: sql<number>`count(*)::int`,
   }).from(positionEntries).where(owner ? eq(positionEntries.owner, owner) : sql`true`).groupBy(positionEntries.rail, positionEntries.currency, positionEntries.custody);
   return rows.map((r) => ({
     rail: r.rail, currency: r.currency, custody: r.custody,
-    availableMinor: r.available, pendingMinor: r.pending, feesMinor: r.fees,
+    availableMinor: r.available, pendingMinor: r.pending, feesMinor: r.fees, unverifiedMinor: r.unverified,
     netAtProviderMinor: r.available + r.pending - r.fees, entries: r.entries,
   }));
 }
@@ -272,15 +280,17 @@ export async function liquidityAt(a: { owner?: string | null; rail: string; curr
   ok: boolean; availableMinor: number; pendingMinor: number; detail: string;
 }> {
   const p = await positionOf(a.owner ?? null, a.rail, a.currency);
-  // A fee the provider already took is not money that can be paid out.
-  const spendable = p.availableMinor - p.feesMinor;
+  // A fee the provider already took is not money that can be paid out, and neither is a movement whose
+  // provider account was never established: it cannot be shown to be the money the payout would leave from.
+  const spendable = p.availableMinor - p.feesMinor - p.unverifiedMinor;
   const ok = spendable >= a.amountMinor;
   const detail = ok
     ? `${spendable} minor units settled at ${a.rail} in ${a.currency}`
     : `${a.rail} holds ${p.availableMinor} minor units available in ${a.currency}` +
       (p.pendingMinor ? `, ${p.pendingMinor} still pending` : "") +
-      (p.feesMinor ? `, ${p.feesMinor} taken in fees, leaving ${spendable}` : "") +
-      `; ${a.amountMinor} was asked for`;
+      (p.feesMinor ? `, ${p.feesMinor} taken in fees` : "") +
+      (p.unverifiedMinor ? `, ${p.unverifiedMinor} recorded without the provider's account identity (unverified, so not spendable)` : "") +
+      `, leaving ${spendable}; ${a.amountMinor} was asked for`;
   return { ok, availableMinor: spendable, pendingMinor: p.pendingMinor, detail };
 }
 
@@ -369,4 +379,97 @@ export async function lastReconciliations(limit = 10) {
 /** Tests only: the ledger and position rows for one reference, so a test can compare both books. */
 export async function movementsFor(ref: string) {
   return getDb().select().from(positionEntries).where(eq(positionEntries.ref, ref)).orderBy(positionEntries.id);
+}
+
+/**
+ * The movements this deployment tracks at a rail that are not proven to belong to a known provider account:
+ * recorded before the identity was available, and with no attribution of their own.
+ *
+ * They stay on the books — history is not rewritten — but `liquidityAt` does not count them, so they cannot
+ * fund a payout until each one is matched to a provider record.
+ */
+export async function unverifiedMovements(a: { rail: string; currency: string; owner?: string | null; limit?: number }): Promise<Array<{
+  id: number; owner: string; kind: PositionKind; ref: string; deltaMinor: number; at: Date;
+}>> {
+  const where = and(
+    eq(positionEntries.rail, a.rail), eq(positionEntries.currency, a.currency),
+    sql`${positionEntries.bucket} = 'available'`,
+    sql`${positionEntries.externalAccountId} is null`,
+    sql`not exists (select 1 from ${positionAttributions} pa where pa.position_entry_id = ${positionEntries.id})`,
+    ...(a.owner ? [eq(positionEntries.owner, a.owner)] : []),
+  );
+  const rows = await getDb().select({
+    id: positionEntries.id, owner: positionEntries.owner, kind: positionEntries.kind,
+    ref: positionEntries.ref, deltaMinor: positionEntries.deltaMinor, at: positionEntries.at,
+  }).from(positionEntries).where(where).orderBy(positionEntries.id).limit(Math.min(500, Math.max(1, a.limit ?? 100)));
+  return rows;
+}
+
+/**
+ * Record the provider evidence that **one specific movement** belongs to a provider account.
+ *
+ * This is the only way an unverified historical movement becomes spendable. It does not touch the movement:
+ * the original row keeps its null identity, and the proof is a separate row beside it. A selector that matches
+ * more than one movement is refused (pass the entry id, or the reference and kind), and an attribution that
+ * contradicts the account on record is refused.
+ */
+export async function attributePositionMovement(a: {
+  rail: string;
+  currency: string;
+  /** The exact entry. Preferred: an attribution is about one movement, not a group. */
+  positionEntryId?: number;
+  /** Or the domain reference plus its kind, which must identify exactly one entry. */
+  ref?: string;
+  kind?: PositionKind;
+  externalAccountId: string;
+  /** Where the matching provider record was read. */
+  source: string;
+  /** The provider's own id for that record. */
+  evidence: string;
+  attributedBy?: string | null;
+}, q: Query = getDb()): Promise<{ positionEntryId: number; alreadyVerified: boolean }> {
+  if (!a.externalAccountId?.trim()) throw new UserFacingError("An attribution needs the provider's account id.", 400);
+  if (!a.source?.trim() || !a.evidence?.trim()) {
+    throw new UserFacingError("An attribution needs the provider record it matches (source) and that record's own id (evidence).", 400);
+  }
+  if (!a.positionEntryId && !a.ref) throw new UserFacingError("An attribution names one movement: give its entry id, or its reference and kind.", 400);
+  const where = and(
+    eq(positionEntries.rail, a.rail), eq(positionEntries.currency, a.currency),
+    ...(a.positionEntryId ? [eq(positionEntries.id, a.positionEntryId)] : []),
+    ...(!a.positionEntryId && a.ref ? [eq(positionEntries.ref, a.ref)] : []),
+    ...(!a.positionEntryId && a.kind ? [eq(positionEntries.kind, a.kind)] : []),
+  );
+  const rows = await q.query.positionEntries.findMany({ where });
+  if (rows.length === 0) throw new UserFacingError(`No ${a.rail} ${a.currency} movement matches that reference, so there is nothing to attribute.`, 404);
+  if (rows.length > 1) {
+    throw new UserFacingError(
+      `${rows.length} movements match that reference (${rows.map((r) => `${r.kind}#${r.id}`).join(", ")}). ` +
+      `An attribution proves one movement belongs to the account: name the entry id, or the reference and kind.`,
+      409,
+    );
+  }
+  const entry = rows[0]!;
+  if (entry.externalAccountId && entry.externalAccountId !== a.externalAccountId) {
+    throw new UserFacingError(
+      `Movement ${entry.id} is already recorded as belonging to provider account ${entry.externalAccountId.slice(0, 12)}; ` +
+      `it cannot also be attributed to ${a.externalAccountId.slice(0, 12)}. History is not rewritten.`,
+      409,
+    );
+  }
+  // The account on record is the one the provider reported; an attribution may not invent a different one.
+  const known = (await q.query.railAccounts.findMany({ where: and(eq(railAccounts.rail, a.rail), eq(railAccounts.currency, a.currency)) }))
+    .map((r) => r.externalAccountId).find((x): x is string => Boolean(x));
+  if (known && known !== a.externalAccountId) {
+    throw new UserFacingError(
+      `The ${a.rail} ${a.currency} account on record is ${known.slice(0, 12)}, but this proof names ${a.externalAccountId.slice(0, 12)}. ` +
+      `Refusing to attribute a movement to an account this deployment has not established.`,
+      409,
+    );
+  }
+  if (entry.externalAccountId === a.externalAccountId) return { positionEntryId: entry.id, alreadyVerified: true };
+  const [row] = await q.insert(positionAttributions).values({
+    positionEntryId: entry.id, rail: a.rail, currency: a.currency, externalAccountId: a.externalAccountId,
+    source: a.source.slice(0, 200), evidence: a.evidence.slice(0, 200), attributedBy: a.attributedBy?.slice(0, 200) ?? null,
+  }).onConflictDoNothing().returning({ id: positionAttributions.id });
+  return { positionEntryId: entry.id, alreadyVerified: !row };
 }

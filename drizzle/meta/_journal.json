@@ -92,6 +92,13 @@
       "when": 1794978447806,
       "tag": "0012_settlement_fencing",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1795152109380,
+      "tag": "0013_position_verification",
+      "breakpoints": true
     }
   ]
 }
