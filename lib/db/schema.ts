@@ -509,6 +509,178 @@ export const rateLimits = pgTable("rate_limits", {
   count: integer("count").notNull(),
 });
 
+// ---------------------------------------------------------------------------
+// Organization identity (Milestone 4.1).
+//
+// Five things are kept apart on purpose:
+//
+//   • a **human user** is an authenticated person, identified by (oidc_issuer, oidc_subject) — never by email;
+//   • an **organization** is the tenant, with a status that can suspend money movement;
+//   • a **membership** connects the two, and a revoked one stops working immediately;
+//   • a **principal** is the Ed25519 key that signed a root envelope — a financial identity, not a person;
+//   • an **agent** is a key that holds a block, and keeps operating through signed requests, not a session.
+//
+// None of these tables changes a financial row. Org ownership of financial records is the next phase.
+// ---------------------------------------------------------------------------
+
+export const ORGANIZATION_STATUS = ["ACTIVE", "SUSPENDED", "CLOSED"] as const;
+export type OrganizationStatus = (typeof ORGANIZATION_STATUS)[number];
+
+/** The tenant. `id` is immutable; `metadata` is free-form and never read for authorization. */
+export const organizations = pgTable("organizations", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  status: text("status", { enum: ORGANIZATION_STATUS }).notNull().default("ACTIVE"),
+  metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default({}),
+  createdAt: ts("created_at").notNull().defaultNow(),
+  updatedAt: ts("updated_at").notNull().defaultNow(),
+});
+
+export const USER_STATUS = ["ACTIVE", "DISABLED"] as const;
+export type UserStatus = (typeof USER_STATUS)[number];
+
+/**
+ * A human user, established by a trusted identity provider. The permanent key is the pair
+ * (oidc_issuer, oidc_subject): email is an attribute that may change or be reassigned, and is never identity.
+ */
+export const users = pgTable("users", {
+  id: text("id").primaryKey(),
+  oidcIssuer: text("oidc_issuer").notNull(),
+  oidcSubject: text("oidc_subject").notNull(),
+  email: text("email"),
+  emailVerified: boolean("email_verified").notNull().default(false),
+  displayName: text("display_name").notNull().default(""),
+  status: text("status", { enum: USER_STATUS }).notNull().default("ACTIVE"),
+  createdAt: ts("created_at").notNull().defaultNow(),
+  lastLoginAt: ts("last_login_at"),
+}, (t) => [uniqueIndex("users_oidc_identity").on(t.oidcIssuer, t.oidcSubject), index("users_email").on(t.email)]);
+
+export const MEMBERSHIP_ROLES = ["owner", "admin", "finance", "approver", "auditor", "developer"] as const;
+export type MembershipRole = (typeof MEMBERSHIP_ROLES)[number];
+export const MEMBERSHIP_STATUS = ["INVITED", "ACTIVE", "REVOKED"] as const;
+export type MembershipStatus = (typeof MEMBERSHIP_STATUS)[number];
+
+/**
+ * A human's membership of one organization. One row per (organization, user): a revocation changes the row's
+ * status instead of leaving a second active record behind. An invitation is `INVITED`, not an active
+ * membership, and only `ACTIVE` authorizes anything.
+ */
+export const memberships = pgTable("memberships", {
+  id: text("id").primaryKey(),
+  orgId: text("org_id").notNull().references(() => organizations.id),
+  userId: text("user_id").notNull().references(() => users.id),
+  role: text("role", { enum: MEMBERSHIP_ROLES }).notNull(),
+  status: text("status", { enum: MEMBERSHIP_STATUS }).notNull(),
+  invitedBy: text("invited_by"),
+  invitedAt: ts("invited_at"),
+  acceptedAt: ts("accepted_at"),
+  revokedAt: ts("revoked_at"),
+  revokedBy: text("revoked_by"),
+  createdAt: ts("created_at").notNull().defaultNow(),
+}, (t) => [uniqueIndex("memberships_one_per_user_org").on(t.orgId, t.userId), index("memberships_user").on(t.userId, t.status)]);
+
+export const PRINCIPAL_STATUS = ["ACTIVE", "REVOKED"] as const;
+export type PrincipalStatus = (typeof PRINCIPAL_STATUS)[number];
+
+/**
+ * An existing Ed25519 financial principal, mapped explicitly to exactly one organization.
+ * `public_key` is unique across the deployment: a principal cannot be assigned to two organizations, because
+ * that would silently widen what its signed envelopes authorize. No key is reissued and no signature changes.
+ */
+export const principals = pgTable("principals", {
+  id: text("id").primaryKey(),
+  orgId: text("org_id").notNull().references(() => organizations.id),
+  publicKey: text("public_key").notNull(),
+  label: text("label").notNull().default(""),
+  status: text("status", { enum: PRINCIPAL_STATUS }).notNull().default("ACTIVE"),
+  createdAt: ts("created_at").notNull().defaultNow(),
+}, (t) => [uniqueIndex("principals_public_key").on(t.publicKey), index("principals_org").on(t.orgId, t.status)]);
+
+/**
+ * An invitation to join an organization. Organization-bound, role-bound, single use, time limited.
+ * Only a SHA-256 hash of the token is stored: the raw token is shown once, at creation, and never again.
+ */
+export const organizationInvitations = pgTable("organization_invitations", {
+  id: text("id").primaryKey(),
+  orgId: text("org_id").notNull().references(() => organizations.id),
+  /** The address the invitation was sent to. It is a hint for the invitee, never proof of identity. */
+  email: text("email").notNull(),
+  role: text("role", { enum: MEMBERSHIP_ROLES }).notNull(),
+  tokenHash: text("token_hash").notNull(),
+  invitedBy: text("invited_by").notNull(),
+  expiresAt: ts("expires_at").notNull(),
+  acceptedAt: ts("accepted_at"),
+  acceptedBy: text("accepted_by"),
+  revokedAt: ts("revoked_at"),
+  createdAt: ts("created_at").notNull().defaultNow(),
+}, (t) => [uniqueIndex("org_invitations_token").on(t.tokenHash), index("org_invitations_org").on(t.orgId, t.email)]);
+
+/**
+ * Auth.js persistence for the OIDC account link and the server-side session.
+ * Named `auth_accounts` because `accounts` is already the agent's receiving account.
+ */
+export const authAccounts = pgTable("auth_accounts", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull().references(() => users.id),
+  type: text("type").notNull(),
+  provider: text("provider").notNull(),
+  providerAccountId: text("provider_account_id").notNull(),
+  refreshToken: text("refresh_token"),
+  accessToken: text("access_token"),
+  expiresAt: integer("expires_at"),
+  tokenType: text("token_type"),
+  scope: text("scope"),
+  idToken: text("id_token"),
+  sessionState: text("session_state"),
+}, (t) => [uniqueIndex("auth_accounts_provider").on(t.provider, t.providerAccountId)]);
+
+/** A server-side session. The cookie carries an opaque token; the row decides whether it is still valid. */
+export const sessions = pgTable("sessions", {
+  sessionToken: text("session_token").primaryKey(),
+  userId: text("user_id").notNull().references(() => users.id),
+  expires: ts("expires").notNull(),
+  createdAt: ts("created_at").notNull().defaultNow(),
+}, (t) => [index("sessions_user").on(t.userId)]);
+
+export const verificationTokens = pgTable("verification_tokens", {
+  identifier: text("identifier").notNull(),
+  token: text("token").notNull(),
+  expires: ts("expires").notNull(),
+}, (t) => [uniqueIndex("verification_tokens_identifier_token").on(t.identifier, t.token)]);
+
+/**
+ * The gateway keys an organization trusts to have issued its receipts.
+ *
+ * A receipt embeds the public key that signed it, and the signature proves only that *that key* signed this
+ * body. It does not prove the key belongs to an organization. Trust is a separate, persisted relationship: a
+ * fingerprint recorded here for one organization. Historical keys stay `RETIRED` and keep verifying old
+ * receipts; an unknown key is mathematically verifiable and still untrusted.
+ */
+export const GATEWAY_KEY_TRUST_STATES = ["ACTIVE", "RETIRED"] as const;
+export type GatewayKeyTrustState = (typeof GATEWAY_KEY_TRUST_STATES)[number];
+export const gatewayKeyTrust = pgTable("gateway_key_trust", {
+  id: text("id").primaryKey(),
+  orgId: text("org_id").notNull().references(() => organizations.id),
+  /** SHA-256 of the public key value, so the same key cannot be trusted twice or by two organizations. */
+  fingerprint: text("fingerprint").notNull(),
+  publicKey: text("public_key").notNull(),
+  state: text("state", { enum: GATEWAY_KEY_TRUST_STATES }).notNull().default("ACTIVE"),
+  /** The `gateway_keys` row this key came from, when it has one. */
+  gatewayKeyId: text("gateway_key_id"),
+  firstSeenAt: ts("first_seen_at").notNull().defaultNow(),
+  retiredAt: ts("retired_at"),
+  note: text("note").notNull().default(""),
+}, (t) => [uniqueIndex("gateway_key_trust_fingerprint").on(t.fingerprint), index("gateway_key_trust_org").on(t.orgId, t.state)]);
+
+export type Organization = typeof organizations.$inferSelect;
+export type User = typeof users.$inferSelect;
+export type Membership = typeof memberships.$inferSelect;
+export type Principal = typeof principals.$inferSelect;
+export type OrganizationInvitation = typeof organizationInvitations.$inferSelect;
+export type AuthAccount = typeof authAccounts.$inferSelect;
+export type Session = typeof sessions.$inferSelect;
+export type GatewayKeyTrust = typeof gatewayKeyTrust.$inferSelect;
+
 export type Root = typeof roots.$inferSelect;
 export type BlockRow = typeof blocks.$inferSelect;
 export type Spend = typeof spends.$inferSelect;

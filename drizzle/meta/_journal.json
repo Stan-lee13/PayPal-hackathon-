@@ -99,6 +99,13 @@
       "when": 1795152109380,
       "tag": "0013_position_verification",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1795152371370,
+      "tag": "0014_organization_identity",
+      "breakpoints": true
     }
   ]
 }
