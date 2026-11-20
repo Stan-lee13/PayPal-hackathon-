@@ -11,7 +11,24 @@ import { b64u, unb64u } from "./envelope/core";
 
 type Sealed = { sealed: "A256GCM"; iv: string; ct: string };
 const enc = new TextEncoder();
-export const keysSealed = () => Boolean(process.env.ENVELOPE_KEY_SECRET);
+export const keysSealed = (env: NodeJS.ProcessEnv = process.env) => Boolean(env.ENVELOPE_KEY_SECRET);
+
+/**
+ * Production may not store gateway private keys unencrypted. Development may, and says so.
+ *
+ * This is encryption at rest with a secret from the environment, not a managed KMS: whoever holds both the
+ * database and the environment holds the keys. `keyProtectionSummary()` says exactly that, so a health page or
+ * a report cannot describe it as more.
+ */
+export function assertKeyProtection(env: NodeJS.ProcessEnv = process.env): void {
+  if (env.NODE_ENV === "production" && !keysSealed(env)) {
+    throw new Error("ENVELOPE_KEY_SECRET is not set: gateway private keys would be stored as plain JWK in production. Refusing to run.");
+  }
+}
+
+export const keyProtectionSummary = (): string => keysSealed()
+  ? "Sealed at rest with AES-256-GCM under ENVELOPE_KEY_SECRET. This is encryption at rest, not a managed KMS: whoever holds both the database and the environment holds the keys."
+  : "Plain JWK. Development only: without ENVELOPE_KEY_SECRET the private keys are readable by anyone who can read the database.";
 
 async function wrappingKey(): Promise<CryptoKey | null> {
   const secret = process.env.ENVELOPE_KEY_SECRET;
@@ -24,7 +41,11 @@ async function wrappingKey(): Promise<CryptoKey | null> {
 /** What to write to the database for a private key. */
 export async function sealJwk(jwk: JsonWebKey): Promise<JsonWebKey> {
   const k = await wrappingKey();
-  if (!k) return jwk;
+  if (!k) {
+    // A write path must not silently store plain key material in production.
+    assertKeyProtection();
+    return jwk;
+  }
   const iv = crypto.getRandomValues(new Uint8Array(new ArrayBuffer(12)));
   const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, k, enc.encode(JSON.stringify(jwk))));
   // The public half stays readable so rows can still be matched by key without the secret.
