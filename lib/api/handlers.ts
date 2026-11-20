@@ -18,6 +18,10 @@ import * as S from "../gateway/settlement";
 import { verifyChain } from "../ledger/chain";
 import { rail, railMode } from "../rails";
 import { REASON_TEXT } from "../reasons";
+import { demoEnabled, policyFor } from "./route-policy";
+
+/** Demo and simulation routes are development tools; production refuses them, whatever the UI links to. */
+const DEMO_OFF: Output = { status: 404, body: { error: "This demo endpoint is not available in production." } };
 
 export type Input = { params: Record<string, string>; body: unknown; /** Lower-cased request headers and the body as sent; only the webhook and sweep endpoints read them. */ headers?: Record<string, string>; raw?: string };
 export type Output = { status?: number; body: unknown };
@@ -74,7 +78,15 @@ async function railEvent(i: Input): Promise<Output> {
 
 async function sweepFor(headers: Record<string, string> | undefined): Promise<Output> {
   const secret = process.env.CRON_SECRET;
-  if (secret && headers?.authorization !== `Bearer ${secret}`) return { status: 401, body: { error: "Not authorized." } };
+  // A scheduler route is never anonymous in production. Without a secret there is nothing to authenticate a
+  // caller with, so the route refuses instead of running work for whoever asks.
+  if (!secret) {
+    if (process.env.NODE_ENV === "production") {
+      return { status: 503, body: { error: "CRON_SECRET is not configured, so this scheduler route cannot be authenticated and will not run." } };
+    }
+    return { body: await S.sweepUnfinished() };
+  }
+  if (headers?.authorization !== `Bearer ${secret}`) return { status: 401, body: { error: "Not authorized." } };
   return { body: await S.sweepUnfinished() };
 }
 
@@ -98,6 +110,7 @@ export const handlers: Record<string, Handler> = {
   },
   /** The simulated payer approves in the simulated checkout. Exists only on the simulator. */
   "POST /api/sim/paypal/approve": async ({ body }) => {
+    if (!demoEnabled()) return DEMO_OFF;
     if (railMode() !== "simulated") return { status: 404, body: { error: "There is no simulated checkout here: this gateway talks to a real rail." } };
     const b = z.object({ orderId: z.string().regex(/^[A-Z0-9]{6,40}$/) }).parse(body);
     const { simApproveOrder } = await import("../paypal/emulator");
@@ -349,15 +362,20 @@ export const handlers: Record<string, Handler> = {
 
   /** DEMO: create the console's scripted agents for a draft envelope; returns the key to seal it for. */
   "POST /api/demo/agents": async ({ body }) => {
+    if (!demoEnabled()) return DEMO_OFF;
     const { draftId } = z.object({ draftId: z.string().regex(/^draft_[A-Za-z0-9_-]{8,40}$/) }).parse(body);
     return { body: await createDemoAgents(draftId) };
   },
 
   /** DEMO: the agent on the other side of the table, with an account that can receive. */
-  "GET /api/demo/counterparty": async () => ({ body: await ensureCounterparty() }),
+  "GET /api/demo/counterparty": async () => {
+    if (!demoEnabled()) return DEMO_OFF;
+    return { body: await ensureCounterparty() };
+  },
 
   /** DEMO: one scripted agent step. It goes through the same gateway code as any external agent. */
   "POST /api/demo/act": async ({ body }) => {
+    if (!demoEnabled()) return DEMO_OFF;
     const b = z.object({ rootId: z.string().max(60), action: z.enum(DEMO_ACTIONS), owner: z.unknown().optional() }).parse(body);
     if (!(await ownerOfRootAsks(b.owner, b.rootId))) return NOT_OWNER;
     const r = await act(b.rootId, b.action);
@@ -366,6 +384,7 @@ export const handlers: Record<string, Handler> = {
 
   /** DEMO: the built-in earning agent uses its balance, or its owner freezes it. Same bank code as POST /api/bank/transfer. */
   "POST /api/demo/bank": async ({ body }) => {
+    if (!demoEnabled()) return DEMO_OFF;
     const b = z.object({ action: z.enum(BANK_ACTIONS) }).parse(body);
     const r = await bankAct(b.action);
     return { body: { ...r, reasons: withMeaning(r.reasons) } };
@@ -373,6 +392,7 @@ export const handlers: Record<string, Handler> = {
 
   /** DEMO: carry out one tool call a language model made while playing a built-in agent. The gateway decides. */
   "POST /api/demo/tool": async ({ body }) => {
+    if (!demoEnabled()) return DEMO_OFF;
     const b = z.object({ rootId: z.string().max(60), agent: z.enum(TOOL_AGENTS), tool: z.string().max(40), args: z.record(z.string(), z.unknown()).default({}), owner: z.unknown().optional() }).parse(body);
     if (!(await ownerOfRootAsks(b.owner, b.rootId))) return NOT_OWNER;
     const r = await runTool(b.rootId, b.agent, b.tool, b.args);
@@ -402,6 +422,7 @@ export const handlers: Record<string, Handler> = {
   },
   /** DEMO, simulator only: a payer disputes the latest payment, as they could in PayPal's Resolution Center. The gateway is not told. */
   "POST /api/demo/dispute": async () => {
+    if (!demoEnabled()) return DEMO_OFF;
     if (railMode() !== "simulated") return { status: 409, body: { error: "A dispute can be staged only on the simulator. On PayPal a payer opens one in the Resolution Center." } };
     const r = await A.stageDispute();
     return r ? { body: r } : { status: 409, body: { error: "There is no settled payment to dispute yet. Seal an envelope and let an agent pay first." } };
@@ -409,6 +430,7 @@ export const handlers: Record<string, Handler> = {
 
   /** DEMO: have a built-in agent introduce itself to a payee. The result is checked through the public standing endpoint. */
   "POST /api/demo/hello": async ({ body }) => {
+    if (!demoEnabled()) return DEMO_OFF;
     const b = z.object({ agent: z.string().regex(KEY), amountMinor: z.number().int().positive().max(1_000_00), payee: z.string().min(3).max(127), purpose: z.string().min(1).max(60) }).parse(body);
     return { body: { hello: await demoHello(b.agent, b) } };
   },
