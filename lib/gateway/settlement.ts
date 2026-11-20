@@ -22,7 +22,7 @@ import { UserFacingError } from "../errors";
 import { isRailError, rail, railCode, railMode, railRef, type RailCall, type RailEvent } from "../rails";
 import { settleRefunds, syncTransfer } from "./bank";
 import { settleDisputes } from "./books";
-import { checkHold, sweepExpired, syncSpend, trail } from "./service";
+import { checkHold, sweepExpired, syncSpend, trail, withSettlementLease } from "./service";
 
 type Loose = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 const str = (x: unknown): string | null => (typeof x === "string" && x ? x : null);
@@ -76,7 +76,17 @@ export async function recall(spendId: string, signed: E.SignedRead): Promise<Spe
     throw new UserFacingError(`This gateway's rail (${rail().label}) cannot cancel a payout, so it cannot recall one. Nothing changed.`, 501);
   }
   try {
-    await rail().payouts.cancel(railRef(rail().id, "payout_item", s.payoutItemId));
+    // Cancelling a payout is an external call that changes money. It is made while holding the settlement
+    // lease: the ownership is proved immediately before the call and again before the audit line is written, so
+    // two concurrent recalls cannot both cancel and both claim success. The refund that follows is made by the
+    // usual path under its own lease, and the provider's idempotency reference is unchanged.
+    await withSettlementLease(spendId, async (lease) => {
+      await lease.assert();
+      await rail().payouts.cancel(railRef(rail().id, "payout_item", s.payoutItemId!));
+      await lease.assert();
+      await trail(root, "principal", "payout.recalled", "OK", s.payoutItemId!, { spend: s.id, payee: s.payee, amount: s.amountMinor });
+      return s;
+    });
   } catch (e) {
     // Seen on the sandbox: for a short while after a payout is sent, PayPal holds the item unclaimed but is still closing the batch, and refuses to cancel.
     // The rail says `not_ready`, which means exactly "try the same request again shortly"; nothing was changed.
@@ -86,7 +96,6 @@ export async function recall(spendId: string, signed: E.SignedRead): Promise<Spe
     if (now.status === "UNCLAIMED") throw new UserFacingError(`${rail().label} would not cancel the payout${isRailError(e) ? ` (${railCode(e)})` : ""}. Nothing changed.`, 502);
     return now;
   }
-  await trail(root, "principal", "payout.recalled", "OK", s.payoutItemId, { spend: s.id, payee: s.payee, amount: s.amountMinor });
   // PayPal now reports the item returned, and the usual path for a payout that did not arrive runs: refund the capture, give the budget back.
   const after = await syncSpend(spendId);
   if (after.status !== "FAILED") return after; // e.g. REFUND_DUE: the refund is retried later, and says so
