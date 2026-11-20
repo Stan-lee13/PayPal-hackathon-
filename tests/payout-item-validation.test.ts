@@ -151,11 +151,15 @@ d("payout item attribution in the gateway paths", async () => {
 
   const PAYEE = "designer@example.com";
   const EXP = new Date(Date.now() + 3600_000).toISOString();
-  const rail = mockRail();
+  // A fresh simulator per test: one test replaces `payouts.send` or `payouts.read` to reproduce a provider answer,
+  // and a later test must not inherit that answer.
+  let rail = mockRail();
   const spendRow = (id: string) => getDb().query.spends.findFirst({ where: eq(schema.spends.id, id) }).then((s) => s!);
   const positions = async () => (await getDb().select().from(schema.positionEntries)).sort((a, b) => a.id - b.id);
 
   const before = async () => {
+    forgetRails();
+    rail = mockRail();
     setRailForTesting(rail);
     G.forgetGatewayKey();
     G.forgetProviderAccountIdentity();
@@ -200,8 +204,6 @@ d("payout item attribution in the gateway paths", async () => {
     // Whatever the record said before, a mismatch from the provider is not evidence: the payment is unchanged.
     expect(after.status).toBe(r0.status);
     expect(after.refundId).toBeNull();
-    forgetRails();
-    setRailForTesting(rail);
   });
 
   it("the recovery path and the settlement path refuse the same answer", async () => {

@@ -25,7 +25,9 @@ d("multi-rail accounting (simulated rail)", async () => {
     setRailForTesting(rail);
     G.forgetGatewayKey();
     K.forgetBalance();
-    await getDb().execute(sql`truncate table position_entries, rail_accounts, reconciliation_runs, audit_log, spends, blocks, roots, demo_keys, gateway_keys, emulator_state, rate_limits, accounts, ledger, transfers, cards restart identity cascade`);
+    // `paypal_calls` is truncated too: the simulator's statement is built from the call journal, so a call left by
+    // another suite shows up here as a fee line and can make this test's own fee look like a duplicate.
+    await getDb().execute(sql`truncate table position_attributions, position_entries, rail_accounts, reconciliation_runs, audit_log, spends, blocks, roots, demo_keys, gateway_keys, emulator_state, rate_limits, accounts, ledger, transfers, cards, paypal_calls, paypal_events restart identity cascade`);
   });
 
   /** Ada → ops-agent, paying Bea's translator account (which keeps a balance). */
@@ -211,8 +213,13 @@ d("multi-rail accounting (simulated rail)", async () => {
   });
 
   it("never counts the same money at two rails, and never lets one rail's funds pay another", async () => {
-    await A.postCapture({ owner: "ada", rail: "rail-a", currency: "USD", amountMinor: 5000, ref: "fund-a" });
-    await A.postCapture({ owner: "ada", rail: "rail-b", currency: "USD", amountMinor: 1000, ref: "fund-b" });
+    // A movement recorded without the provider's account identity is historical and not spendable (see
+    // tests/position-verification.test.ts). This test is about per-rail isolation, so the money is recorded the way
+    // the capture path records it: with the account identity the provider established.
+    await A.ensureRailAccount({ owner: "ada", rail: "rail-a", currency: "USD", externalAccountId: "RAIL-A-ACCOUNT" });
+    await A.ensureRailAccount({ owner: "ada", rail: "rail-b", currency: "USD", externalAccountId: "RAIL-B-ACCOUNT" });
+    await A.postCapture({ owner: "ada", rail: "rail-a", currency: "USD", amountMinor: 5000, ref: "fund-a", externalAccountId: "RAIL-A-ACCOUNT" });
+    await A.postCapture({ owner: "ada", rail: "rail-b", currency: "USD", amountMinor: 1000, ref: "fund-b", externalAccountId: "RAIL-B-ACCOUNT" });
     expect((await A.positionOf(null, "rail-a", "USD")).availableMinor).toBe(5000);
     expect((await A.positionOf(null, "rail-b", "USD")).availableMinor).toBe(1000);
     // The 5000 at rail-a is not spendable at rail-b, even though both are USD and both belong to Ada.

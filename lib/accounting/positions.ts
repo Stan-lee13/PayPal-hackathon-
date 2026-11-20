@@ -238,10 +238,16 @@ export async function positionsFor(owner: string | null): Promise<Position[]> {
     // Stored negative (money taken); reported positive so callers never add a cost to liquidity.
     fees: sql<number>`coalesce(sum(-${positionEntries.deltaMinor}) filter (where ${positionEntries.bucket} = 'fee'), 0)::int`,
     // Money recorded without the provider's account identity, and with no separate proof for this exact
-    // movement. It stays visible in the position, and it never counts as liquidity.
-    unverified: sql<number>`coalesce(sum(${positionEntries.deltaMinor}) filter (where ${positionEntries.bucket} = 'available' and ${positionEntries.externalAccountId} is null and not exists (select 1 from ${positionAttributions} pa where pa.position_entry_id = ${positionEntries.id})), 0)::int`,
-    entries: sql<number>`count(*)::int`,
-  }).from(positionEntries).where(owner ? eq(positionEntries.owner, owner) : sql`true`).groupBy(positionEntries.rail, positionEntries.currency, positionEntries.custody);
+    // movement. It stays visible in the position, and it never counts as liquidity. The proof is joined rather
+    // than tested with a correlated `not exists`: inside an aggregate FILTER a correlated subquery is not
+    // evaluated per row the way this needs, and one attribution would silently cover every movement.
+    unverified: sql<number>`coalesce(sum(${positionEntries.deltaMinor}) filter (where ${positionEntries.bucket} = 'available' and ${positionEntries.externalAccountId} is null and ${positionAttributions.id} is null), 0)::int`,
+    entries: sql<number>`count(distinct ${positionEntries.id})::int`,
+  }).from(positionEntries)
+    // At most one attribution per movement (unique index), so this join neither multiplies rows nor changes a sum.
+    .leftJoin(positionAttributions, eq(positionAttributions.positionEntryId, positionEntries.id))
+    .where(owner ? eq(positionEntries.owner, owner) : sql`true`)
+    .groupBy(positionEntries.rail, positionEntries.currency, positionEntries.custody);
   return rows.map((r) => ({
     rail: r.rail, currency: r.currency, custody: r.custody,
     availableMinor: r.available, pendingMinor: r.pending, feesMinor: r.fees, unverifiedMinor: r.unverified,
