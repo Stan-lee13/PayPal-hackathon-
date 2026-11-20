@@ -22,7 +22,10 @@
     "auditor": "tsx scripts/auditor.ts",
     "sdk:build": "node sdk/build.mjs",
     "sdk:pack": "npm pack ./sdk --pack-destination ./sdk",
-    "example": "node sdk/build.mjs && node examples/hire-an-agent/index.mjs"
+    "example": "node sdk/build.mjs && node examples/hire-an-agent/index.mjs",
+    "identity:inventory": "tsx scripts/identity-inventory.ts",
+    "identity:migrate": "tsx scripts/identity-migrate.ts",
+    "docs:routes": "tsx scripts/route-matrix.ts"
   },
   "engines": {
     "node": ">=20.11"
