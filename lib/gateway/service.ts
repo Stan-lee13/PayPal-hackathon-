@@ -939,8 +939,16 @@ async function undoDeadPayout(s: Spend, itemStatus: string, error: string | null
   return u;
 }
 
-/** Ask PayPal where a pending payout is. */
-export async function syncSpend(spendId: string): Promise<Spend> {
+/**
+ * Ask the provider where a payout is.
+ *
+ * `rereadFinal` exists because a delivered payout can still come back: an item reported SUCCESS is later returned,
+ * blocked or refunded, and the provider's event names a payment this gateway already recorded as PAID. Without a
+ * re-read that event changes nothing, so a webhook (or a feed pull) for a finalized payment is applied with
+ * `rereadFinal: true` and only ever *undoes* a delivery the provider itself no longer stands behind. It is not set
+ * by the page poll: a routine status check of a delivered payment must not call the provider on every view.
+ */
+export async function syncSpend(spendId: string, opts: { rereadFinal?: boolean } = {}): Promise<Spend> {
   const db = getDb();
   const s = await db.query.spends.findFirst({ where: eq(spends.id, spendId) });
   if (!s) throw new UserFacingError("No such spend.", 404);
@@ -955,7 +963,9 @@ export async function syncSpend(spendId: string): Promise<Spend> {
       return refundOrPark(live, root, "The payout did not go through", null, { lease });
     });
   }
-  if (!s.payoutBatchId || !["PAYOUT_PENDING", "UNCLAIMED"].includes(s.status)) return s;
+  if (!s.payoutBatchId) return s;
+  const rereadingFinal = Boolean(opts.rereadFinal && s.status === "PAID");
+  if (!rereadingFinal && !["PAYOUT_PENDING", "UNCLAIMED"].includes(s.status)) return s;
   const r = rail();
   const po = await r.payouts.read(railRef(r.id, "payout", s.payoutBatchId)).catch(() => null);
   if (!po) return s;
@@ -967,6 +977,9 @@ export async function syncSpend(spendId: string): Promise<Spend> {
     facts: po, batchRef: s.payoutBatchId,
   });
   if (!attribution.ok) {
+    // A re-read of a finalized payment that does not validate changes nothing and says nothing: the provider's
+    // answer was not evidence about this payment, and the delivery it recorded stands.
+    if (rereadingFinal) return s;
     await trail((await db.query.roots.findFirst({ where: eq(roots.id, s.rootId) }))!, "paypal", attribution.code === "unknown_status" ? "payout.status_unrecognized" : "payout.item_unresolved", "INFO", s.payoutBatchId, { spend: s.id, batchStatus: po.batchStatus, problem: attribution.problem, code: attribution.code });
     return s;
   }

@@ -71,9 +71,13 @@ d("settlement recovery concurrency (real server, multiple connections)", async (
   it("three concurrent readers of a payout that came back refund once and post one return", async () => {
     const s = await paidOnce();
     rail.setPayoutStatus(s.payoutBatchId!, "FAILED");
-    const results = await Promise.all([G.syncSpend(s.id), G.syncSpend(s.id), G.syncSpend(s.id)]);
-    // Every arrival reports the same final state, and only one of them moved it there.
-    expect(results.map((r) => r.status)).toEqual(["FAILED", "FAILED", "FAILED"]);
+    // `rereadFinal` is how the provider's own event reaches a payment already recorded as delivered: without it a
+    // sync of a PAID payment is deliberately a no-op, so a payout that came back after delivery would be missed.
+    const results = await Promise.all(Array.from({ length: 3 }, () => G.syncSpend(s.id, { rereadFinal: true })));
+    // One arrival decides; an arrival that finds the lease taken reports the state it read and changes nothing (the
+    // decision may not have committed yet, and it must not make a second one). What must hold is that exactly one
+    // refund left, exactly one success line was written, and the payment ends FAILED.
+    expect(results.some((r) => r.status === "FAILED")).toBe(true);
     expect(rail.refundCount(s.id)).toBe(1);
     const kinds = (await positions()).map((p) => p.kind).sort();
     expect(kinds).toEqual(["capture", "payout", "payout_return", "refund"]);
@@ -93,14 +97,14 @@ d("settlement recovery concurrency (real server, multiple connections)", async (
     });
     await sleep(60);
     expect(held).toBe(true);
-    const meanwhile = await G.syncSpend(s.id);
+    const meanwhile = await G.syncSpend(s.id, { rereadFinal: true });
     // The lease is held, so this arrival reports the current state and changes nothing.
     expect(meanwhile.status).toBe("PAID");
     expect(rail.refundCount(s.id)).toBe(0);
     expect((await positions()).map((p) => p.kind)).not.toContain("refund");
     await holder;
     // Once the lease is released, the usual path does the work exactly once.
-    const after = await G.syncSpend(s.id);
+    const after = await G.syncSpend(s.id, { rereadFinal: true });
     expect(after.status).toBe("FAILED");
     expect(rail.refundCount(s.id)).toBe(1);
   });

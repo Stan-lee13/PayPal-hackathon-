@@ -166,7 +166,10 @@ async function applyFresh(ev: EventBody, type: string, r: Loose): Promise<EventO
 
   if (spend) {
     subject = spend.id;
-    const after = await syncSpend(spend.id);
+    // An event may be the first word that a payout reported as delivered actually came back, so a finalized
+    // payment is re-read here. The provider's own record still has to validate as this payment's; the event
+    // itself decides nothing.
+    const after = await syncSpend(spend.id, { rereadFinal: true });
     outcome = after.status === spend.status ? `payment unchanged (${after.status})` : `payment ${spend.status} → ${after.status}`;
     if (/\.CAPTURE\.(REFUNDED|REVERSED)$/.test(type) && ["PAID", "UNCLAIMED", "PAYOUT_PENDING"].includes(after.status)) {
       // Money came back to the owner outside the gateway (a dispute, a manual refund) while the payee was also paid. A person has to look.
