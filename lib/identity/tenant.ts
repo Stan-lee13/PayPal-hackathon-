@@ -12,7 +12,7 @@
  */
 import { eq } from "drizzle-orm";
 import { getDb, type DB } from "../db";
-import { accounts, principals, roots } from "../db/schema";
+import { principals, roots } from "../db/schema";
 
 /** The database, or an open transaction: both expose the relational `query` API. */
 type Reader = Pick<DB, "query">;
@@ -27,11 +27,5 @@ export async function orgForPrincipal(publicKey: string | null | undefined, db: 
 /** The organization recorded on a root envelope, for the rows that hang under it. */
 export async function orgForRoot(rootId: string, db: Reader = getDb()): Promise<string | null> {
   const row = await db.query.roots.findFirst({ where: eq(roots.id, rootId), columns: { orgId: true } });
-  return row?.orgId ?? null;
-}
-
-/** The organization recorded on an agent's account, for balances, cards and transfers. */
-export async function orgForAgent(agent: string, db: Reader = getDb()): Promise<string | null> {
-  const row = await db.query.accounts.findFirst({ where: eq(accounts.agent, agent), columns: { orgId: true } });
   return row?.orgId ?? null;
 }
