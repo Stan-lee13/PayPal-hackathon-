@@ -17,6 +17,7 @@
  */
 import { and, asc, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { getDb, type DB } from "../db";
+import { orgForPrincipal, orgForRoot } from "../identity/tenant";
 import { accounts, blocks, gatewayKeys, ledger, railAccounts, roots, spends, type Account, type BlockRow, type PromiseNote, type Receipt, type Root, type Spend } from "../db/schema";
 import { UserFacingError } from "../errors";
 import { newId } from "../ids";
@@ -129,6 +130,8 @@ export async function registerRoot(a: { chain: E.Envelope; principalName: string
   const db = getDb();
   const { b, caps, hash, existing } = await checkNewRoot(a.chain);
   if (existing) return existing;
+  // The tenant is known before any money moves: the sealing principal's explicit mapping, or null.
+  const orgId = await orgForPrincipal(b.body.issuer);
 
   // The hold: the rail now guarantees the envelope's whole limit, and refuses to capture beyond it.
   const r = rail();
@@ -158,11 +161,11 @@ export async function registerRoot(a: { chain: E.Envelope; principalName: string
   }
   const root = await db.transaction(async (tx) => {
     const [r] = await tx.insert(roots).values({
-      railProvider: rail().id,
+      railProvider: rail().id, orgId,
       id: b.body.id, principal: b.body.issuer, principalName: a.principalName.trim().slice(0, 80) || "Principal", title: a.title.trim().slice(0, 120) || "Envelope",
       currency: caps.currency, limitMinor: caps.limit, paypalOrderId: refId(auth.orderRef), authorizationId: auth.ref.id, authorizationExpiresAt: auth.expiresAt ? new Date(auth.expiresAt) : null,
     }).returning();
-    await tx.insert(blocks).values({ id: b.body.id, rootId: b.body.id, parentId: null, depth: 0, hash, holder: b.body.holder, holderLabel: b.body.holderLabel, caps, raw: b });
+    await tx.insert(blocks).values({ id: b.body.id, rootId: b.body.id, orgId, parentId: null, depth: 0, hash, holder: b.body.holder, holderLabel: b.body.holderLabel, caps, raw: b });
     return r!;
   }).catch(async (e) => {
     // The hold exists at the rail but could not be recorded: let it go, so it is not left on the owner's funding source.
@@ -185,13 +188,14 @@ export async function registerRoot(a: { chain: E.Envelope; principalName: string
 async function upsertBlocks(tx: Tx, chain: E.Envelope): Promise<E.Violation[]> {
   const out: E.Violation[] = [];
   const rootId = chain[0]!.body.id;
+  const orgId = await orgForRoot(rootId, tx);
   for (let i = 0; i < chain.length; i++) {
     const b = chain[i]!;
     const hash = await E.blockHash(b);
     const row = await tx.query.blocks.findFirst({ where: eq(blocks.id, b.body.id) });
     if (row) { if (row.hash !== hash) out.push({ code: "FORKED_BLOCK", at: b.body.id, detail: "a different block with this id is already on record" }); continue; }
     if (i === 0) { out.push({ code: "UNKNOWN_ROOT", at: b.body.id, detail: "this root envelope was never sealed with the gateway" }); break; }
-    await tx.insert(blocks).values({ id: b.body.id, rootId, parentId: chain[i - 1]!.body.id, depth: i, hash, holder: b.body.holder, holderLabel: b.body.holderLabel, caps: b.body.caps, raw: b });
+    await tx.insert(blocks).values({ id: b.body.id, rootId, orgId, parentId: chain[i - 1]!.body.id, depth: i, hash, holder: b.body.holder, holderLabel: b.body.holderLabel, caps: b.body.caps, raw: b });
   }
   return out;
 }
@@ -326,10 +330,10 @@ async function admit(kind: "spend" | "promise", signed: E.SignedSpend | E.Signed
     const promiseExpiresAt = kind === "promise" && Number.isSafeInteger((r as E.PromiseRequest).ttl)
       ? new Date(Math.min(Date.now() + (r as E.PromiseRequest).ttl * 1000, Date.parse(String(leaf.caps?.notAfter)) || Date.now())) : null;
     if (reasons.length) {
-      const [row] = await tx.insert(spends).values({ id: newId(kind === "promise" ? "pr" : "sp"), railProvider: rail().id, ...base, payeeAgent, payoutTo, promiseExpiresAt, status: "DENIED", reasons }).returning();
+      const [row] = await tx.insert(spends).values({ id: newId(kind === "promise" ? "pr" : "sp"), railProvider: rail().id, orgId: live.orgId, ...base, payeeAgent, payoutTo, promiseExpiresAt, status: "DENIED", reasons }).returning();
       return { row: row!, fresh: true, lapsed };
     }
-    const [row] = await tx.insert(spends).values({ id: newId(kind === "promise" ? "pr" : "sp"), railProvider: rail().id, ...base, payeeAgent, payoutTo, promiseExpiresAt, status: kind === "promise" ? "PROMISED" : "RESERVED" }).returning();
+    const [row] = await tx.insert(spends).values({ id: newId(kind === "promise" ? "pr" : "sp"), railProvider: rail().id, orgId: live.orgId, ...base, payeeAgent, payoutTo, promiseExpiresAt, status: kind === "promise" ? "PROMISED" : "RESERVED" }).returning();
     await tx.update(blocks).set({ reservedMinor: sql`${blocks.reservedMinor} + ${r.amount}` }).where(inArray(blocks.id, stateless.chain.ids));
     return { row: row!, fresh: true, lapsed };
   });
@@ -684,7 +688,7 @@ async function settleOnce(spendId: string, lease: SettlementLease): Promise<Spen
       const after = a.balanceMinor + s.amountMinor;
       await tx.update(accounts).set({ balanceMinor: after }).where(eq(accounts.agent, a.agent));
       // The claim keeps its provenance: this balance was funded by the rail that captured the money.
-      const [row] = await tx.insert(ledger).values({ agent: a.agent, rail: s.railProvider, currency: s.currency, kind: "income", ref: s.id, deltaMinor: s.amountMinor, balanceAfterMinor: after, counterparty: s.leafLabel, memo: s.memo || s.purpose }).returning();
+      const [row] = await tx.insert(ledger).values({ agent: a.agent, orgId: a.orgId, rail: s.railProvider, currency: s.currency, kind: "income", ref: s.id, deltaMinor: s.amountMinor, balanceAfterMinor: after, counterparty: s.leafLabel, memo: s.memo || s.purpose }).returning();
       return row!;
     });
     if (s.payoutStatus !== HELD) { await db.update(spends).set({ payoutStatus: HELD }).where(eq(spends.id, s.id)); s = { ...s, payoutStatus: HELD }; }
@@ -1223,7 +1227,8 @@ export async function openAccount(signed: E.SignedAccount): Promise<Account> {
   // The owner answers for the account, caps it and can freeze it: an agent must not be able to swap in an owner key of its own.
   if (clash && clash.owner !== b.owner) throw new UserFacingError("This account already has an owner. Only that owner can co-sign a change to it.", 409);
   if (clash && Date.parse(clash.signed.body.at) >= Date.parse(b.at)) return clash;
-  const values = { account, label: b.label, owner: b.owner, ownerName: b.ownerName || "Owner", settleTo: b.settleTo, signed, mode: b.mode === "hold" ? "hold" as const : "settle" as const, perPaymentMinor: b.perPayment ?? null, perDayMinor: b.perDay ?? null };
+  // An account is filed under the organization its owner is mapped to; a later correction moves it with the mapping.
+  const values = { account, orgId: await orgForPrincipal(b.owner), label: b.label, owner: b.owner, ownerName: b.ownerName || "Owner", settleTo: b.settleTo, signed, mode: b.mode === "hold" ? "hold" as const : "settle" as const, perPaymentMinor: b.perPayment ?? null, perDayMinor: b.perDay ?? null };
   const [row] = await db.transaction(async (tx) => {
     await lockAccount(tx, b.agent);
     const now = await tx.query.accounts.findFirst({ where: eq(accounts.agent, b.agent) });

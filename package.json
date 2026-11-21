@@ -25,6 +25,8 @@
     "example": "node sdk/build.mjs && node examples/hire-an-agent/index.mjs",
     "identity:inventory": "tsx scripts/identity-inventory.ts",
     "identity:migrate": "tsx scripts/identity-migrate.ts",
+    "tenant:inventory": "tsx scripts/tenant-inventory.ts",
+    "tenant:backfill": "tsx scripts/tenant-backfill.ts",
     "docs:routes": "tsx scripts/route-matrix.ts"
   },
   "engines": {

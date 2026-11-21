@@ -119,7 +119,7 @@ export async function transfer(signed: E.SignedTransfer): Promise<TransferResult
     if (why.length === 0) why.push(...(await ownerRules(tx, live, r.amount, r.kind === "pay")));
     const id = newId("tr");
     if (why.length) {
-      const [row] = await tx.insert(transfers).values({ id, railProvider: rail().id, ...base, status: "DENIED", reasons: why }).returning();
+      const [row] = await tx.insert(transfers).values({ id, railProvider: rail().id, orgId: live.orgId, ...base, status: "DENIED", reasons: why }).returning();
       return { row: row!, fresh: true, balance: live.balanceMinor };
     }
     const after = live.balanceMinor - r.amount;
@@ -127,13 +127,13 @@ export async function transfer(signed: E.SignedTransfer): Promise<TransferResult
     // it does not move it between providers.
     const sourceRail = await fundedRail(tx, live.agent, r.currency);
     await tx.update(accounts).set({ balanceMinor: after }).where(eq(accounts.agent, live.agent));
-    await tx.insert(ledger).values({ agent: live.agent, rail: sourceRail, currency: r.currency, kind: book ? "transfer_out" : r.kind === "withdraw" ? "withdrawal" : "payout", ref: id, deltaMinor: -r.amount, balanceAfterMinor: after, counterparty: book ? to!.label : payoutTo, memo: base.memo || base.purpose });
+    await tx.insert(ledger).values({ agent: live.agent, orgId: live.orgId, rail: sourceRail, currency: r.currency, kind: book ? "transfer_out" : r.kind === "withdraw" ? "withdrawal" : "payout", ref: id, deltaMinor: -r.amount, balanceAfterMinor: after, counterparty: book ? to!.label : payoutTo, memo: base.memo || base.purpose });
     if (book) {
       const dest = (await tx.query.accounts.findFirst({ where: eq(accounts.agent, to!.agent) }))!;
       await tx.update(accounts).set({ balanceMinor: dest.balanceMinor + r.amount }).where(eq(accounts.agent, dest.agent));
-      await tx.insert(ledger).values({ agent: dest.agent, rail: sourceRail, currency: r.currency, kind: "transfer_in", ref: id, deltaMinor: r.amount, balanceAfterMinor: dest.balanceMinor + r.amount, counterparty: live.label, memo: base.memo || base.purpose });
+      await tx.insert(ledger).values({ agent: dest.agent, orgId: dest.orgId, rail: sourceRail, currency: r.currency, kind: "transfer_in", ref: id, deltaMinor: r.amount, balanceAfterMinor: dest.balanceMinor + r.amount, counterparty: live.label, memo: base.memo || base.purpose });
     }
-    const [row] = await tx.insert(transfers).values({ id, railProvider: rail().id, ...base, status: book ? "BOOKED" : "SENDING" }).returning();
+    const [row] = await tx.insert(transfers).values({ id, railProvider: rail().id, orgId: live.orgId, ...base, status: book ? "BOOKED" : "SENDING" }).returning();
     return { row: row!, fresh: true, balance: after };
   });
 
@@ -215,7 +215,7 @@ async function reverse(t: Transfer, reason: E.Violation, payoutStatus: string | 
     const [u] = await tx.update(transfers).set({ status: "FAILED", reasons: [reason], ...(payoutStatus ? { payoutStatus } : {}) }).where(and(eq(transfers.id, t.id), inArray(transfers.status, ["SENDING", "PAYOUT_PENDING", "UNCLAIMED", "PAID"]))).returning();
     if (!u) return (await tx.query.transfers.findFirst({ where: eq(transfers.id, t.id) }))!;
     const live = (await tx.query.accounts.findFirst({ where: eq(accounts.agent, t.fromAgent) }))!;
-    const [row] = await tx.insert(ledger).values({ agent: live.agent, rail: t.railProvider, currency: t.currency, kind: "reversal", ref: t.id, deltaMinor: t.amountMinor, balanceAfterMinor: live.balanceMinor + t.amountMinor, counterparty: t.payoutTo, memo: "the payout did not go through" }).onConflictDoNothing().returning();
+    const [row] = await tx.insert(ledger).values({ agent: live.agent, orgId: live.orgId, rail: t.railProvider, currency: t.currency, kind: "reversal", ref: t.id, deltaMinor: t.amountMinor, balanceAfterMinor: live.balanceMinor + t.amountMinor, counterparty: t.payoutTo, memo: "the payout did not go through" }).onConflictDoNothing().returning();
     if (row) {
       await tx.update(accounts).set({ balanceMinor: live.balanceMinor + t.amountMinor }).where(eq(accounts.agent, live.agent));
       if (payoutLeft) await postPayoutReturn({ owner: (await tx.query.accounts.findFirst({ where: eq(accounts.agent, live.agent) }))!.owner, rail: t.railProvider, currency: t.currency, externalAccountId: accountId, amountMinor: t.amountMinor, ref: t.id, memo: `payout returned (${payoutStatus ?? "unknown"})` }, tx);
@@ -307,6 +307,7 @@ export async function issueCard(signed: E.SignedCard): Promise<Card> {
   if ((live[0]?.n ?? 0) >= MAX_LIVE_CARDS) throw new UserFacingError("This account has too many live cards. Cancel one first.", 429);
   const h = (await E.sha256(E.canonical(signed))).slice(0, 14).toUpperCase();
   const [row] = await db.insert(cards).values({
+    orgId: holder.orgId,
     id: b.id, number: `XN${h.slice(0, 2)} ${h.slice(2, 6)} ${h.slice(6, 10)} ${h.slice(10, 14)}`, holder: b.holder, label: b.label, merchantAgent: merchant.agent,
     perChargeMinor: b.perCharge, maxCharges: b.maxCharges, everySeconds: b.every, notAfter: new Date(b.notAfter), signed,
   }).onConflictDoNothing().returning();
@@ -356,21 +357,21 @@ export async function charge(signed: E.SignedCharge): Promise<TransferResult & {
     }
     const id = newId("ch");
     if (why.length) {
-      const [row] = await tx.insert(transfers).values({ id, railProvider: rail().id, ...base, status: "DENIED", reasons: why }).returning();
+      const [row] = await tx.insert(transfers).values({ id, railProvider: rail().id, orgId: live.orgId, ...base, status: "DENIED", reasons: why }).returning();
       return { row: row!, fresh: true, balance: live.balanceMinor };
     }
     const after = live.balanceMinor - amount;
     const memo = `Card · ${c.label}${base.memo ? ` · ${base.memo}` : ""}`.slice(0, 200);
     const sourceRail = await fundedRail(tx, live.agent, r.currency);
     await tx.update(accounts).set({ balanceMinor: after }).where(eq(accounts.agent, live.agent));
-    await tx.insert(ledger).values({ agent: live.agent, rail: sourceRail, currency: r.currency, kind: book ? "transfer_out" : "payout", ref: id, deltaMinor: -amount, balanceAfterMinor: after, counterparty: book ? to.label : to.settleTo, memo });
+    await tx.insert(ledger).values({ agent: live.agent, orgId: live.orgId, rail: sourceRail, currency: r.currency, kind: book ? "transfer_out" : "payout", ref: id, deltaMinor: -amount, balanceAfterMinor: after, counterparty: book ? to.label : to.settleTo, memo });
     if (book) {
       const dest = (await tx.query.accounts.findFirst({ where: eq(accounts.agent, to.agent) }))!;
       await tx.update(accounts).set({ balanceMinor: dest.balanceMinor + amount }).where(eq(accounts.agent, dest.agent));
-      await tx.insert(ledger).values({ agent: dest.agent, rail: sourceRail, currency: r.currency, kind: "transfer_in", ref: id, deltaMinor: amount, balanceAfterMinor: dest.balanceMinor + amount, counterparty: live.label, memo });
+      await tx.insert(ledger).values({ agent: dest.agent, orgId: dest.orgId, rail: sourceRail, currency: r.currency, kind: "transfer_in", ref: id, deltaMinor: amount, balanceAfterMinor: dest.balanceMinor + amount, counterparty: live.label, memo });
     }
     await tx.update(cards).set({ charges: c.charges + 1, chargedMinor: c.chargedMinor + amount, lastChargeAt: new Date(now) }).where(eq(cards.id, c.id));
-    const [row] = await tx.insert(transfers).values({ id, railProvider: rail().id, ...base, status: book ? "BOOKED" : "SENDING" }).returning();
+    const [row] = await tx.insert(transfers).values({ id, railProvider: rail().id, orgId: live.orgId, ...base, status: book ? "BOOKED" : "SENDING" }).returning();
     return { row: row!, fresh: true, balance: after };
   });
   const done = await finish(from, to, out);
@@ -494,7 +495,7 @@ export async function refund(signed: E.SignedRefund): Promise<RefundResult> {
     if (s.amountMinor > live.balanceMinor) no.push({ code: "INSUFFICIENT_BALANCE", at: null, detail: `the balance is ${E.money(live.balanceMinor)}; this payment was ${E.money(s.amountMinor)}` });
     if (no.length) return { refused: no, balance: live.balanceMinor };
     const after = live.balanceMinor - s.amountMinor;
-    await tx.insert(ledger).values({ agent: live.agent, rail: s.railProvider, currency: s.currency, kind: "refund", ref: s.id, deltaMinor: -s.amountMinor, balanceAfterMinor: after, counterparty: s.leafLabel, memo: r.memo || "refund" });
+    await tx.insert(ledger).values({ agent: live.agent, orgId: live.orgId, rail: s.railProvider, currency: s.currency, kind: "refund", ref: s.id, deltaMinor: -s.amountMinor, balanceAfterMinor: after, counterparty: s.leafLabel, memo: r.memo || "refund" });
     await tx.update(accounts).set({ balanceMinor: after }).where(eq(accounts.agent, live.agent));
     return { refused: null, balance: after };
   });
@@ -517,7 +518,7 @@ async function finishRefund(s: Spend, acct: Account, memo: string): Promise<Refu
       const balance = await db.transaction(async (tx) => {
         await lockAccount(tx, acct.agent);
         const live = (await tx.query.accounts.findFirst({ where: eq(accounts.agent, acct.agent) }))!;
-        const [row] = await tx.insert(ledger).values({ agent: live.agent, rail: s.railProvider, currency: s.currency, kind: "refund_reversal", ref: s.id, deltaMinor: s.amountMinor, balanceAfterMinor: live.balanceMinor + s.amountMinor, counterparty: s.leafLabel, memo: "the rail refused the refund" }).onConflictDoNothing().returning();
+        const [row] = await tx.insert(ledger).values({ agent: live.agent, orgId: live.orgId, rail: s.railProvider, currency: s.currency, kind: "refund_reversal", ref: s.id, deltaMinor: s.amountMinor, balanceAfterMinor: live.balanceMinor + s.amountMinor, counterparty: s.leafLabel, memo: "the rail refused the refund" }).onConflictDoNothing().returning();
         if (row) await tx.update(accounts).set({ balanceMinor: live.balanceMinor + s.amountMinor }).where(eq(accounts.agent, live.agent));
         return live.balanceMinor + (row ? s.amountMinor : 0);
       });

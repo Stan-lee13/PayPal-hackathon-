@@ -1,6 +1,7 @@
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import type { DB } from "../db";
 import { auditLog } from "../db/schema";
+import { orgForPrincipal, orgForRoot } from "../identity/tenant";
 import { entryHash, genesisHash } from "../ledger/chain";
 
 type Actor = "principal" | "agent" | "gateway" | "paypal" | "ai";
@@ -27,6 +28,9 @@ export async function audit(
     const createdAt = new Date();
     const detail = JSON.parse(JSON.stringify(e.detail ?? {})) as Record<string, unknown>;
     const hash = entryHash({ seq, scopeId: e.scopeId, subjectId, actor: e.actor, action: e.action, ref: e.ref ?? null, outcome: e.outcome, detail, createdAt: createdAt.toISOString(), prevHash });
-    await tx.insert(auditLog).values({ scopeId: e.scopeId, subjectId, actor: e.actor, action: e.action, ref: e.ref ?? null, outcome: e.outcome, detail, createdAt, seq, prevHash, hash });
+    // Which organization this entry is about: the envelope's, else the principal's. Null when neither is mapped.
+    // It is recorded beside the chain and never enters the hash, so adding it cannot change a past entry.
+    const orgId = (subjectId ? await orgForRoot(subjectId, tx) : null) ?? (await orgForPrincipal(e.scopeId, tx));
+    await tx.insert(auditLog).values({ scopeId: e.scopeId, subjectId, orgId, actor: e.actor, action: e.action, ref: e.ref ?? null, outcome: e.outcome, detail, createdAt, seq, prevHash, hash });
   });
 }

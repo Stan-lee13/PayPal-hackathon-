@@ -96,7 +96,7 @@ try {
   })();
 
   await applyFolder(root);
-  ok("applied 0010 and 0011 on top of the existing database");
+  ok("applied every later migration on top of the existing database");
 
   const s = postgres(url.toString(), { max: 1, onnotice: () => {} });
   try {
@@ -132,6 +132,52 @@ try {
 
     const idx = (await s`select indexname from pg_indexes where tablename = 'position_entries'`).map((r) => r.indexname);
     idx.includes("position_entries_once") ? ok("position_entries is unique per (rail, currency, bucket, kind, ref)") : fail("the position_entries idempotency index is missing");
+
+    // ---- Milestone 4.2: the organization columns exist, and no historical row was attributed by guessing.
+    const orgTables = ["roots", "blocks", "spends", "accounts", "ledger", "cards", "transfers", "audit_log"];
+    const withOrg = new Set((await s`select table_name from information_schema.columns where table_schema = 'public' and column_name = 'org_id'`).map((r) => r.table_name));
+    const missingOrg = orgTables.filter((t) => !withOrg.has(t));
+    missingOrg.length === 0 ? ok(`org_id exists on ${orgTables.join(", ")}`) : fail(`org_id is missing on ${missingOrg.join(", ")}`);
+
+    // Identity tables are org-bound by design (a membership without an organization is not a membership); only the
+    // financial tables may be unattributed, because their owner was recorded before any mapping existed.
+    const nullable = (await s`select table_name, is_nullable from information_schema.columns where table_schema = 'public' and column_name = 'org_id' and table_name in ('roots', 'blocks', 'spends', 'accounts', 'ledger', 'cards', 'transfers', 'audit_log')`);
+    const notNullable = nullable.filter((c) => c.is_nullable === "NO").map((c) => c.table_name);
+    notNullable.length === 0 ? ok("org_id is nullable everywhere: an unattributed legacy row is never invented") : fail(`org_id is NOT NULL on ${notNullable.join(", ")}, which an unmapped legacy row cannot satisfy`);
+
+    // There is no organization and no mapping in a 0009 database, so every financial row must still be unattributed.
+    const guessed = (await s`
+      select (select count(*) from roots where org_id is not null)
+           + (select count(*) from blocks where org_id is not null)
+           + (select count(*) from spends where org_id is not null)
+           + (select count(*) from accounts where org_id is not null)
+           + (select count(*) from ledger where org_id is not null)
+           + (select count(*) from cards where org_id is not null)
+           + (select count(*) from transfers where org_id is not null)
+           + (select count(*) from audit_log where org_id is not null) as n
+    `)[0].n;
+    Number(guessed) === 0 ? ok("the upgrade attributed nothing: no organization existed to attribute to") : fail(`${guessed} historical rows were attributed without a mapping`);
+
+    // A mapping is what attributes a legacy row, and the composite key refuses a block filed under another organization.
+    await s.unsafe(`
+      insert into organizations (id, name) values ('org_legacy', 'Legacy Co');
+      insert into principals (id, org_id, public_key, label) values ('prn_legacy', 'org_legacy', 'pk_owner', 'Ada');
+      update roots set org_id = 'org_legacy' where principal = 'pk_owner';
+      update blocks set org_id = r.org_id from roots r where r.id = blocks.root_id and blocks.org_id is null;
+      update spends set org_id = r.org_id from roots r where r.id = spends.root_id and spends.org_id is null;
+      update accounts set org_id = 'org_legacy' where owner = 'pk_owner';
+      update ledger set org_id = a.org_id from accounts a where a.agent = ledger.agent and ledger.org_id is null;
+      update transfers set org_id = a.org_id from accounts a where a.agent = transfers.from_agent and transfers.org_id is null;
+    `);
+    const attributed = (await s`select org_id from spends where id = 'sp_legacy'`)[0].org_id;
+    attributed === "org_legacy" ? ok("a legacy payment is attributed through its envelope's explicit mapping") : fail(`the legacy payment was not attributed: ${attributed}`);
+    const legacyAmount = (await s`select amount_minor, currency from spends where id = 'sp_legacy'`)[0];
+    legacyAmount.amount_minor === 2500 && legacyAmount.currency === "USD" ? ok("attributing a legacy payment did not change its amount") : fail(`the legacy payment changed: ${JSON.stringify(legacyAmount)}`);
+
+    await s`insert into organizations (id, name) values ('org_other', 'Other Co')`;
+    let refused = false;
+    try { await s`update blocks set org_id = 'org_other' where id = 'root_legacy'`; } catch { refused = true; }
+    refused ? ok("a block cannot be filed under another organization than its envelope's") : fail("a block accepted an organization that is not its root's");
   } finally { await s.end(); }
 } catch (e) {
   fail(e instanceof Error ? e.stack ?? e.message : String(e));

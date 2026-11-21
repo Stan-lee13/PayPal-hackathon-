@@ -1,8 +1,9 @@
 # Milestone 4.1 — database tenancy inventory
 
-Every table in `lib/db/schema.ts`, classified for the tenant-partitioning phase. **No table in this list has an
-`org_id` column yet, and no RLS policy is enabled.** This milestone adds identity tables (migration 0014) and one
-verification table (0013); it does not begin partitioning.
+Every table in `lib/db/schema.ts`, classified for the tenant-partitioning phase. This inventory was written for
+Milestone 4.1; **Milestone 4.2 has since added `org_id` to the org-owned and org-associated financial tables**
+(migration `0015_tenant_partitioning.sql`, see `MILESTONE_4_TENANT_PARTITIONING.md`). `org_id` is still nullable,
+and **no RLS policy is enabled**, so nothing here claims isolation today.
 
 Classification legend:
 
@@ -59,8 +60,15 @@ Classification legend:
 
 ## What the next phase must do before claiming isolation
 
-1. Add nullable `org_id` to every org-owned/associated table and backfill from the parent chain.
-2. Assert zero nulls, then set `NOT NULL` and add composite foreign keys.
-3. Replace global unique indexes with tenant-scoped ones where the id is not globally unique.
+1. ~~Add nullable `org_id` to every org-owned/associated table and backfill from the parent chain.~~ **Done in
+   4.2** for `roots`, `blocks`, `spends`, `accounts`, `ledger`, `cards`, `transfers` and `audit_log`.
+2. ~~Add composite foreign keys.~~ **Done in 4.2**, so a block, payment, balance, card or transfer cannot be
+   filed under another organization's parent. Still to do: `NOT NULL`, after
+   `npm run tenant:inventory -- --fail-unattributed` is green on a real deployment.
+3. ~~Replace global unique indexes with tenant-scoped ones where the id is not globally unique.~~ **Decided
+   against, deliberately:** the ids in question are globally unique, and a per-tenant key would weaken
+   idempotency. Revisit only if a spend id, agent key or provider event id becomes tenant-local.
 4. Enable **and force** RLS, with a transaction-local `envelope.org_id`, and run the app as a non-superuser role.
-5. Prove it with pooled-connection leak tests, cross-tenant 404s, and an upgrade from a seeded 4.1 database.
+   This cannot happen before the reads are organization-scoped: a policy over unscoped reads breaks them.
+5. Prove it with pooled-connection leak tests, cross-tenant 404s, and an upgrade from a seeded 4.1 database. The
+   upgrade half already runs in `npm run db:upgrade-check`.

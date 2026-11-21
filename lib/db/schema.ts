@@ -5,7 +5,7 @@
  * Money is always integer minor units.
  */
 import { sql } from "drizzle-orm";
-import { bigint, bigserial, boolean, index, integer, jsonb, pgTable, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
+import { bigint, bigserial, boolean, foreignKey, index, integer, jsonb, pgTable, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
 import type { Block, Caps, SignedAccount, SignedCard, SignedCharge, SignedPromise, SignedSpend, SignedTransfer, Violation } from "../envelope/core";
 
 const ts = (name: string) => timestamp(name, { withTimezone: true, mode: "date" });
@@ -16,6 +16,12 @@ export const roots = pgTable("roots", {
   id: text("id").primaryKey(),
   /** Public key of the human principal who sealed it. */
   principal: text("principal").notNull(),
+  /**
+   * The organization this envelope's money belongs to (Milestone 4.2). Null means *not attributed*: no explicit
+   * `principals` mapping covers the sealing principal. Nothing guesses an owner for a financial record, and no
+   * organization is created or consolidated to fill it in; the row is reported as unattributed instead.
+   */
+  orgId: text("org_id").references(() => organizations.id),
   principalName: text("principal_name").notNull(),
   title: text("title").notNull(),
   currency: text("currency").notNull(),
@@ -39,12 +45,14 @@ export const roots = pgTable("roots", {
   closedAt: ts("closed_at"),
   closeReason: text("close_reason"),
   createdAt: ts("created_at").notNull().defaultNow(),
-}, (t) => [index("roots_principal").on(t.principal, t.createdAt)]);
+}, (t) => [index("roots_principal").on(t.principal, t.createdAt), index("roots_org").on(t.orgId, t.createdAt), uniqueIndex("roots_org_id_id").on(t.orgId, t.id)]);
 
 /** Every block the gateway has seen (announced at split time or first presented with a spend). */
 export const blocks = pgTable("blocks", {
   id: text("id").primaryKey(),
   rootId: text("root_id").notNull().references(() => roots.id),
+  /** Denormalised from the root so a block can never be attached to another organization's envelope. */
+  orgId: text("org_id").references(() => organizations.id),
   parentId: text("parent_id"),
   depth: integer("depth").notNull(),
   /** SHA-256 of the signed block: a second block with the same id but different content is a forgery. */
@@ -60,7 +68,11 @@ export const blocks = pgTable("blocks", {
   revokedAt: ts("revoked_at"),
   revokedBy: text("revoked_by"),
   firstSeenAt: ts("first_seen_at").notNull().defaultNow(),
-}, (t) => [index("blocks_root").on(t.rootId, t.depth)]);
+}, (t) => [
+  index("blocks_root").on(t.rootId, t.depth),
+  // The organization must be the root's own: a block cannot be filed under one organization and belong to another's envelope.
+  foreignKey({ name: "blocks_org_root_fk", columns: [t.orgId, t.rootId], foreignColumns: [roots.orgId, roots.id] }),
+]);
 
 export const SPEND_STATES = ["DENIED", "PROMISED", "LAPSED", "RESERVED", "CAPTURED", "PAID", "PAYOUT_PENDING", "UNCLAIMED", "FAILED", "REFUND_DUE"] as const;
 export type SpendState = (typeof SPEND_STATES)[number];
@@ -155,6 +167,8 @@ export type ReceiptV2 = {
 export const spends = pgTable("spends", {
   id: text("id").primaryKey(),
   rootId: text("root_id").notNull(),
+  /** The organization whose money this payment moves, taken from its root envelope. */
+  orgId: text("org_id").references(() => organizations.id),
   leafId: text("leaf_id").notNull(),
   leafLabel: text("leaf_label").notNull(),
   chainIds: jsonb("chain_ids").$type<string[]>().notNull(),
@@ -204,7 +218,10 @@ export const spends = pgTable("spends", {
   delivery: jsonb("delivery").$type<{ by: string; work: string; note: string; at: string; sig: string; /** The signed acceptance itself, so anyone can check the acceptor's signature. */ request?: unknown }>(),
   createdAt: ts("created_at").notNull().defaultNow(),
   settledAt: ts("settled_at"),
-}, (t) => [index("spends_root").on(t.rootId, t.createdAt), index("spends_payee_agent").on(t.payeeAgent, t.createdAt)]);
+}, (t) => [
+  index("spends_root").on(t.rootId, t.createdAt), index("spends_payee_agent").on(t.payeeAgent, t.createdAt), index("spends_org").on(t.orgId, t.createdAt),
+  foreignKey({ name: "spends_org_root_fk", columns: [t.orgId, t.rootId], foreignColumns: [roots.orgId, roots.id] }),
+]);
 
 /** What the gateway hands a payee when money has been set aside for it. */
 export type PromiseNote = {
@@ -224,6 +241,8 @@ export type PromiseNote = {
 /** Accounts that can receive: an agent's key, the owner who answers for it, and where its income is settled. */
 export const accounts = pgTable("accounts", {
   agent: text("agent").primaryKey(),
+  /** The organization that answers for this account: the owner's explicit principal mapping. */
+  orgId: text("org_id").references(() => organizations.id),
   /** Readable account number derived from the key; unique so a number always means one agent. */
   account: text("account").notNull().unique(),
   label: text("label").notNull(),
@@ -243,11 +262,13 @@ export const accounts = pgTable("accounts", {
   freezeSignedAt: ts("freeze_signed_at"),
   /** Owner's cap on what may leave in any 24 hours (payments and card charges); null = none. */
   perDayMinor: integer("per_day_minor"),
-});
+}, (t) => [index("accounts_org").on(t.orgId, t.openedAt), uniqueIndex("accounts_org_id_agent").on(t.orgId, t.agent)]);
 
 /** Cards an agent has issued on its balance. The signed card is the authority; the counters are what has been used. */
 export const cards = pgTable("cards", {
   id: text("id").primaryKey(),
+  /** The organization whose balance the card draws on. */
+  orgId: text("org_id").references(() => organizations.id),
   /** A number to show and say aloud. It grants nothing: only the merchant's key can charge the card. */
   number: text("number").notNull(),
   holder: text("holder").notNull(),
@@ -264,7 +285,10 @@ export const cards = pgTable("cards", {
   cancelledAt: ts("cancelled_at"),
   cancelledBy: text("cancelled_by"),
   createdAt: ts("created_at").notNull().defaultNow(),
-}, (t) => [index("cards_holder").on(t.holder, t.createdAt), index("cards_merchant").on(t.merchantAgent, t.createdAt)]);
+}, (t) => [
+  index("cards_holder").on(t.holder, t.createdAt), index("cards_merchant").on(t.merchantAgent, t.createdAt), index("cards_org").on(t.orgId, t.createdAt),
+  foreignKey({ name: "cards_org_holder_fk", columns: [t.orgId, t.holder], foreignColumns: [accounts.orgId, accounts.agent] }),
+]);
 
 /**
  * Every change to a balance, one row each. `(agent, kind, ref)` is unique so a credit or debit can never be applied twice.
@@ -277,6 +301,8 @@ export const cards = pgTable("cards", {
 export const ledger = pgTable("ledger", {
   id: bigserial("id", { mode: "number" }).primaryKey(),
   agent: text("agent").notNull(),
+  /** The organization that owes this balance: taken from the agent's account. */
+  orgId: text("org_id").references(() => organizations.id),
   kind: text("kind", { enum: ["income", "transfer_in", "transfer_out", "payout", "withdrawal", "reversal", "refund", "refund_reversal"] }).notNull(),
   /** The spend or transfer this entry belongs to. */
   ref: text("ref").notNull(),
@@ -289,7 +315,11 @@ export const ledger = pgTable("ledger", {
   counterparty: text("counterparty"),
   memo: text("memo").notNull().default(""),
   createdAt: ts("created_at").notNull().defaultNow(),
-}, (t) => [uniqueIndex("ledger_once").on(t.agent, t.kind, t.ref), index("ledger_agent").on(t.agent, t.id), index("ledger_agent_rail").on(t.agent, t.rail, t.currency)]);
+}, (t) => [
+  uniqueIndex("ledger_once").on(t.agent, t.kind, t.ref), index("ledger_agent").on(t.agent, t.id), index("ledger_agent_rail").on(t.agent, t.rail, t.currency), index("ledger_org").on(t.orgId, t.id),
+  // A balance can only be filed under the organization its account belongs to.
+  foreignKey({ name: "ledger_org_account_fk", columns: [t.orgId, t.agent], foreignColumns: [accounts.orgId, accounts.agent] }),
+]);
 
 /**
  * One provider account this gateway may hold value in, and where that value actually is.
@@ -406,6 +436,8 @@ export type TransferReceipt = {
 export const transfers = pgTable("transfers", {
   id: text("id").primaryKey(),
   fromAgent: text("from_agent").notNull(),
+  /** The organization whose balance was debited. */
+  orgId: text("org_id").references(() => organizations.id),
   kind: text("kind", { enum: ["pay", "withdraw", "charge"] }).notNull(),
   /** Set when a merchant pulled the money through a card. */
   cardId: text("card_id"),
@@ -428,7 +460,10 @@ export const transfers = pgTable("transfers", {
   payoutStatus: text("payout_status"),
   receipt: jsonb("receipt").$type<TransferReceipt>(),
   createdAt: ts("created_at").notNull().defaultNow(),
-}, (t) => [index("transfers_from").on(t.fromAgent, t.createdAt), index("transfers_to").on(t.toAgent, t.createdAt), index("transfers_card").on(t.cardId, t.createdAt)]);
+}, (t) => [
+  index("transfers_from").on(t.fromAgent, t.createdAt), index("transfers_to").on(t.toAgent, t.createdAt), index("transfers_card").on(t.cardId, t.createdAt), index("transfers_org").on(t.orgId, t.createdAt),
+  foreignKey({ name: "transfers_org_from_fk", columns: [t.orgId, t.fromAgent], foreignColumns: [accounts.orgId, accounts.agent] }),
+]);
 
 /** The gateway's own signing key for receipts (generated on first use). */
 export const gatewayKeys = pgTable("gateway_keys", {
@@ -454,6 +489,8 @@ export const auditLog = pgTable("audit_log", {
   id: bigserial("id", { mode: "number" }).primaryKey(),
   scopeId: text("scope_id").notNull(),
   subjectId: text("subject_id"),
+  /** The organization the entry is about, when one can be established. It never affects seq, prev_hash or hash. */
+  orgId: text("org_id").references(() => organizations.id),
   actor: text("actor", { enum: ["principal", "agent", "gateway", "paypal", "ai"] }).notNull(),
   action: text("action").notNull(),
   ref: text("ref"),
@@ -463,7 +500,7 @@ export const auditLog = pgTable("audit_log", {
   seq: integer("seq").notNull(),
   prevHash: text("prev_hash").notNull(),
   hash: text("hash").notNull(),
-}, (t) => [index("audit_subject").on(t.subjectId, t.seq), uniqueIndex("audit_chain_seq").on(t.scopeId, sql`coalesce(${t.subjectId}, '-')`, t.seq)]);
+}, (t) => [index("audit_subject").on(t.subjectId, t.seq), uniqueIndex("audit_chain_seq").on(t.scopeId, sql`coalesce(${t.subjectId}, '-')`, t.seq), index("audit_org").on(t.orgId, t.id)]);
 
 /** Every call the gateway made to PayPal (lib/paypal/journal.ts). Facts only: no request or response bodies. */
 export const paypalCalls = pgTable("paypal_calls", {
@@ -520,7 +557,8 @@ export const rateLimits = pgTable("rate_limits", {
 //   • a **principal** is the Ed25519 key that signed a root envelope — a financial identity, not a person;
 //   • an **agent** is a key that holds a block, and keeps operating through signed requests, not a session.
 //
-// None of these tables changes a financial row. Org ownership of financial records is the next phase.
+// These tables change no financial row. Milestone 4.2 adds the organization to financial rows themselves
+// (`org_id`, nullable and explicitly attributed — see docs/MILESTONE_4_TENANT_PARTITIONING.md).
 // ---------------------------------------------------------------------------
 
 export const ORGANIZATION_STATUS = ["ACTIVE", "SUSPENDED", "CLOSED"] as const;
