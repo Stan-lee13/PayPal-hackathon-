@@ -12,9 +12,10 @@
  * Statuses: 401 for no or invalid session, 403 for an authenticated identity without the membership or the
  * permission, 404 for a record that belongs to another organization (so ids cannot be probed for existence).
  */
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { getDb } from "../db";
 import { memberships, organizations, principals, sessions, users, type MembershipRole, type OrganizationStatus, type UserStatus } from "../db/schema";
+import type { TenantScope } from "../db/tenant-context";
 import { UserFacingError } from "../errors";
 import { isMoneyPermission, isPermission, permissionsFor, type Permission } from "../identity/permissions";
 
@@ -77,6 +78,32 @@ export async function requireAuthenticatedUser(sessionToken: string | null | und
     userId: u.id, issuer: u.oidcIssuer, subject: u.oidcSubject, email: u.email,
     emailVerified: u.emailVerified, displayName: u.displayName, status: u.status, sessionId: s.sessionToken,
   };
+}
+
+/**
+ * The organization a request is served for, when the request carries a valid session.
+ *
+ * No cookie means no scope: the signed-agent and operator paths never present one, and they keep working. A
+ * cookie that is expired, revoked, or belongs to a deactivated user is a 401 rather than a silent anonymous
+ * request, so a revoked session is visible to the person holding it. A signed-in user with no active membership
+ * is a 403: there is no organization to serve them for.
+ *
+ * A user may belong to more than one organization. Until the console can select one, the oldest active
+ * membership is used deterministically; the selection is a membership check either way, never a request field.
+ */
+export type RequestScope = TenantScope & { permissions: ReadonlySet<Permission> };
+
+export async function requestScope(req: Request): Promise<RequestScope | null> {
+  const token = sessionTokenFromRequest(req);
+  if (!token) return null;
+  const user = await requireAuthenticatedUser(token);
+  const [m] = await getDb().select({ orgId: memberships.orgId, role: memberships.role })
+    .from(memberships)
+    .where(and(eq(memberships.userId, user.userId), eq(memberships.status, "ACTIVE")))
+    .orderBy(asc(memberships.createdAt), asc(memberships.id))
+    .limit(1);
+  if (!m) throw new UserFacingError("You are signed in, but not an active member of an organization, so there is nothing to authorize.", 403);
+  return { orgId: m.orgId, userId: user.userId, role: m.role, permissions: permissionsFor(m.role) };
 }
 
 /**

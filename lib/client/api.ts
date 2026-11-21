@@ -9,7 +9,7 @@ export type ApiResult<T = any> = { ok: boolean; status: number; json: T }; // es
 
 export const gatewayInBrowser = (): boolean => typeof document !== "undefined" && document.documentElement.dataset.gateway === "browser";
 
-export async function api<T = any>(path: string, init: { method?: "GET" | "POST"; body?: unknown; /** Sent only over the network. The in-browser gateway is the simulator, which asks for no key. */ headers?: Record<string, string> } = {}): Promise<ApiResult<T>> { // eslint-disable-line @typescript-eslint/no-explicit-any
+export async function api<T = any>(path: string, init: { method?: "GET" | "POST" | "DELETE"; body?: unknown; /** Sent only over the network. The in-browser gateway is the simulator, which asks for no key. */ headers?: Record<string, string> } = {}): Promise<ApiResult<T>> { // eslint-disable-line @typescript-eslint/no-explicit-any
   const method = init.method ?? (init.body === undefined ? "GET" : "POST");
   if (gatewayInBrowser()) {
     const { dispatch } = await import("../local/router");

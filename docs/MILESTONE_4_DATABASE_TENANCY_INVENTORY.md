@@ -70,5 +70,9 @@ Classification legend:
    idempotency. Revisit only if a spend id, agent key or provider event id becomes tenant-local.
 4. Enable **and force** RLS, with a transaction-local `envelope.org_id`, and run the app as a non-superuser role.
    This cannot happen before the reads are organization-scoped: a policy over unscoped reads breaks them.
+   **Half done in 4.3** (`MILESTONE_4_TENANT_READS.md`): the transaction-local setting exists and the addressed
+   reads are scoped when the request carries a session. Still to do: require a session on those reads, then the
+   policies, `FORCE ROW LEVEL SECURITY` and the runtime role.
 5. Prove it with pooled-connection leak tests, cross-tenant 404s, and an upgrade from a seeded 4.1 database. The
-   upgrade half already runs in `npm run db:upgrade-check`.
+   upgrade half already runs in `npm run db:upgrade-check`; the cross-organization 404s and the pooled-connection
+   behaviour of the setting are proved in `tests/tenant-reads.test.ts`.

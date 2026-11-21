@@ -78,10 +78,12 @@ the row is allowed to exist and is reported, but it can never be *mis*filed.
    legitimate read (or, with a superuser connection, silently do nothing). The enabling work is: a
    transaction-local `envelope.org_id` (`lib/db/tenant-context.ts` in the next phase), `ENABLE` **and** `FORCE`
    ROW LEVEL SECURITY, and an application role that is neither the table owner nor a superuser.
-3. **Reads and routes are not scoped.** `GET /api/bank`, `GET /api/cards`, the addressed-by-id reads and the rest
-   of the ten `documented-gap` routes in `MILESTONE_4_ROUTE_AUTHORIZATION_MATRIX.md` still answer without a
-   session. They must gain a session and an organization-scoped permission, and the browser console needs a
-   sign-in before that can happen without breaking the demo.
+3. **Reads and routes are scoped only when a session is present.** As of 4.3 (`MILESTONE_4_TENANT_READS.md`) the
+   ten `documented-gap` routes in `MILESTONE_4_ROUTE_AUTHORIZATION_MATRIX.md` resolve the caller's organization
+   from a server-validated session and answer another organization's id as 404; a row filed under no organization
+   is not shown to a scoped caller. They still answer **without** a session, which is why they remain documented
+   gaps: requiring one is the next step, and it needs a production sign-in page (the console now has a
+   development-only one).
 4. **Global unique indexes stay global.** `ledger_once (agent, kind, ref)`, `position_entries_once` and the
    `paypal_events` primary key are unchanged, deliberately: an agent key, a spend id and a provider event id are
    unique across the deployment, and a per-tenant key would weaken idempotency rather than add isolation.

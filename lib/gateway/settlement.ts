@@ -15,6 +15,7 @@
 import { and, asc, eq, inArray, or, type SQL } from "drizzle-orm";
 import { getDb } from "../db";
 import { paypalEvents, roots, spends, transfers, type Spend } from "../db/schema";
+import { visibleTo, type TenantScope } from "../db/tenant-context";
 import * as E from "../envelope/core";
 import { UserFacingError } from "../errors";
 // Every call to a provider goes through the rail (lib/rails). Even the record of what the provider did
@@ -33,10 +34,10 @@ const str = (x: unknown): string | null => (typeof x === "string" && x ? x : nul
 
 export type { RailCall } from "../rails";
 
-export async function paypalTrail(rootId: string) {
+export async function paypalTrail(rootId: string, scope?: TenantScope | null) {
   const db = getDb();
   const root = await db.query.roots.findFirst({ where: eq(roots.id, rootId) });
-  if (!root) return null;
+  if (!root || !visibleTo(scope, root.orgId)) return null;
   const ss = await db.select({ id: spends.id, captureId: spends.captureId, payoutBatchId: spends.payoutBatchId, payoutItemId: spends.payoutItemId }).from(spends).where(eq(spends.rootId, rootId));
   const keys = [root.id, root.authorizationId, root.paypalOrderId, ...ss.flatMap((s) => [s.id, s.captureId, s.payoutBatchId, s.payoutItemId])].filter((x): x is string => Boolean(x));
   const calls: RailCall[] = await rail().trail.calls(keys);

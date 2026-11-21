@@ -17,6 +17,7 @@
  */
 import { and, asc, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { getDb, type DB } from "../db";
+import { readInTenant, visibleTo, type TenantScope } from "../db/tenant-context";
 import { orgForPrincipal, orgForRoot } from "../identity/tenant";
 import { accounts, blocks, gatewayKeys, ledger, railAccounts, roots, spends, type Account, type BlockRow, type PromiseNote, type Receipt, type Root, type Spend } from "../db/schema";
 import { UserFacingError } from "../errors";
@@ -126,12 +127,15 @@ async function checkNewRoot(chain: E.Envelope) {
  * order the payer approved in PayPal's checkout (askApproval); without it, on PayPal's sandbox test
  * card, with no payer present.
  */
-export async function registerRoot(a: { chain: E.Envelope; principalName: string; title: string; paypalOrderId?: string }): Promise<Root> {
+export async function registerRoot(a: { chain: E.Envelope; principalName: string; title: string; paypalOrderId?: string; /** The organization a signed-in caller is sealing under, if any. Never a request field on its own. */ orgId?: string | null }): Promise<Root> {
   const db = getDb();
   const { b, caps, hash, existing } = await checkNewRoot(a.chain);
   if (existing) return existing;
-  // The tenant is known before any money moves: the sealing principal's explicit mapping, or null.
-  const orgId = await orgForPrincipal(b.body.issuer);
+  // The tenant is known before any money moves: the sealing principal's explicit mapping, else the organization
+  // the caller is signed in to. A mapped key never moves: naming another organization for it is refused.
+  const mapped = await orgForPrincipal(b.body.issuer);
+  if (mapped && a.orgId && mapped !== a.orgId) throw new UserFacingError("This envelope's key belongs to a different organization.", 403);
+  const orgId = mapped ?? a.orgId ?? null;
 
   // The hold: the rail now guarantees the envelope's whole limit, and refuses to capture beyond it.
   const r = rail();
@@ -1217,18 +1221,22 @@ async function decidePromise(s0: Spend, action: "pay" | "release", o: { agentNot
  * key, so an account number can never be pointed at someone else's PayPal address, and by the owner
  * who answers for the agent. Payments to "acct:<number>" are then settled to `settleTo` by PayPal Payouts.
  */
-export async function openAccount(signed: E.SignedAccount): Promise<Account> {
+export async function openAccount(signed: E.SignedAccount, orgId?: string | null): Promise<Account> {
   if (!(await E.verifyAccount(signed))) throw new UserFacingError("An account opening must be signed by both the agent's key and its owner's key.", 422);
   const db = getDb();
   const b = signed.body;
+  const mapped = await orgForPrincipal(b.owner);
+  if (mapped && orgId && mapped !== orgId) throw new UserFacingError("This account's owner belongs to a different organization.", 403);
+  const tenant = mapped ?? orgId ?? null;
   const account = E.accountNumber(b.agent);
   const clash = await db.query.accounts.findFirst({ where: eq(accounts.account, account) });
   if (clash && clash.agent !== b.agent) throw new UserFacingError("Another agent already holds that account number.", 409);
   // The owner answers for the account, caps it and can freeze it: an agent must not be able to swap in an owner key of its own.
   if (clash && clash.owner !== b.owner) throw new UserFacingError("This account already has an owner. Only that owner can co-sign a change to it.", 409);
   if (clash && Date.parse(clash.signed.body.at) >= Date.parse(b.at)) return clash;
-  // An account is filed under the organization its owner is mapped to; a later correction moves it with the mapping.
-  const values = { account, orgId: await orgForPrincipal(b.owner), label: b.label, owner: b.owner, ownerName: b.ownerName || "Owner", settleTo: b.settleTo, signed, mode: b.mode === "hold" ? "hold" as const : "settle" as const, perPaymentMinor: b.perPayment ?? null, perDayMinor: b.perDay ?? null };
+  // An account is filed under the organization its owner is mapped to, or the caller's organization while the
+  // owner has no mapping; a later correction moves it with the mapping.
+  const values = { account, orgId: tenant, label: b.label, owner: b.owner, ownerName: b.ownerName || "Owner", settleTo: b.settleTo, signed, mode: b.mode === "hold" ? "hold" as const : "settle" as const, perPaymentMinor: b.perPayment ?? null, perDayMinor: b.perDay ?? null };
   const [row] = await db.transaction(async (tx) => {
     await lockAccount(tx, b.agent);
     const now = await tx.query.accounts.findFirst({ where: eq(accounts.agent, b.agent) });
@@ -1594,27 +1602,33 @@ export async function recentAgents(limit = 24) {
   ].slice(0, limit);
 }
 
-export async function tree(rootId: string) {
-  const db = getDb();
-  const root = await db.query.roots.findFirst({ where: eq(roots.id, rootId) });
-  if (!root) return null;
+export async function tree(rootId: string, scope?: TenantScope | null) {
+  const root = await getDb().query.roots.findFirst({ where: eq(roots.id, rootId) });
+  // A caller with an organization sees its own envelopes, and only those. An envelope filed under no organization
+  // is nobody's yet, so it is not shown to a scoped caller either.
+  if (!root || !visibleTo(scope, root.orgId)) return null;
+  // Anything expired is lapsed before the page is built. It moves by the clock, not by the caller, and files its
+  // rows through the envelope's own organization.
   await sweepExpired(rootId);
-  const [bs, ss] = await Promise.all([
-    db.select().from(blocks).where(eq(blocks.rootId, rootId)).orderBy(asc(blocks.depth), asc(blocks.firstSeenAt)),
-    db.select().from(spends).where(eq(spends.rootId, rootId)).orderBy(desc(spends.createdAt)).limit(200),
-  ]);
-  // Names for payees written as account numbers, so people see "translator-agent", not only a number.
-  const numbers = [...new Set([...bs.flatMap((b) => b.caps.payees ?? []), ...ss.map((x) => x.payee)].filter(E.isAccountPayee).map((p) => p.slice(5).toUpperCase()))];
-  const named = numbers.length ? await db.select().from(accounts).where(inArray(accounts.account, numbers)) : [];
-  const payees = Object.fromEntries(named.map((a) => [`acct:${a.account.toLowerCase()}`, { label: a.label, key: a.agent, owner: a.ownerName }]));
-  return { root, blocks: bs, spends: ss, payees };
+  return readInTenant(scope, async (db) => {
+    const [bs, ss] = await Promise.all([
+      db.select().from(blocks).where(eq(blocks.rootId, rootId)).orderBy(asc(blocks.depth), asc(blocks.firstSeenAt)),
+      db.select().from(spends).where(eq(spends.rootId, rootId)).orderBy(desc(spends.createdAt)).limit(200),
+    ]);
+    // Names for payees written as account numbers, so people see "translator-agent", not only a number.
+    const numbers = [...new Set([...bs.flatMap((b) => b.caps.payees ?? []), ...ss.map((x) => x.payee)].filter(E.isAccountPayee).map((p) => p.slice(5).toUpperCase()))];
+    const named = numbers.length ? await db.select().from(accounts).where(inArray(accounts.account, numbers)) : [];
+    const payees = Object.fromEntries(named.map((a) => [`acct:${a.account.toLowerCase()}`, { label: a.label, key: a.agent, owner: a.ownerName }]));
+    return { root, blocks: bs, spends: ss, payees };
+  });
 }
 
 /** Independent check of a receipt: its signature, and what PayPal itself says about the capture and the payout. */
-export async function reconcile(spendId: string) {
+export async function reconcile(spendId: string, scope?: TenantScope | null) {
   const db = getDb();
   const s = await db.query.spends.findFirst({ where: eq(spends.id, spendId) });
-  if (!s?.receipt) throw new UserFacingError("No receipt for that spend.", 404);
+  // Checked before the rail is asked anything: another organization's payment is reported as missing.
+  if (!s || !visibleTo(scope, s.orgId) || !s.receipt) throw new UserFacingError("No receipt for that spend.", 404);
   const root = (await db.query.roots.findFirst({ where: eq(roots.id, s.rootId) }))!;
   const r = rail();
   const held = isHeld(s);

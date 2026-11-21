@@ -18,6 +18,7 @@
 import { and, desc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import { getDb } from "../db";
 import { accounts, cards, ledger, spends, transfers, type Account, type Card, type Spend, type Transfer, type TransferReceipt } from "../db/schema";
+import { readInTenant, visibleTo, type TenantDb, type TenantScope } from "../db/tenant-context";
 import { UserFacingError } from "../errors";
 import * as E from "../envelope/core";
 import { newId } from "../ids";
@@ -392,8 +393,7 @@ export async function cancelCard(signed: E.SignedCardCancel): Promise<Card> {
   return u ?? (await db.query.cards.findFirst({ where: eq(cards.id, card.id) }))!;
 }
 
-async function describeCard(c: Card) {
-  const db = getDb();
+async function describeCard(c: Card, db: TenantDb = getDb()) {
   const [merchant, holder, rows] = await Promise.all([
     db.query.accounts.findFirst({ where: eq(accounts.agent, c.merchantAgent) }),
     db.query.accounts.findFirst({ where: eq(accounts.agent, c.holder) }),
@@ -414,19 +414,25 @@ async function describeCard(c: Card) {
   };
 }
 /** One card: its signed terms, what has been used, and every attempt to charge it. There is nothing secret in it. */
-export async function cardById(id: string) {
-  const c = await getDb().query.cards.findFirst({ where: eq(cards.id, id) });
-  return c ? describeCard(c) : null;
+export async function cardById(id: string, scope?: TenantScope | null) {
+  return readInTenant(scope, async (db) => {
+    const c = await db.query.cards.findFirst({ where: eq(cards.id, id) });
+    return c && visibleTo(scope, c.orgId) ? describeCard(c, db) : null;
+  });
 }
-/** Every card on the gateway, newest first, without the charge attempts. Nothing in a card is secret. */
-export async function allCards(limit = 60) {
-  const rows = await getDb().select().from(cards).orderBy(desc(cards.createdAt)).limit(limit);
-  return (await Promise.all(rows.map(describeCard))).map(({ attempts, signed: _signed, ...c }) => ({ ...c, attempts: attempts.length }));
+/** Every card in the caller's organization, newest first, without the charge attempts. Nothing in a card is secret. */
+export async function allCards(limit = 60, scope?: TenantScope | null) {
+  return readInTenant(scope, async (db) => {
+    const rows = scope
+      ? await db.select().from(cards).where(eq(cards.orgId, scope.orgId)).orderBy(desc(cards.createdAt)).limit(limit)
+      : await db.select().from(cards).orderBy(desc(cards.createdAt)).limit(limit);
+    return (await Promise.all(rows.map((c) => describeCard(c, db)))).map(({ attempts, signed: _signed, ...c }) => ({ ...c, attempts: attempts.length }));
+  });
 }
 /** The cards an agent has issued, newest first. */
 export async function cardsOf(agent: string) {
   const rows = await getDb().select().from(cards).where(eq(cards.holder, agent)).orderBy(desc(cards.createdAt)).limit(8);
-  return Promise.all(rows.map(describeCard));
+  return Promise.all(rows.map((c) => describeCard(c)));
 }
 
 /** The owner freezes (or unfreezes) an agent's account: nothing can leave a frozen balance. Income still arrives. */
@@ -552,34 +558,44 @@ export async function settleRefunds(limit = 20): Promise<Array<{ spend: string; 
   return out;
 }
 
-export async function position() {
-  const db = getDb();
-  const [accts, sums] = await Promise.all([
-    db.select().from(accounts).orderBy(desc(accounts.balanceMinor), desc(accounts.openedAt)).limit(200),
-    db.select({ kind: ledger.kind, total: sql<number>`coalesce(sum(${ledger.deltaMinor}), 0)::int`, n: sql<number>`count(*)::int` }).from(ledger).groupBy(ledger.kind),
-  ]);
-  const by = Object.fromEntries(sums.map((x) => [x.kind, x])) as Record<string, { total: number; n: number } | undefined>;
-  const balances = accts.reduce((n, a) => n + a.balanceMinor, 0);
-  const ledgerTotal = sums.reduce((n, x) => n + x.total, 0);
-  const capturedIn = by.income?.total ?? 0;
-  const paidOut = -((by.payout?.total ?? 0) + (by.withdrawal?.total ?? 0)) - (by.reversal?.total ?? 0);
-  const refunded = -((by.refund?.total ?? 0) + (by.refund_reversal?.total ?? 0));
-  const bookTransfers = by.transfer_out?.n ?? 0;
-  return {
-    mode: railMode(),
-    accounts: accts.map((a) => ({ agent: a.agent, account: a.account, label: a.label, owner: a.ownerName, mode: a.mode, balanceMinor: a.balanceMinor, frozen: Boolean(a.frozenAt), perPaymentMinor: a.perPaymentMinor })),
-    totals: { accounts: accts.length, holding: accts.filter((a) => a.mode === "hold").length, balancesMinor: balances, capturedInMinor: capturedIn, paidOutMinor: paidOut, refundedMinor: refunded, bookTransfers, bookTransferredMinor: by.transfer_in?.total ?? 0 },
-    // balances == ledger, and ledger == captured in − paid out (book transfers net to zero)
-    checks: [
-      { name: "Every balance equals the sum of its ledger entries", ok: balances === ledgerTotal },
-      { name: "Balances equal money captured from PayPal holds into accounts, minus money paid out or refunded", ok: balances === capturedIn - paidOut - refunded },
-      { name: "Transfers between accounts net to zero", ok: (by.transfer_in?.total ?? 0) + (by.transfer_out?.total ?? 0) === 0 },
-    ],
-  };
+export async function position(scope?: TenantScope | null) {
+  return readInTenant(scope, async (db) => {
+    // Balances and ledger are filtered by the same organization, so the checks below compare like with like: one
+    // organization's books must add up whether or not there are others in the deployment.
+    const [accts, sums] = await Promise.all([
+      scope
+        ? db.select().from(accounts).where(eq(accounts.orgId, scope.orgId)).orderBy(desc(accounts.balanceMinor), desc(accounts.openedAt)).limit(200)
+        : db.select().from(accounts).orderBy(desc(accounts.balanceMinor), desc(accounts.openedAt)).limit(200),
+      scope
+        ? db.select({ kind: ledger.kind, total: sql<number>`coalesce(sum(${ledger.deltaMinor}), 0)::int`, n: sql<number>`count(*)::int` }).from(ledger).where(eq(ledger.orgId, scope.orgId)).groupBy(ledger.kind)
+        : db.select({ kind: ledger.kind, total: sql<number>`coalesce(sum(${ledger.deltaMinor}), 0)::int`, n: sql<number>`count(*)::int` }).from(ledger).groupBy(ledger.kind),
+    ]);
+    const by = Object.fromEntries(sums.map((x) => [x.kind, x])) as Record<string, { total: number; n: number } | undefined>;
+    const balances = accts.reduce((n, a) => n + a.balanceMinor, 0);
+    const ledgerTotal = sums.reduce((n, x) => n + x.total, 0);
+    const capturedIn = by.income?.total ?? 0;
+    const paidOut = -((by.payout?.total ?? 0) + (by.withdrawal?.total ?? 0)) - (by.reversal?.total ?? 0);
+    const refunded = -((by.refund?.total ?? 0) + (by.refund_reversal?.total ?? 0));
+    const bookTransfers = by.transfer_out?.n ?? 0;
+    return {
+      mode: railMode(),
+      accounts: accts.map((a) => ({ agent: a.agent, account: a.account, label: a.label, owner: a.ownerName, mode: a.mode, balanceMinor: a.balanceMinor, frozen: Boolean(a.frozenAt), perPaymentMinor: a.perPaymentMinor })),
+      totals: { accounts: accts.length, holding: accts.filter((a) => a.mode === "hold").length, balancesMinor: balances, capturedInMinor: capturedIn, paidOutMinor: paidOut, refundedMinor: refunded, bookTransfers, bookTransferredMinor: by.transfer_in?.total ?? 0 },
+      // balances == ledger, and ledger == captured in − paid out (book transfers net to zero)
+      checks: [
+        { name: "Every balance equals the sum of its ledger entries", ok: balances === ledgerTotal },
+        { name: "Balances equal money captured from PayPal holds into accounts, minus money paid out or refunded", ok: balances === capturedIn - paidOut - refunded },
+        { name: "Transfers between accounts net to zero", ok: (by.transfer_in?.total ?? 0) + (by.transfer_out?.total ?? 0) === 0 },
+      ],
+    };
+  });
 }
 
 /** A transfer and whether its receipt verifies. The PayPal address is masked. */
-export async function transferById(id: string) {
+export async function transferById(id: string, scope?: TenantScope | null) {
+  // Checked before the transfer is put to the rail: another organization's movement is reported as missing.
+  const known = await getDb().query.transfers.findFirst({ where: eq(transfers.id, id), columns: { orgId: true } });
+  if (!known || !visibleTo(scope, known.orgId)) return null;
   const t = await syncTransfer(id);
   if (!t) return null;
   const { signed: _s, payoutTo, ...rest } = t;

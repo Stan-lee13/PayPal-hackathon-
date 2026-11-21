@@ -6,7 +6,8 @@
 import { asc, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "../db";
-import { auditLog, roots } from "../db/schema";
+import { auditLog, roots, spends } from "../db/schema";
+import { visibleTo, type TenantScope } from "../db/tenant-context";
 import { act, attachDemoAgents, BANK_ACTIONS, bankAct, createDemoAgents, DEMO_ACTIONS, demoHello, ensureCounterparty, hasDemoAgents, isBankDemoAgent, isDemoAgent, runTool, TOOL_AGENTS } from "../demo/agents";
 import * as E from "../envelope/core";
 import * as B from "../gateway/bank";
@@ -23,7 +24,17 @@ import { demoEnabled, policyFor } from "./route-policy";
 /** Demo and simulation routes are development tools; production refuses them, whatever the UI links to. */
 const DEMO_OFF: Output = { status: 404, body: { error: "This demo endpoint is not available in production." } };
 
-export type Input = { params: Record<string, string>; body: unknown; /** Lower-cased request headers and the body as sent; only the webhook and sweep endpoints read them. */ headers?: Record<string, string>; raw?: string };
+export type Input = {
+  params: Record<string, string>; body: unknown;
+  /** Lower-cased request headers and the body as sent; only the webhook and sweep endpoints read them. */
+  headers?: Record<string, string>; raw?: string;
+  /**
+   * The organization the request is served for, resolved from a server-validated session by lib/api/next.ts.
+   * Absent on the in-browser gateway and for signed-agent callers, which have no session and keep their old
+   * reads; present, it decides what the addressed reads may return.
+   */
+  scope?: TenantScope | null;
+};
 export type Output = { status?: number; body: unknown };
 export type Handler = (i: Input) => Promise<Output>;
 
@@ -52,6 +63,11 @@ async function ownerAsks(body: unknown, principal: string): Promise<boolean> {
   return p.success && p.data.signed.by === principal && (await E.verifyReadSignature(p.data.signed as never, "treasury", principal));
 }
 const spendStatus = (s: string) => (s === "DENIED" ? 403 : s === "FAILED" ? 502 : s === "LAPSED" ? 409 : 200);
+/** A spend the caller's organization may see. A row in another organization is "not found". */
+async function spendVisible(id: string, scope: TenantScope | null | undefined): Promise<boolean> {
+  const s = await getDb().query.spends.findFirst({ where: eq(spends.id, id), columns: { orgId: true } });
+  return Boolean(s) && visibleTo(scope, s!.orgId);
+}
 
 /**
  * An event reported by whichever rail is configured. The rail parses its own event shape and asks its
@@ -117,15 +133,17 @@ export const handlers: Record<string, Handler> = {
     return (await simApproveOrder(b.orderId)) ? { body: { approved: true } } : { status: 409, body: { error: "There is no order with that id waiting for approval." } };
   },
 
-  "POST /api/envelopes": async ({ body }) => {
+  "POST /api/envelopes": async ({ body, scope }) => {
     const b = z.object({ chain: z.array(z.any()).length(1), principalName: z.string().max(80).default("Principal"), title: z.string().max(120).default("Envelope"), draftId: z.string().regex(/^draft_[A-Za-z0-9_-]{8,40}$/).optional(), paypalOrderId: z.string().regex(/^[A-Z0-9]{6,40}$/).optional() }).parse(body);
-    const root = await G.registerRoot({ chain: b.chain, principalName: b.principalName, title: b.title, paypalOrderId: b.paypalOrderId });
+    // A signed-in person seals under the organization they are signed in to. The signature still proves the key;
+    // the session only says whose money the envelope is recorded as.
+    const root = await G.registerRoot({ chain: b.chain, principalName: b.principalName, title: b.title, paypalOrderId: b.paypalOrderId, orgId: scope?.orgId ?? null });
     return { body: { root, demoAgents: b.draftId ? await attachDemoAgents(b.draftId, b.chain) : false } };
   },
 
-  "GET /api/envelopes/:id": async ({ params }) => {
+  "GET /api/envelopes/:id": async ({ params, scope }) => {
     const id = params.id!;
-    let t = await G.tree(id);
+    let t = await G.tree(id, scope);
     if (!t) return { status: 404, body: { error: "No such envelope." } };
     // Anything unfinished is moved along when the page is looked at: a payout PayPal has not delivered yet or is
     // holding unclaimed, a capture it was still reviewing, a refund it refused earlier, a payment interrupted mid-way.
@@ -148,24 +166,26 @@ export const handlers: Record<string, Handler> = {
   },
 
   /** A receipt, its full authority chain, and a live check of it against PayPal. */
-  "GET /api/spends/:id": async ({ params }) => {
-    const r = await G.reconcile(params.id!);
+  "GET /api/spends/:id": async ({ params, scope }) => {
+    const r = await G.reconcile(params.id!, scope);
     return { body: { ok: r.ok, checks: r.checks, receipt: r.receipt, chain: r.spend.signed.chain, spend: { id: r.spend.id, status: r.spend.status, payoutStatus: r.spend.payoutStatus, payoutTransactionId: r.spend.payoutTransactionId, agentNote: r.spend.agentNote } } };
   },
 
   /** The proof graph of an envelope: every signed record behind it, with what a browser needs to check each one. */
   /** Where one payment stands now, whatever its state (a receipt exists only once PayPal has captured). Asking makes the gateway ask PayPal. */
-  "GET /api/spends/:id/status": async ({ params }) => {
+  "GET /api/spends/:id/status": async ({ params, scope }) => {
+    // The check comes first: asking the provider about another organization's payment would leak that it exists.
+    if (!(await spendVisible(params.id!, scope))) return { status: 404, body: { error: "No such payment." } };
     const s = await G.syncSpend(params.id!);
     return { body: { id: s.id, status: s.status, delivered: s.status === "PAID", amountMinor: s.amountMinor, currency: s.currency, payee: s.payee, purpose: s.purpose, payoutStatus: s.payoutStatus, captureId: s.captureId, refundId: s.refundId, hasReceipt: Boolean(s.receipt), reasons: withMeaning(s.reasons) } };
   },
 
   /** What the gateway would send PayPal if the payer disputed this payment: the signed chain of authority, in words and in full. */
-  "GET /api/spends/:id/evidence": async ({ params }) => ({ body: await K.evidence(params.id!) }),
+  "GET /api/spends/:id/evidence": async ({ params, scope }) => ({ body: await K.evidence(params.id!, scope) }),
 
   /** Every call the gateway made to PayPal for this envelope, and the events PayPal reported about it. */
-  "GET /api/envelopes/:id/paypal": async ({ params }) => {
-    const t = await S.paypalTrail(params.id!);
+  "GET /api/envelopes/:id/paypal": async ({ params, scope }) => {
+    const t = await S.paypalTrail(params.id!, scope);
     return t ? { body: t } : { status: 404, body: { error: "No such envelope." } };
   },
 
@@ -235,9 +255,9 @@ export const handlers: Record<string, Handler> = {
   },
 
   /** Open an account that can receive: signed by the agent's key and by its owner's key. */
-  "POST /api/accounts": async ({ body }) => {
+  "POST /api/accounts": async ({ body, scope }) => {
     const { signed } = z.object({ signed: z.object({ body: z.any(), agentSig: z.string(), ownerSig: z.string() }) }).parse(body);
-    const a = await G.openAccount(signed as never);
+    const a = await G.openAccount(signed as never, scope?.orgId ?? null);
     return { body: { account: a.account, payee: E.accountPayee(a.agent), agent: a.agent, label: a.label, owner: a.ownerName, settlesTo: G.maskEmail(a.settleTo), holds: a.mode === "hold", perPaymentMinor: a.perPaymentMinor, balanceMinor: a.balanceMinor } };
   },
 
@@ -282,18 +302,20 @@ export const handlers: Record<string, Handler> = {
     return { body: await B.cardById(c.id) };
   },
   /** Every card agents have issued here, and the accounts that could issue one. */
-  "GET /api/cards": async () => {
-    const [cards, books] = await Promise.all([B.allCards(), B.position()]);
+  "GET /api/cards": async ({ scope }) => {
+    const [cards, books] = await Promise.all([B.allCards(60, scope), B.position(scope)]);
     const accounts = await Promise.all(books.accounts.map(async (a) => ({ agent: a.agent, label: a.label, owner: a.owner, balanceMinor: a.balanceMinor, keepsIncome: a.mode === "hold", /** A built-in demo agent: its page has buttons that issue and charge a card. A real agent signs with its own key. */ demo: await isBankDemoAgent(a.agent) })));
     return { body: { mode: railMode(), cards, accounts } };
   },
   /** A card's signed terms, what has been used, and every attempt to charge it. Nothing in it is secret. */
-  "GET /api/cards/:id": async ({ params }) => {
-    const c = await B.cardById(params.id!);
+  "GET /api/cards/:id": async ({ params, scope }) => {
+    const c = await B.cardById(params.id!, scope);
     return c ? { body: c } : { status: 404, body: { error: "No such card." } };
   },
   /** The books: every balance, and whether they add up. */
-  "GET /api/bank": async () => ({ body: { ...(await B.position()), reserves: await K.reserves() } }),
+  // `reserves` is the deployment's provider-level figure (what every balance owes, against PayPal's balance): it
+  // belongs to a provider account, which is a later phase. The balances themselves are the caller's organization's.
+  "GET /api/bank": async ({ scope }) => ({ body: { ...(await B.position(scope)), reserves: await K.reserves() } }),
   /** PayPal's own statement of the gateway's account, compared line by line with the captures and payouts recorded here. */
   "GET /api/bank/statement": async () => ({ body: await K.statement() }),
   /** An agent that kept a payment gives it back: its balance is debited and PayPal refunds the capture to the owner. */
@@ -302,8 +324,8 @@ export const handlers: Record<string, Handler> = {
     const r = await B.refund(b.signed as never);
     return { status: r.status === "REFUNDED" ? 200 : r.status === "PENDING" ? 202 : r.status === "FAILED" ? 502 : 403, body: { ...r, reasons: withMeaning(r.reasons) } };
   },
-  "GET /api/bank/transfers/:id": async ({ params }) => {
-    const t = await B.transferById(params.id!);
+  "GET /api/bank/transfers/:id": async ({ params, scope }) => {
+    const t = await B.transferById(params.id!, scope);
     return t ? { body: t } : { status: 404, body: { error: "No such transfer." } };
   },
 

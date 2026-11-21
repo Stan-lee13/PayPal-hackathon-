@@ -14,6 +14,7 @@
 import { and, desc, eq, gt, inArray, isNotNull, lte, sql } from "drizzle-orm";
 import { getDb } from "../db";
 import { accounts, ledger, roots, spends, transfers, type ReconciliationFinding } from "../db/schema";
+import { visibleTo, type TenantScope } from "../db/tenant-context";
 import { movementsFor, positionsFor, postFee, railAccountIdentity, recordReconciliation } from "../accounting";
 import * as E from "../envelope/core";
 import { UserFacingError } from "../errors";
@@ -328,10 +329,10 @@ const fp = (key: string) => E.fingerprint(key);
  * id, like its receipt. It proves the payment was inside limits the payer signed. It does not prove the
  * work was any good.
  */
-export async function evidence(spendId: string) {
+export async function evidence(spendId: string, scope?: TenantScope | null) {
   const db = getDb();
   const s = await db.query.spends.findFirst({ where: eq(spends.id, spendId) });
-  if (!s?.captureId) throw new UserFacingError("There is no captured payment with that id.", 404);
+  if (!s || !visibleTo(scope, s.orgId) || !s.captureId) throw new UserFacingError("There is no captured payment with that id.", 404);
   const root = (await db.query.roots.findFirst({ where: eq(roots.id, s.rootId) }))!;
   const chain = s.signed.chain;
   const verdict = await E.verifyChain(chain, new Date(s.signed.request.at));

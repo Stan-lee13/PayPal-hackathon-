@@ -9,7 +9,7 @@ import { ROUTE_POLICY, SPECIAL_ROUTE_FILES, type RoutePolicy } from "../lib/api/
 
 const CATEGORY_MEANING: Record<string, string> = {
   public: "Public: no private tenant data, no financial action.",
-  "public-read": "Public read today: addressed by an unguessable id, no session. A documented gap that must close.",
+  "public-read": "Addressed by an unguessable id. Scoped to the caller's organization when a session is present, and unchanged without one: a documented gap that must close.",
   "signed-principal": "The caller signs with an Ed25519 principal whose chain is verified. No session.",
   "signed-agent": "An agent's signed request is the authority. Agents never hold a human session.",
   "signed-owner": "Signed by the account owner. Requires a session in the same organization from the next phase.",
@@ -32,8 +32,12 @@ missing here, if an entry is stale, or if a handler is not mounted by a route fi
 
 **Read the \`enforcement\` column as the truth.** \`enforced\` means the route checks authority today;
 \`documented-gap\` means the route is classified and the check it still needs is named — these are the reads written
-for a single-operator deployment, and they must gain a session and an organization-scoped permission in the
-tenant-partitioning phase. **No row claims tenant isolation: Milestone 4.1 does not implement it.**
+for a single-operator deployment, and they must gain a session and an organization-scoped permission.
+
+Since Milestone 4.3 the addressed reads are **scoped** to the caller's organization when the request carries a
+session: another organization's id is a 404, and an unattributed row is not shown. They are not yet **required** to
+carry a session, so **no row claims tenant isolation**; requiring one is the next step, and it needs the console to
+have a production sign-in.
 
 ## Categories
 `;
@@ -57,7 +61,8 @@ out.push("## Compatibility of the SDK, CLI and MCP server");
 out.push("");
 out.push("Everything a headless agent or the CLI sends is a **signed** request (`signed-agent`, `signed-principal`,");
 out.push("`signed-owner`). No session is required for those, and none was added: headless agent operation is unchanged.");
-out.push("The session column is empty in this milestone because no *new* session-only route was exposed.");
+out.push("The only session-classified surface is the console's development sign-in (`app/api/dev/session`), which is");
+out.push("refused in production: a real deployment signs people in through OIDC (`lib/auth/config.ts`).");
 out.push("");
 out.push("What the next phase adds: an organization-scoped API credential for SDK/CLI callers (running as a principal");
 out.push("mapped to one organization), and a session requirement layered *on top of* the existing signature for the");
