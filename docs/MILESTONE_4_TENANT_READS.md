@@ -1,9 +1,10 @@
 # Milestone 4.3 — reads scoped to the caller's organization
 
-**Status:** the addressed financial reads now resolve the caller's organization from a server-validated session,
-read inside a transaction that carries it, and answer another organization's id as **404**. They are **not yet
-required** to have a session, so the ten `documented-gap` routes stay documented gaps and **tenant isolation is
-still not claimed**. What changed is that a caller who does have an organization can no longer read past it.
+**Status (as of 4.3):** the addressed financial reads resolve the caller's organization from a server-validated
+session, read inside a transaction that carries it, and answer another organization's id as **404**. At 4.3 the
+session was not yet **required**; **Milestone 4.4 made it required and enabled the row level security policies**
+(`MILESTONE_4_SESSION_AND_RLS.md`). This document is kept as written for that milestone, with the three items it
+listed as open struck through below.
 
 | | |
 | --- | --- |
@@ -96,16 +97,15 @@ It is not a production path and not a bypass:
 
 `DELETE /api/dev/session` deletes the session row, so the cookie stops working even if it is presented again.
 
-## What this milestone does not do
+## What this milestone did not do (both closed in 4.4)
 
-1. **The ten routes still answer without a session.** Making a session mandatory is a route-policy flip plus a
-   production sign-in page; it is the next review, and it will change the demo's deployment (an identity provider
-   becomes required for a server-backed deployment).
-2. **Permissions are not enforced on these reads.** The organization is checked; `payment.read`,
-   `envelope.read`, `audit.read` and `statement.read` are named in the route table but not required yet, because
-   half-enforcing them would 403 a role on a route that is still readable anonymously.
-3. **RLS is not enabled.** The transaction-local setting is the mechanism it needs; the policies, `FORCE ROW
-   LEVEL SECURITY` and the non-superuser runtime role are the next database step.
+1. ~~**The ten routes still answer without a session.**~~ Milestone 4.4 made the session mandatory: the route
+   table names `session: "required"` and `lib/api/next.ts` refuses a request without one. See
+   `MILESTONE_4_SESSION_AND_RLS.md`.
+2. ~~**Permissions are not enforced on these reads.**~~ Milestone 4.4 enforces the permission in the table from
+   the caller's membership role, in the same wrapper.
+3. ~~**RLS is not enabled.**~~ Migration 0016 enables the policies and `withTenant` switches to a SELECT-only
+   request role for the transaction.
 4. **The expiry sweep runs on its own connection.** `tree` lapses expired spends by the clock, not by the caller,
    and that write is not covered by the tenant setting. It moves nothing between organizations.
 5. **Multiple memberships are resolved deterministically, not selected.** A member of two organizations is served
@@ -117,7 +117,8 @@ It is not a production path and not a bypass:
 
 * the organization is in the transaction and gone from the pooled connection afterwards;
 * a scoped caller sees its own envelope, card, balance and movement, and neither another organization's nor an
-  unattributed one — while the same reads without a session behave exactly as before;
+  unattributed one — while the same service calls without a scope behave as before (the HTTP layer is what
+  requires the session, in `tests/session-required.test.ts`);
 * every addressed read answers 404 for another organization's id, including the paths that would otherwise ask
   the provider, and the owning organization still gets an answer;
 * a sealed envelope and an opened account are filed under the signed-in organization, and a principal or owner

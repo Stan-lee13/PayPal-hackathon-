@@ -22,6 +22,11 @@ export function SealForm({ designer }: { designer: string }) {
   const [f, setF] = useState({ name: "Ada", title: "Store launch budget", limit: "200", per: "80", payees: designer, purposes: "translation, design", hours: "6", splits: "2", over: "75", holder: "demo", agentKey: "", agentLabel: "my-agent" });
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // Sealing files the envelope under the sealer's organization, and the envelope page requires a session to
+  // read. On a laptop the development sign-in says whether this browser has one; on a deployment the session
+  // comes from the identity provider and the envelope page says so if it is missing.
+  const [dev, setDev] = useState<{ available?: boolean; signedIn?: boolean } | null>(null);
+  useEffect(() => { if (document.documentElement.dataset.gateway === "browser") return; void api("/api/dev/session").then((r) => setDev(r.ok ? r.json : { available: false })); }, []);
   const [other, setOther] = useState<{ label: string; owner: string; payee: string; account: string } | null>(null);
   useEffect(() => { void principalKey().then(setKey); }, []);
   // The agent on the other side: it has its own account, so it can be named as a payee by account number.
@@ -60,6 +65,10 @@ export function SealForm({ designer }: { designer: string }) {
     e.preventDefault();
     if (!key) return;
     setErr(null);
+    if (dev?.available && !dev.signedIn) {
+      setErr("Sign in first: the envelope is filed under an organization, and the gateway will only show it back to a session in that organization.");
+      return;
+    }
     try {
       let holder = { publicKey: f.agentKey.trim(), label: f.agentLabel.trim() || "agent" };
       const draftId = randomId("draft");

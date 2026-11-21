@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { fingerprint, PROMISE_VERSION, verifyChain, verifyDetached, verifyPromise, verifySpend, type Envelope } from "@/lib/envelope/core";
 import { Figure, Stamp, usd } from "@/components/stationery";
 import { receiptView } from "@/lib/gateway/receipts";
+import { SignInNotice } from "@/components/sign-in-notice";
 import type { Receipt } from "@/lib/db/schema";
 
 // Either receipt version (v1 is PayPal-shaped and still verifies; v2 is provider-neutral). `receiptView` gives
@@ -26,6 +27,7 @@ function Bars({ id }: { id: string }) {
 
 export function ReceiptView({ id }: { id: string }) {
   const [d, setD] = useState<Data | null>(null);
+  const [need, setNeed] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [evidence, setEvidence] = useState<{ summary: string; proves: string } | null>(null);
   const [local, setLocal] = useState<Array<{ name: string; ok: boolean }> | null>(null);
@@ -34,6 +36,7 @@ export function ReceiptView({ id }: { id: string }) {
     void (async () => {
       const r = await api(`/api/spends/${id}`);
       const j = r.json;
+      if (r.status === 401) { setNeed(true); return; }
       if (!r.ok) { setErr(j.error ?? "No receipt."); return; }
       setD(j);
       // Independent verification in THIS browser: nothing below trusts the server's answer.
@@ -57,6 +60,7 @@ export function ReceiptView({ id }: { id: string }) {
     })();
   }, [id]);
 
+  if (need) return <SignInNotice what="receipt" />;
   if (err) return <p className="sheet p-6 text-sm">{err}</p>;
   if (!d) return <p className="label py-10">Fetching the receipt and checking it against PayPal…</p>;
   const r = receiptView(d.receipt);

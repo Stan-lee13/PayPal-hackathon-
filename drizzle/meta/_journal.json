@@ -113,6 +113,13 @@
       "when": 1795273207280,
       "tag": "0015_tenant_partitioning",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1795280069022,
+      "tag": "0016_row_level_security",
+      "breakpoints": true
     }
   ]
 }

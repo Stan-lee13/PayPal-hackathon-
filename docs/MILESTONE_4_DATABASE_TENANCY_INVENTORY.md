@@ -1,9 +1,11 @@
 # Milestone 4.1 — database tenancy inventory
 
 Every table in `lib/db/schema.ts`, classified for the tenant-partitioning phase. This inventory was written for
-Milestone 4.1; **Milestone 4.2 has since added `org_id` to the org-owned and org-associated financial tables**
-(migration `0015_tenant_partitioning.sql`, see `MILESTONE_4_TENANT_PARTITIONING.md`). `org_id` is still nullable,
-and **no RLS policy is enabled**, so nothing here claims isolation today.
+Milestone 4.1; **Milestone 4.2 added `org_id` to the org-owned and org-associated financial tables**
+(migration `0015_tenant_partitioning.sql`, see `MILESTONE_4_TENANT_PARTITIONING.md`), and **Milestone 4.4 enabled
+the row level security policies on those eight tables and made a session mandatory for every read that serves one
+organization** (migration `0016_row_level_security.sql`, `MILESTONE_4_SESSION_AND_RLS.md`). `org_id` is still
+nullable on purpose: an unattributed row is an honest gap, not a guessed organization.
 
 Classification legend:
 

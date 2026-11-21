@@ -12,11 +12,13 @@
  *     named, but it does not enforce that yet. These are the addressed-by-id reads and the operator reads that
  *     were written for a single-operator deployment.
  *
- * Since Milestone 4.3 the addressed reads are **scoped** when the request carries a session: the organization is
- * resolved from the server-validated session, the row is read inside a transaction that carries it, and another
- * organization's id is a 404. They are not yet **required** to carry a session, so they stay `documented-gap`: a
- * caller with no cookie still sees what it saw before. That is the next step, and it needs the console to have a
- * production sign-in.
+ * Since Milestone 4.4 every route that reads one organization's records says so here (`session: "required"`), and
+ * `lib/api/next.ts` enforces it: no session is a 401, the permission named here is checked against the caller's
+ * membership role, and the read itself runs inside a transaction carrying the caller's organization, so another
+ * organization's id (or an unattributed row) is a 404. The public surface is the signed-only proof graph, whose
+ * records anyone may re-verify; a receipt with live provider checks and the organization's books are not public.
+ *
+ * `enforcement` therefore means what it says across the whole table: nothing is classified and left unchecked.
  *
  * The matrix in docs/MILESTONE_4_ROUTE_AUTHORIZATION_MATRIX.md is generated from this file.
  */
@@ -24,7 +26,6 @@ import type { Permission } from "../identity/permissions";
 
 export type RouteCategory =
   | "public"
-  | "public-read"
   | "signed-principal"
   | "signed-agent"
   | "signed-owner"
@@ -42,6 +43,8 @@ export type RoutePolicy = {
   /** The permission this route needs, or must gain when it becomes session-authenticated. Null: none. */
   permission: Permission | null;
   enforcement: Enforcement;
+  /** `"required"`: the HTTP wrapper refuses a request with no valid session, and enforces `permission`. */
+  session?: "required";
   note: string;
 };
 
@@ -50,8 +53,8 @@ export const ROUTE_POLICY: Readonly<Record<string, RoutePolicy>> = {
   "POST /api/envelopes/mine": { category: "signed-owner", permission: "envelope.read", enforcement: "enforced", note: "Owner read signature over the request. A session is required as well once org context lands (4.4)." },
   "POST /api/envelopes/approval": { category: "signed-principal", permission: "envelope.seal", enforcement: "enforced", note: "The root block is verified before the rail is asked; nothing is held or recorded." },
   "POST /api/envelopes": { category: "signed-principal", permission: "envelope.seal", enforcement: "enforced", note: "Chain verified, budget checked, hold placed on the principal's instrument." },
-  "GET /api/envelopes/:id": { category: "public-read", permission: "envelope.read", enforcement: "documented-gap", note: "Addressed by envelope id. Scoped to the caller's organization when a session is present (another organization's envelope, or an unattributed one, is 404). It is still readable without a session, which is the gap: it needs one." },
-  "GET /api/envelopes/:id/paypal": { category: "public-read", permission: "audit.read", enforcement: "documented-gap", note: "Provider call trail for an envelope by id, scoped to the caller's organization when a session is present. Same remaining gap as the envelope read." },
+  "GET /api/envelopes/:id": { category: "session", permission: "envelope.read", enforcement: "enforced", session: "required", note: "Sign-in required. Read inside the caller's organization: another organization's envelope, or an unattributed one, is 404." },
+  "GET /api/envelopes/:id/paypal": { category: "session", permission: "audit.read", enforcement: "enforced", session: "required", note: "Sign-in required; audit.read. The provider trail of a payment is not public, even to someone holding the id." },
 
   // ---- Payments ----
   "POST /api/gateway/spend": { category: "signed-agent", permission: null, enforcement: "enforced", note: "The agent's signed request and chain are the authority; a human session is never required." },
@@ -61,25 +64,25 @@ export const ROUTE_POLICY: Readonly<Record<string, RoutePolicy>> = {
   "POST /api/gateway/standing": { category: "signed-agent", permission: null, enforcement: "enforced", note: "Read-only: would this payment be accepted? Moves no money." },
   "POST /api/gateway/announce": { category: "signed-agent", permission: "envelope.read", enforcement: "enforced", note: "Chain verified; a split is optional to announce." },
   "POST /api/gateway/revoke": { category: "signed-agent", permission: "envelope.revoke", enforcement: "enforced", note: "Signed by the principal or an ancestor holder." },
-  "GET /api/spends/:id": { category: "public-read", permission: "payment.read", enforcement: "documented-gap", note: "Receipt and live check by spend id, scoped to the caller's organization when a session is present; another organization's payment is 404 before the rail is asked. It still needs a session, which is the next step." },
-  "GET /api/spends/:id/status": { category: "public-read", permission: "payment.read", enforcement: "documented-gap", note: "Status by spend id. The organization check runs first, so another organization's payment is 404 without asking the provider. It still needs a session, which is the next step." },
-  "GET /api/spends/:id/evidence": { category: "public-read", permission: "audit.read", enforcement: "documented-gap", note: "Dispute evidence by spend id, scoped to the caller's organization when a session is present. It still needs a session, which is the next step." },
+  "GET /api/spends/:id": { category: "session", permission: "payment.read", enforcement: "enforced", session: "required", note: "Sign-in required. Receipt and live provider check, scoped to the caller's organization; another organization's payment is 404 before the rail is asked. The shareable view of one payment is the signed-only proof page." },
+  "GET /api/spends/:id/status": { category: "session", permission: "payment.read", enforcement: "enforced", session: "required", note: "Sign-in required. The organization check runs before the provider is asked, so another organization's payment is 404 without disclosing that it exists." },
+  "GET /api/spends/:id/evidence": { category: "session", permission: "audit.read", enforcement: "enforced", session: "required", note: "Sign-in required; audit.read. Dispute evidence names the payer, the limits and the whole chain, so it is never public." },
   "POST /api/spends/:id/recall": { category: "signed-owner", permission: "refund.issue", enforcement: "enforced", note: "Owner read signature; the cancel and refund run under the settlement lease." },
 
   // ---- Treasury and statements ----
   "POST /api/treasury/:principal": { category: "signed-owner", permission: "payment.read", enforcement: "enforced", note: "Owner read signature. A session in the same organization is required in 4.4." },
   "POST /api/treasury/:principal/reconcile": { category: "signed-owner", permission: "statement.read", enforcement: "enforced", note: "Owner read signature; compares recorded payments with the provider." },
-  "GET /api/bank": { category: "public-read", permission: "statement.read", enforcement: "documented-gap", note: "Balances and ledger scoped to the caller's organization when a session is present. The reserve figures stay provider-level until provider accounts are partitioned. It still needs a session, which is the next step." },
-  "GET /api/bank/statement": { category: "public-read", permission: "statement.read", enforcement: "documented-gap", note: "The provider's statement for the deployment's account: it belongs to a provider account, not an organization, so it is operator-level until provider accounts are partitioned. Needs a session and statement.read." },
-  "GET /api/bank/transfers/:id": { category: "public-read", permission: "payment.read", enforcement: "documented-gap", note: "Balance movement by id, scoped to the caller's organization when a session is present; another organization's movement is 404 before the rail is asked. It still needs a session, which is the next step." },
+  "GET /api/bank": { category: "session", permission: "statement.read", enforcement: "enforced", session: "required", note: "Sign-in required; statement.read. Balances and ledger are the caller's organization's. The PayPal reserve figures stay provider-level until provider accounts are partitioned, and the response says so." },
+  "GET /api/bank/statement": { category: "session", permission: "statement.read", enforcement: "enforced", session: "required", note: "Sign-in required; statement.read. The comparison itself is the deployment's provider account, which is why it needs a permission rather than being public." },
+  "GET /api/bank/transfers/:id": { category: "session", permission: "payment.read", enforcement: "enforced", session: "required", note: "Sign-in required. A balance movement by id, scoped to the caller's organization; another organization's movement is 404 before the rail is asked." },
 
   // ---- Accounts, balances, cards ----
   "POST /api/accounts": { category: "signed-principal", permission: null, enforcement: "enforced", note: "Signed by the agent's key and its owner's key." },
   "POST /api/bank/transfer": { category: "signed-agent", permission: null, enforcement: "enforced", note: "Signed by the account's agent; internal debit plus optional payout." },
   "POST /api/bank/freeze": { category: "signed-owner", permission: "budget.manage", enforcement: "enforced", note: "Signed by the account's owner." },
   "POST /api/bank/refund": { category: "signed-agent", permission: "refund.issue", enforcement: "enforced", note: "Signed by the agent whose balance is debited." },
-  "GET /api/cards": { category: "public-read", permission: "provider.read", enforcement: "documented-gap", note: "Cards and the accounts that could issue one, scoped to the caller's organization when a session is present. It still needs a session, which is the next step." },
-  "GET /api/cards/:id": { category: "public-read", permission: "payment.read", enforcement: "documented-gap", note: "A card's signed terms and charges, by id, scoped to the caller's organization when a session is present. It still needs a session, which is the next step." },
+  "GET /api/cards": { category: "session", permission: "provider.read", enforcement: "enforced", session: "required", note: "Sign-in required; provider.read. Cards and the accounts that could issue one, for the caller's organization only." },
+  "GET /api/cards/:id": { category: "session", permission: "payment.read", enforcement: "enforced", session: "required", note: "Sign-in required. A card's signed terms and charges, by id, scoped to the caller's organization." },
   "POST /api/cards": { category: "signed-agent", permission: null, enforcement: "enforced", note: "Signed by the issuing agent." },
   "POST /api/cards/charge": { category: "signed-agent", permission: null, enforcement: "enforced", note: "Signed by the merchant the card is locked to." },
   "POST /api/cards/cancel": { category: "signed-agent", permission: null, enforcement: "enforced", note: "Signed by the holder or the account's owner." },

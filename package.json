@@ -27,6 +27,7 @@
     "identity:migrate": "tsx scripts/identity-migrate.ts",
     "tenant:inventory": "tsx scripts/tenant-inventory.ts",
     "tenant:backfill": "tsx scripts/tenant-backfill.ts",
+    "tenant:check": "tsx scripts/tenant-check.ts",
     "docs:routes": "tsx scripts/route-matrix.ts"
   },
   "engines": {

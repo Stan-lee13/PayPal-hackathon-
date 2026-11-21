@@ -91,19 +91,20 @@ export async function requireAuthenticatedUser(sessionToken: string | null | und
  * A user may belong to more than one organization. Until the console can select one, the oldest active
  * membership is used deterministically; the selection is a membership check either way, never a request field.
  */
-export type RequestScope = TenantScope & { permissions: ReadonlySet<Permission> };
+export type RequestScope = TenantScope & { permissions: ReadonlySet<Permission>; orgStatus: OrganizationStatus; orgName: string };
 
 export async function requestScope(req: Request): Promise<RequestScope | null> {
   const token = sessionTokenFromRequest(req);
   if (!token) return null;
   const user = await requireAuthenticatedUser(token);
-  const [m] = await getDb().select({ orgId: memberships.orgId, role: memberships.role })
+  const [m] = await getDb().select({ orgId: memberships.orgId, role: memberships.role, orgStatus: organizations.status, orgName: organizations.name })
     .from(memberships)
+    .innerJoin(organizations, eq(memberships.orgId, organizations.id))
     .where(and(eq(memberships.userId, user.userId), eq(memberships.status, "ACTIVE")))
     .orderBy(asc(memberships.createdAt), asc(memberships.id))
     .limit(1);
   if (!m) throw new UserFacingError("You are signed in, but not an active member of an organization, so there is nothing to authorize.", 403);
-  return { orgId: m.orgId, userId: user.userId, role: m.role, permissions: permissionsFor(m.role) };
+  return { orgId: m.orgId, userId: user.userId, role: m.role, orgStatus: m.orgStatus, orgName: m.orgName, permissions: permissionsFor(m.role) };
 }
 
 /**

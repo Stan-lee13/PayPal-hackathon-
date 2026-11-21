@@ -74,11 +74,23 @@ describe("route authorization classification", () => {
     expect(demoEnabled({ NODE_ENV: "development" })).toBe(true);
   });
 
-  it("left no tenant read silently unlabelled: the gaps are named as gaps", () => {
+  it("left no gap behind: every read that serves one organization requires a session", () => {
     const gaps = Object.values(ROUTE_POLICY).filter((p) => p.enforcement === "documented-gap");
-    // These are the addressed-by-id / operator reads that must gain a session in the partitioning phase. They
-    // are listed explicitly so nobody mistakes "classified" for "isolated".
-    expect(gaps.length).toBeGreaterThan(0);
-    for (const g of gaps) expect(g.note).toMatch(/must|needs|gap/i);
+    expect(gaps).toEqual([]);
+    // The ten addressed reads that were gaps are now session-classified, and each names the permission the
+    // wrapper enforces. A route that reads tenant data cannot be added as public-read any more.
+    const tenantReads = Object.entries(ROUTE_POLICY).filter(([, p]) => p.category === "session");
+    expect(tenantReads.length).toBeGreaterThanOrEqual(10);
+    for (const [key, p] of tenantReads) {
+      expect(p.session, key).toBe("required");
+      expect(p.enforcement, key).toBe("enforced");
+    }
+  });
+
+  it("never makes an organization's records readable without a session", () => {
+    const publicReads = Object.entries(ROUTE_POLICY).filter(([, p]) => String(p.category) === "public-read");
+    expect(publicReads).toEqual([]);
+    const publicTenantData = Object.entries(ROUTE_POLICY).filter(([, p]) => p.category === "public" && p.permission !== null);
+    expect(publicTenantData).toEqual([]);
   });
 });

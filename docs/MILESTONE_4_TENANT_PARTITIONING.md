@@ -74,16 +74,16 @@ the row is allowed to exist and is reported, but it can never be *mis*filed.
 1. **`org_id` is nullable.** Making it `NOT NULL` is an operational decision, made per deployment with
    `npm run tenant:inventory -- --fail-unattributed` green first. Forcing it now would fail the upgrade of any
    database whose principals predate the mapping — or, worse, invite a backfill by guess.
-2. **RLS is not enabled.** Reads are not organization-scoped yet, so a policy would return zero rows for every
-   legitimate read (or, with a superuser connection, silently do nothing). The enabling work is: a
-   transaction-local `envelope.org_id` (`lib/db/tenant-context.ts` in the next phase), `ENABLE` **and** `FORCE`
-   ROW LEVEL SECURITY, and an application role that is neither the table owner nor a superuser.
-3. **Reads and routes are scoped only when a session is present.** As of 4.3 (`MILESTONE_4_TENANT_READS.md`) the
-   ten `documented-gap` routes in `MILESTONE_4_ROUTE_AUTHORIZATION_MATRIX.md` resolve the caller's organization
-   from a server-validated session and answer another organization's id as 404; a row filed under no organization
-   is not shown to a scoped caller. They still answer **without** a session, which is why they remain documented
-   gaps: requiring one is the next step, and it needs a production sign-in page (the console now has a
-   development-only one).
+2. **RLS is enabled, and deliberately not forced** (migration 0016, `MILESTONE_4_SESSION_AND_RLS.md`). `FORCE`
+   would apply the policies to the role that owns the tables, and the engine — settlement, provider webhooks, the
+   sweep, the operator tools, the signed-agent paths — serves every organization by design and runs as that
+   owner. The isolation is therefore done by a second role: a SELECT-only, non-owning request role that
+   `withTenant` switches to for one transaction. A deployment that does not provision it does not serve in
+   production (`npm run tenant:check`, and the startup check in `lib/security/tenant-role.ts`).
+3. **Every read that serves one organization requires a session** (4.4). The ten routes that were `documented-gap`
+   are classified `session` in `MILESTONE_4_ROUTE_AUTHORIZATION_MATRIX.md` and enforced in `lib/api/next.ts`:
+   401 without a validated session, 403 without the permission the table names, 404 for another organization's
+   id or an unattributed row. The public surface is the signed-only proof graph.
 4. **Global unique indexes stay global.** `ledger_once (agent, kind, ref)`, `position_entries_once` and the
    `paypal_events` primary key are unchanged, deliberately: an agent key, a spend id and a provider event id are
    unique across the deployment, and a per-tenant key would weaken idempotency rather than add isolation.

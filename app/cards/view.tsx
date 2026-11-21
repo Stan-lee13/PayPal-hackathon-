@@ -5,6 +5,7 @@ import { useCallback, useState } from "react";
 import { api } from "@/lib/client/api";
 import { usePoll } from "@/lib/client/poll";
 import { Sigil, usd } from "@/components/stationery";
+import { SignInNotice } from "@/components/sign-in-notice";
 
 type CardRow = {
   id: string; number: string; label: string; state: "ACTIVE" | "USED_UP" | "CANCELLED" | "EXPIRED";
@@ -18,8 +19,10 @@ const STATE: Record<CardRow["state"], string> = { ACTIVE: "Active", USED_UP: "Us
 /** Every card agents have issued on this gateway, and the way to get one when there is none yet. */
 export function CardsView() {
   const [d, setD] = useState<Data | null>(null);
-  const load = useCallback(async () => { const r = await api<Data>("/api/cards"); if (r.ok) setD(r.json); }, []);
+  const [need, setNeed] = useState(false);
+  const load = useCallback(async () => { const r = await api<Data>("/api/cards"); if (r.status === 401) { setNeed(true); return; } if (r.ok) setD(r.json); }, []);
   usePoll(load, 5000);
+  if (need) return <SignInNotice what="cards" />;
   if (!d) return <p className="label py-10">Looking for cards…</p>;
   // the built-in earning agent first: its page has the buttons
   const earners = d.accounts.filter((a) => a.keepsIncome).sort((a, b) => Number(b.demo) - Number(a.demo));

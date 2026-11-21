@@ -4,6 +4,7 @@ import { gatewayRunsInBrowser } from "@/lib/deployment";
 import { json } from "@/lib/http";
 import { keysSealed } from "@/lib/keystore";
 import { rail, railMode } from "@/lib/rails";
+import { tenantRole } from "@/lib/db/tenant-context";
 
 export const dynamic = "force-dynamic";
 
@@ -24,5 +25,19 @@ export async function GET() {
   if (gatewayRunsInBrowser()) return json({ ok: true, gateway: "browser", db: "in the visitor's browser (PGlite)", paypalMode: "simulated", rail: railInfo });
   let db = "ok";
   try { await getDb().execute(sql`select 1`); } catch { db = "unreachable"; }
-  return json({ ok: db === "ok", gateway: "server", db, paypalMode: railMode(), rail: railInfo, keysAtRest: keysSealed() ? "sealed" : "plain" });
+  // What isolates one organization's rows from another's, and what the signatures are. Both are stated plainly:
+  // a gateway that claims isolation it does not have is worse than one that says which switch is on.
+  let rlsTables: number | null = null;
+  if (db === "ok") {
+    try {
+      const rows = (await getDb().execute(sql`select count(*)::int as n from pg_class where relkind = 'r' and relrowsecurity`)) as unknown as Array<{ n: number }>;
+      rlsTables = rows[0]?.n ?? 0;
+    } catch { /* reported as unknown */ }
+  }
+  return json({
+    ok: db === "ok", gateway: "server", db, paypalMode: railMode(), rail: railInfo,
+    keysAtRest: keysSealed() ? "sealed" : "plain",
+    tenant: { requestRole: tenantRole() ?? null, rlsTables },
+    signatures: { algorithm: "Ed25519", postQuantum: false },
+  });
 }

@@ -3,10 +3,10 @@
 /**
  * Which organization this browser is signed in to.
  *
- * On a deployment with a server database, the addressed reads are scoped to the signed-in organization. This
- * says which one that is, and offers the development sign-in a laptop has (a real deployment signs in through
- * OIDC instead, and this renders nothing). When the gateway runs in the visitor's browser there is no server
- * session at all, so it renders nothing there either.
+ * On a deployment with a server database, the reads that serve one organization's records require a session.
+ * This says which organization that is, and offers the development sign-in a laptop has. A real deployment has
+ * no development sign-in (the route 404s), so it offers the identity provider's own sign-in page instead. When
+ * the gateway runs in the visitor's browser there is no server session at all, and this renders nothing.
  */
 import { useEffect, useState } from "react";
 import { api } from "@/lib/client/api";
@@ -19,12 +19,25 @@ type Status = {
 
 export function SessionBar() {
   const [status, setStatus] = useState<Status | null>(null);
+  const [browser, setBrowser] = useState(true);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     if (document.documentElement.dataset.gateway === "browser") return;
-    void api<Status>("/api/dev/session").then((r) => setStatus(r.ok ? r.json : null));
+    setBrowser(false);
+    void api<Status>("/api/dev/session").then((r) => setStatus(r.ok ? r.json : { available: false }));
   }, []);
+
+  if (browser) return null;
+
+  // A deployment without the development sign-in signs people in through its identity provider.
+  if (status && !status.available) {
+    return (
+      <a className="btn btn-quiet btn-sm !min-h-[34px] !text-[.84rem]" href="/api/auth/signin" data-testid="session-oidc">
+        Sign in
+      </a>
+    );
+  }
 
   if (!status?.available) return null;
 

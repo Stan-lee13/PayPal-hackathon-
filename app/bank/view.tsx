@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/client/api";
 import { usePoll } from "@/lib/client/poll";
 import { Figure, Stamp, usd } from "@/components/stationery";
+import { SignInNotice } from "@/components/sign-in-notice";
 
 type Books = {
   mode: string;
@@ -18,15 +19,18 @@ const hm = (iso: string) => `${new Date(iso).toISOString().slice(11, 16)} UTC`;
 
 export function BankView() {
   const [d, setD] = useState<Books | null>(null);
+  const [need, setNeed] = useState(false);
   const [st, setSt] = useState<Statement | "asking" | "failed" | null>(null);
   const compare = async () => { setSt("asking"); const r = await api("/api/bank/statement"); setSt(r.ok ? r.json : "failed"); };
   const load = useCallback(async () => {
     await api("/api/demo/counterparty");
     const r = await api("/api/bank");
+    if (r.status === 401) { setNeed(true); return; }
     if (r.ok) setD(r.json);
   }, []);
   usePoll(load, 4000);
 
+  if (need) return <SignInNotice what="books" />;
   if (!d) return <p className="label py-10">Opening the books…</p>;
   const t = d.totals;
   const sound = d.checks.every((c) => c.ok);

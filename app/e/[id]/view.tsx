@@ -9,6 +9,7 @@ import { principalKey } from "@/lib/principal-key";
 import { Mission } from "./mission";
 import { PayPalRail } from "@/components/paypal-rail";
 import { Figure, Flap, Meter, Postmark, Sigil, SpendStamp, Stamp, usd } from "@/components/stationery";
+import { SignInNotice } from "@/components/sign-in-notice";
 
 type BlockT = { id: string; parentId: string | null; depth: number; holder: string; holderLabel: string; caps: Caps; spentMinor: number; reservedMinor: number; revokedAt: string | null };
 type SpendT = { id: string; leafLabel: string; amountMinor: number; payee: string; purpose: string; memo: string; agentNote: string | null; status: string; reasons: Array<{ code: string; detail: string }>; captureId: string | null; payoutBatchId: string | null; payoutStatus: string | null; refundId: string | null; disputeId: string | null; disputeStatus: string | null; createdAt: string; hasReceipt: boolean; promiseExpiresAt: string | null; delivery: { by: string; work: string; note: string } | null; releaseBy: string | null; signed?: never };
@@ -31,6 +32,7 @@ const when = (iso: string) => `${new Date(iso).toLocaleDateString("en-GB", { day
 export function EnvelopeView({ id }: { id: string }) {
   const [d, setD] = useState<Data | null>(null);
   const [missing, setMissing] = useState(false);
+  const [need, setNeed] = useState(false);
   const [me, setMe] = useState<KeyPair | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [lines, setLines] = useState<Array<{ text: string; tone: "info" | "good" | "bad" }>>([]);
@@ -39,12 +41,14 @@ export function EnvelopeView({ id }: { id: string }) {
 
   const load = useCallback(async () => {
     const r = await api(`/api/envelopes/${id}`);
+    if (r.status === 401) { setNeed(true); return; }
     if (r.status === 404) { setMissing(true); return; }
     if (r.ok) setD(r.json);
   }, [id]);
   useEffect(() => { void principalKey(false).then(setMe); }, []);
   usePoll(load, 3000, id);
 
+  if (need) return <SignInNotice what="envelope" />;
   if (missing) return <p className="sheet p-6 text-sm">No such envelope. <Link className="link" href="/console">Seal one</Link>.</p>;
   if (!d) return <p className="label py-10">Fetching the envelope…</p>;
   const { root, blocks, spends } = d;

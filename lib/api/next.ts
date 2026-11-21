@@ -1,17 +1,18 @@
-/** Wraps a handler from lib/api/handlers.ts as a Next.js route: rate limit, same-origin check, JSON in and out. */
-import { requestScope } from "../auth/context";
+/** Wraps a handler from lib/api/handlers.ts as a Next.js route: rate limit, same-origin check, session, JSON in and out. */
+import { requestScope, requirePermission } from "../auth/context";
 import { getDb } from "../db";
-import type { TenantScope } from "../db/tenant-context";
 import { UserFacingError } from "../errors";
 import { clientIp, json, sameOrigin } from "../http";
 import { rateLimit } from "../security/rate-limit";
 import { handlers, run } from "./handlers";
+import { policyFor } from "./route-policy";
 
 const MAX_BODY_BYTES = 128 * 1024;
 type Opts = { limit?: [name: string, max: number, windowSec: number]; global?: [name: string, max: number, windowSec: number]; sameOrigin?: boolean; /** Refuse callers that are not a browser page of this site (no Origin header). Not authentication: it keeps scripts off the shared demo buttons. */ browserOnly?: boolean };
 
 export function route(key: keyof typeof handlers & string, opts: Opts = {}) {
   const handler = handlers[key]!;
+  const policy = policyFor(key);
   const hasBody = key.startsWith("POST");
   return async (req: Request, ctx: { params: Promise<Record<string, string>> }) => {
     try {
@@ -24,10 +25,18 @@ export function route(key: keyof typeof handlers & string, opts: Opts = {}) {
       return json({ error: "The gateway's database is not reachable." }, 503);
     }
     // Who is asking, if anyone. This is a server-validated session row, never a header or a body field. No cookie
-    // means no organization: the signed-agent paths keep working exactly as before.
-    let scope: TenantScope | null = null;
+    // means no organization: the signed-agent paths keep working exactly as before, and the routes that serve an
+    // organization's records refuse (401) because their policy says `session: "required"`.
+    let scope: Awaited<ReturnType<typeof requestScope>> = null;
     try {
       scope = await requestScope(req);
+      const requirement = policyFor(key);
+      if (requirement?.session === "required") {
+        if (!scope) return json({ error: "This reads one organization's records. Sign in to continue." }, 401);
+        // The permission named in the table is enforced here, in one place, so a route cannot be added to the
+        // table and quietly skip the check the table says it performs.
+        if (requirement.permission) requirePermission(scope, requirement.permission);
+      }
     } catch (e) {
       if (e instanceof UserFacingError) return json({ error: e.message }, e.status);
       console.error("[envelope] session lookup failed", e);
