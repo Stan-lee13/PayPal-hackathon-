@@ -28,9 +28,10 @@ const PROVIDER = "mock";
 
 type MockHold = { id: string; reference: string; status: "CREATED" | "PARTIALLY_CAPTURED" | "CAPTURED" | "VOIDED"; limit: Amount; capturedMinor: number; orderId: string | null; expiresAt: string };
 type MockOrder = { id: string; reference: string; status: "PAYER_ACTION_REQUIRED" | "APPROVED" | "COMPLETED"; limit: Amount };
-type MockCapture = { id: string; reference: string; holdId: string; amount: Amount; status: "COMPLETED" | "PENDING" | "REFUNDED"; invoiceId: string };
-type MockPayout = { batchId: string; itemId: string; reference: string; amount: Amount; receiver: string; itemStatus: "SUCCESS" | "UNCLAIMED" | "RETURNED" | "FAILED"; transactionId: string };
-type MockRefund = { id: string; reference: string; captureId: string; amount: Amount; status: "COMPLETED" | "PENDING" };
+/** `at` is when the movement happened, so a statement can filter by its own range (see `reporting.statement`). */
+type MockCapture = { id: string; reference: string; holdId: string; amount: Amount; status: "COMPLETED" | "PENDING" | "REFUNDED"; invoiceId: string; at: string };
+type MockPayout = { batchId: string; itemId: string; reference: string; amount: Amount; receiver: string; itemStatus: "SUCCESS" | "UNCLAIMED" | "RETURNED" | "FAILED"; transactionId: string; at: string };
+type MockRefund = { id: string; reference: string; captureId: string; amount: Amount; status: "COMPLETED" | "PENDING"; at: string };
 type MockDispute = { id: string; captureId: string; status: string; reason: string; amount: Amount; evidence: string | null };
 type MockEvent = { id: string; type: string; createdAt: string; resource: Record<string, unknown> };
 
@@ -259,7 +260,7 @@ export class MockRail implements Rail {
       if (r.amount.currency !== h.limit.currency) throw declined(PROVIDER, "CURRENCY_MISMATCH", "The capture currency does not match the hold.");
       h.capturedMinor += r.amount.minor;
       h.status = h.capturedMinor === h.limit.minor ? "CAPTURED" : "PARTIALLY_CAPTURED";
-      const c: MockCapture = { id: this.nextId("MOCK-CAP"), reference: r.reference, holdId: h.id, amount: r.amount, status: "COMPLETED", invoiceId: r.reference };
+      const c: MockCapture = { id: this.nextId("MOCK-CAP"), reference: r.reference, holdId: h.id, amount: r.amount, status: "COMPLETED", invoiceId: r.reference, at: this.at() };
       this.captures.set(c.id, c);
       this.captureByRef.set(r.reference, c.id);
       this.charge("hold.capture");
@@ -293,7 +294,7 @@ export class MockRail implements Rail {
       if (/refused/i.test(r.receiver)) throw declined(PROVIDER, "RECEIVER_ACCOUNT_LOCKED", "The receiver cannot be paid.");
       const p: MockPayout = {
         batchId: this.nextId("MOCK-BATCH"), itemId: this.nextId("MOCK-ITEM"), reference: r.reference, amount: r.amount, receiver: r.receiver,
-        itemStatus: /unclaimed/i.test(r.receiver) ? "UNCLAIMED" : "SUCCESS", transactionId: this.nextId("MOCK-TXN"),
+        itemStatus: /unclaimed/i.test(r.receiver) ? "UNCLAIMED" : "SUCCESS", transactionId: this.nextId("MOCK-TXN"), at: this.at(),
       };
       this.payoutRows.set(p.batchId, p);
       this.payoutByRef.set(r.reference, p.batchId);
@@ -331,7 +332,7 @@ export class MockRail implements Rail {
       const c = this.capture(r.capture.id);
       if (c.status === "REFUNDED") throw new RailError({ code: "duplicate", provider: PROVIDER, retryable: false, providerCode: "CAPTURE_FULLY_REFUNDED" }, "The capture has already been refunded.");
       c.status = "REFUNDED";
-      const f: MockRefund = { id: this.nextId("MOCK-REF"), reference: r.reference, captureId: c.id, amount: c.amount, status: "COMPLETED" };
+      const f: MockRefund = { id: this.nextId("MOCK-REF"), reference: r.reference, captureId: c.id, amount: c.amount, status: "COMPLETED", at: this.at() };
       this.refundRows.set(f.id, f);
       this.refundByRef.set(r.reference, f.id);
       this.charge("refund.capture");
@@ -354,15 +355,18 @@ export class MockRail implements Rail {
       this.maybeFail("reporting.statement");
       const inside = (d: string) => { const t = new Date(d).getTime(); return t >= range.from.getTime() && t <= range.to.getTime(); };
       const lines: StatementLine[] = [];
+      // Each line is stamped with when its movement happened, never with the time of this call. A statement read
+      // at the end of its own range must still contain the movements inside that range: stamping them "now" put a
+      // line on either side of the boundary at random, and dropped it when the millisecond turned over.
       for (const c of this.captures.values()) {
-        lines.push({ id: c.id, code: "T0006", at: this.at(), amountMinor: c.amount.minor, feeMinor: this.opts.fees ? -(Math.round(c.amount.minor * 0.0259) + 49) : 0, currency: c.amount.currency, status: "S", invoiceId: c.invoiceId, customField: null, reference: c.holdId });
+        lines.push({ id: c.id, code: "T0006", at: c.at, amountMinor: c.amount.minor, feeMinor: this.opts.fees ? -(Math.round(c.amount.minor * 0.0259) + 49) : 0, currency: c.amount.currency, status: "S", invoiceId: c.invoiceId, customField: null, reference: c.holdId });
         if (c.status === "REFUNDED") {
           const f = [...this.refundRows.values()].find((x) => x.captureId === c.id);
-          if (f) lines.push({ id: f.id, code: "T1107", at: this.at(), amountMinor: -c.amount.minor, feeMinor: 0, currency: c.amount.currency, status: "S", invoiceId: c.invoiceId, customField: null, reference: c.id });
+          if (f) lines.push({ id: f.id, code: "T1107", at: f.at, amountMinor: -c.amount.minor, feeMinor: 0, currency: c.amount.currency, status: "S", invoiceId: c.invoiceId, customField: null, reference: c.id });
         }
       }
       for (const p of this.payoutRows.values()) {
-        lines.push({ id: p.transactionId, code: "T0001", at: this.at(), amountMinor: -p.amount.minor, feeMinor: this.opts.fees ? -Math.round(p.amount.minor * 0.02) : 0, currency: p.amount.currency, status: p.itemStatus === "SUCCESS" ? "S" : "P", invoiceId: null, customField: p.reference, reference: p.itemId });
+        lines.push({ id: p.transactionId, code: "T0001", at: p.at, amountMinor: -p.amount.minor, feeMinor: this.opts.fees ? -Math.round(p.amount.minor * 0.02) : 0, currency: p.amount.currency, status: p.itemStatus === "SUCCESS" ? "S" : "P", invoiceId: null, customField: p.reference, reference: p.itemId });
       }
       return lines.filter((l) => inside(l.at));
     },
