@@ -31,7 +31,7 @@ d("settlement (simulated PayPal)", async () => {
   beforeEach(async () => {
     resetSimMemory();
     G.forgetGatewayKey();
-    await getDb().execute(sql`truncate table position_entries, rail_accounts, reconciliation_runs, audit_log, spends, blocks, roots, demo_keys, gateway_keys, emulator_state, rate_limits, accounts, ledger, transfers, cards restart identity cascade`);
+    await getDb().execute(sql`truncate table audit_log, spends, blocks, roots, demo_keys, gateway_keys, emulator_state, rate_limits, accounts, ledger, transfers, cards restart identity cascade`);
   });
 
   it("the same signed request arriving eight times at once is captured, counted and paid once", async () => {
@@ -119,7 +119,7 @@ d("an owner's books are shown only to the owner (handler level)", async () => {
   beforeEach(async () => {
     resetSimMemory();
     G.forgetGatewayKey();
-    await getDb().execute(sql`truncate table position_entries, rail_accounts, reconciliation_runs, audit_log, spends, blocks, roots, demo_keys, gateway_keys, emulator_state, rate_limits, accounts, ledger, transfers, cards restart identity cascade`);
+    await getDb().execute(sql`truncate table audit_log, spends, blocks, roots, demo_keys, gateway_keys, emulator_state, rate_limits, accounts, ledger, transfers, cards restart identity cascade`);
   });
 
   it("knowing an owner's public key is not enough to read their treasury", async () => {
@@ -153,7 +153,7 @@ d("private keys at rest", async () => {
 
   beforeEach(async () => {
     G.forgetGatewayKey();
-    await getDb().execute(sql`truncate table position_entries, rail_accounts, reconciliation_runs, audit_log, spends, blocks, roots, demo_keys, gateway_keys, emulator_state, rate_limits, accounts, ledger, transfers, cards restart identity cascade`);
+    await getDb().execute(sql`truncate table audit_log, spends, blocks, roots, demo_keys, gateway_keys, emulator_state, rate_limits, accounts, ledger, transfers, cards restart identity cascade`);
   });
 
   it("with a secret set, the gateway's signing key is not readable from the database alone", async () => {

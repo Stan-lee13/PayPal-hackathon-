@@ -43,7 +43,7 @@ d("the books against PayPal's (simulated PayPal)", async () => {
     resetSimMemory();
     G.forgetGatewayKey();
     K.forgetBalance();
-    await getDb().execute(sql`truncate table position_entries, rail_accounts, reconciliation_runs, audit_log, spends, blocks, roots, demo_keys, gateway_keys, emulator_state, rate_limits, accounts, ledger, transfers, cards, paypal_calls, paypal_events restart identity cascade`);
+    await getDb().execute(sql`truncate table audit_log, spends, blocks, roots, demo_keys, gateway_keys, emulator_state, rate_limits, accounts, ledger, transfers, cards, paypal_calls, paypal_events restart identity cascade`);
   });
 
   it("what agents are owed is covered by the balance PayPal reports, through income, a payout and a withdrawal", async () => {
@@ -95,7 +95,7 @@ d("the books against PayPal's (simulated PayPal)", async () => {
     expect(await booksOk()).toBe(true);
     expect(await fresh()).toMatchObject({ owed: { totalMinor: 1500 }, paypal: { availableMinor: 1500 }, covered: true });
     // the receipt's check against PayPal still holds: the capture exists, for this amount, and is now refunded
-    expect((await G.reconcile(a.spend!.id)).checks.find((c) => c.name.startsWith("The rail has a capture"))).toMatchObject({ ok: true });
+    expect((await G.reconcile(a.spend!.id)).checks.find((c) => c.name.startsWith("PayPal capture exists"))).toMatchObject({ ok: true });
 
     // again, by a fresh signature and by the same one: nothing more happens anywhere
     expect((await B.refund(await E.signRefund(w.wr, a.spend!.id))).status).toBe("REFUNDED");
@@ -200,13 +200,13 @@ d("the books against PayPal's (simulated PayPal)", async () => {
     const w = await world();
     const a = await w.earn(5000);
     const clean = await G.reconcile(a.spend!.id);
-    expect(clean.checks.find((c) => c.name.startsWith("The rail holds no dispute"))).toMatchObject({ ok: true, detail: "none" });
+    expect(clean.checks.find((c) => c.name.startsWith("PayPal holds no dispute"))).toMatchObject({ ok: true, detail: "none" });
     expect(clean.ok).toBe(true);
 
     const disputeId = (await sim.simOpenDispute(a.spend!.captureId!, "UNAUTHORISED"))!;
     const seen = await G.reconcile(a.spend!.id);
     expect(seen.ok).toBe(false);
-    expect(seen.checks.find((c) => c.name.startsWith("The rail holds no dispute"))!.detail).toContain(disputeId);
+    expect(seen.checks.find((c) => c.name.startsWith("PayPal holds no dispute"))!.detail).toContain(disputeId);
     expect(await spendRow(a.spend!.id)).toMatchObject({ disputeId, disputeStatus: "WAITING_FOR_SELLER_RESPONSE" });
 
     const ev = await K.evidence(a.spend!.id);

@@ -38,7 +38,7 @@ d("the PayPal rail (simulated PayPal)", async () => {
   beforeEach(async () => {
     resetSimMemory();
     G.forgetGatewayKey();
-    await getDb().execute(sql`truncate table position_entries, rail_accounts, reconciliation_runs, audit_log, spends, blocks, roots, demo_keys, gateway_keys, emulator_state, rate_limits, accounts, ledger, transfers, cards, paypal_calls, paypal_events restart identity cascade`);
+    await getDb().execute(sql`truncate table audit_log, spends, blocks, roots, demo_keys, gateway_keys, emulator_state, rate_limits, accounts, ledger, transfers, cards, paypal_calls, paypal_events restart identity cascade`);
   });
 
   it("every PayPal call behind an envelope is on record, with no card number or body kept", async () => {
@@ -54,8 +54,8 @@ d("the PayPal rail (simulated PayPal)", async () => {
     expect(ops.filter((o) => ["hold.place", "capture", "payout.send", "hold.void"].includes(o))).toEqual(["hold.place", "capture", "payout.send", "hold.void"]);
     expect(t.summary).toMatchObject({ holds: 1, captures: 1, payouts: 1, voids: 1, refunds: 0, changed: 4, refused: 0 });
     const cap = t.calls.find((c) => c.op === "capture")!;
-    expect(cap).toMatchObject({ amountMinor: 2500, currency: "USD", providerStatus: "COMPLETED", requestId: `capture-${paid.spend!.id}`, resourceId: paid.spend!.captureId });
-    expect(t.calls.find((c) => c.op === "hold.place")).toMatchObject({ amountMinor: 20000, providerStatus: "CREATED", resourceId: w.root.authorizationId });
+    expect(cap).toMatchObject({ amountMinor: 2500, currency: "USD", paypalStatus: "COMPLETED", requestId: `capture-${paid.spend!.id}`, resourceId: paid.spend!.captureId });
+    expect(t.calls.find((c) => c.op === "hold.place")).toMatchObject({ amountMinor: 20000, paypalStatus: "CREATED", resourceId: w.root.authorizationId });
     const stored = JSON.stringify(await getDb().select().from(schema.paypalCalls));
     expect(stored).not.toMatch(/4012888888881881|4032039317984658|security_code|SIMULATED-TOKEN/);
     // the same signed request arriving again makes the gateway ask PayPal again with the same key: recorded as a repeat, counted once

@@ -37,7 +37,7 @@ d("accounts and promises (simulated PayPal)", async () => {
   beforeEach(async () => {
     resetSimMemory();
     G.forgetGatewayKey();
-    await getDb().execute(sql`truncate table position_entries, rail_accounts, reconciliation_runs, audit_log, spends, blocks, roots, demo_keys, gateway_keys, emulator_state, rate_limits, accounts, ledger, transfers, cards restart identity cascade`);
+    await getDb().execute(sql`truncate table audit_log, spends, blocks, roots, demo_keys, gateway_keys, emulator_state, rate_limits, accounts, ledger, transfers, cards restart identity cascade`);
   });
 
   it("an account can only be opened with the agent's own signature, so income can't be hijacked", async () => {
@@ -180,7 +180,7 @@ d("accounts and promises (simulated PayPal)", async () => {
     // the named key signs: PayPal captures and pays, with no further word from the payer
     const paid = await G.accept(real);
     expect(paid.status).toBe("PAID");
-    expect((await import("../lib/gateway/receipts")).receiptView(paid.receipt!).releasedBy).toEqual({ key: checker.publicKey, work, note: "Both files checked against the brief.", at: real.request.at });
+    expect(paid.receipt!.releasedBy).toEqual({ key: checker.publicKey, work, note: "Both files checked against the brief.", at: real.request.at });
     expect(paid.receipt!.paidTo!.settledTo).toBe("b•••@example.com");
     expect(await G.verifyReceipt(paid.receipt!)).toBe(true);
     expect(await blockRow(w.root.id)).toMatchObject({ reservedMinor: 0, spentMinor: 4500 });
@@ -232,7 +232,7 @@ d("accounts and promises (simulated PayPal)", async () => {
     // the owner signs: PayPal pays
     const ok = await G.accept(await E.signAccept(ada!, ask.spend!.id, { note: "Approved." }));
     expect(ok.status).toBe("PAID");
-    expect((await import("../lib/gateway/receipts")).receiptView(ok.receipt!).releasedBy!.key).toBe(ada!.publicKey);
+    expect(ok.receipt!.releasedBy!.key).toBe(ada!.publicKey);
     expect((await G.treasury(ada!.publicKey))!.approvals).toEqual([]);
 
     // the owner can also say no: the money goes back

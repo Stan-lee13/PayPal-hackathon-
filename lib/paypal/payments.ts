@@ -26,34 +26,13 @@
  */
 import { PayPalApiError, type PayPalClient } from "./client";
 import { toDecimalString, toMinor } from "../money";
-import { amount, type Amount } from "../rails/types";
 
 type Money = { currency_code: string; value: string };
 type RawAuth = { id: string; status: string; amount: Money; expiration_time?: string; custom_id?: string };
 
 export type AuthorizationFacts = { id: string; orderId: string | null; status: string; amountMinor: number; currency: string; expiresAt: string | null; customId: string | null };
 export type CaptureFacts = { id: string; status: string; amountMinor: number; currency: string; invoiceId: string | null };
-/**
- * PayPal's payout batch, as reported. `senderBatchId` is PayPal's own echo of what we sent, not our assumption.
- * The items are read from PayPal's item records; nothing here is filled in from the request.
- */
-export type PayoutFacts = { batchId: string; batchStatus: string; senderBatchId: string | null; items: PayPalPayoutItem[]; itemCount: number | null };
-export type PayPalPayoutItem = { itemId: string | null; senderItemId: string | null; status: string | null; amount: Amount | null; receiver: string | null; transactionId: string | null; error: string | null };
-
-/** One raw item, as PayPal's payout response carries it. */
-type RawPayoutItem = {
-  payout_item_id?: string;
-  transaction_id?: string;
-  transaction_status?: string;
-  payout_item?: { receiver?: string; sender_item_id?: string; amount?: { value?: string; currency?: string } };
-  errors?: { name?: string };
-};
-type RawPayoutBatch = {
-  batch_header?: { payout_batch_id?: string; batch_status?: string; sender_batch_header?: { sender_batch_id?: string } };
-  items?: RawPayoutItem[];
-  total_items?: number;
-  total_pages?: number;
-};
+export type PayoutFacts = { batchId: string; batchStatus: string; itemId: string | null; itemStatus: string | null; transactionId: string | null; receiver: string | null; error: string | null };
 
 /**
  * PayPal's documented sandbox test cards (developer.paypal.com/tools/sandbox/card-testing: any future
@@ -170,76 +149,24 @@ export async function refundCapture(pp: PayPalClient, captureId: string, spendId
   return pp.request("POST", `/v2/payments/captures/${encodeURIComponent(captureId)}/refund`, { requestId: `refund-${spendId}`, body: { note_to_payer: reason.slice(0, 255) } });
 }
 
-/**
- * Pay the payee. sender_batch_id is the spend id, so PayPal itself refuses a second payout for it.
- *
- * The return value is what PayPal reports: the batch it created, its own echo of the sender batch id, and —
- * when it can be read — the item records. When the read fails, the caller gets the batch and *no items*: the
- * amount and receiver it sent are not provider facts and must never be presented as such.
- */
+/** Pay the payee. sender_batch_id is the spend id, so PayPal itself refuses a second payout for it. */
 export async function payout(pp: PayPalClient, a: { spendId: string; receiverEmail: string; amountMinor: number; currency: string; note: string }): Promise<PayoutFacts> {
-  const r = await pp.request<RawPayoutBatch>("POST", "/v1/payments/payouts", {
+  const r = await pp.request<{ batch_header: { payout_batch_id: string; batch_status: string } }>("POST", "/v1/payments/payouts", {
     requestId: `payout-${a.spendId}`,
     body: {
       sender_batch_header: { sender_batch_id: a.spendId, email_subject: "You've been paid through an Envelope", email_message: a.note.slice(0, 1000) },
       items: [{ recipient_type: "EMAIL", receiver: a.receiverEmail, amount: { currency: a.currency, value: toDecimalString(a.amountMinor, a.currency) }, note: a.note.slice(0, 1000), sender_item_id: a.spendId }],
     },
   });
-  const batchId = r.batch_header?.payout_batch_id;
-  if (!batchId) throw new Error("PayPal accepted the payout without returning a batch id; the outcome cannot be recorded.");
-  const submission: PayoutFacts = {
-    batchId,
-    batchStatus: r.batch_header?.batch_status ?? "UNKNOWN",
-    // PayPal's own echo of the batch header, when it reports one.
-    senderBatchId: r.batch_header?.sender_batch_header?.sender_batch_id ?? null,
-    items: [], itemCount: null,
-  };
-  return getPayout(pp, batchId).catch(() => submission);
+  const id = r.batch_header.payout_batch_id;
+  return getPayout(pp, id).catch(() => ({ batchId: id, batchStatus: r.batch_header.batch_status, itemId: null, itemStatus: null, transactionId: null, receiver: a.receiverEmail, error: null }));
 }
 
-/**
- * Read a payout batch from PayPal, every item it reports.
- *
- * Items are paginated: this adapter sends one item per batch, but it does not assume PayPal returns them in
- * one page, and it never picks an item out of the list. Selection happens in the gateway, by sender reference.
- */
 export async function getPayout(pp: PayPalClient, batchId: string): Promise<PayoutFacts> {
-  const items: PayPalPayoutItem[] = [];
-  let batch: RawPayoutBatch | null = null;
-  for (let page = 1; page <= 20; page++) {
-    const r = await pp.request<RawPayoutBatch>("GET", `/v1/payments/payouts/${encodeURIComponent(batchId)}`, {
-      query: { page: String(page), page_size: "100", total_required: "true" },
-    });
-    batch = r;
-    for (const it of r.items ?? []) items.push(payoutItem(it));
-    const pages = r.total_pages ?? 0;
-    if (!pages || page >= pages) break;
-  }
-  if (!batch?.batch_header?.payout_batch_id) throw new Error(`PayPal returned no payout batch for ${batchId}.`);
-  return {
-    batchId: batch.batch_header.payout_batch_id,
-    batchStatus: batch.batch_header.batch_status ?? "UNKNOWN",
-    senderBatchId: batch.batch_header.sender_batch_header?.sender_batch_id ?? null,
-    items,
-    itemCount: typeof batch.total_items === "number" ? batch.total_items : null,
-  };
-}
-
-function payoutItem(it: RawPayoutItem): PayPalPayoutItem {
-  // The item's own amount, not the batch's: a batch can carry several items, and only the item says what this
-  // recipient was paid.
-  const a = it.payout_item?.amount;
-  let paid: Amount | null = null;
-  try { if (a?.value && a.currency) paid = amount(toMinor(a.value, a.currency), a.currency); } catch { paid = null; }
-  return {
-    itemId: it.payout_item_id ?? null,
-    senderItemId: it.payout_item?.sender_item_id ?? null,
-    status: it.transaction_status ?? null,
-    amount: paid,
-    receiver: it.payout_item?.receiver ?? null,
-    transactionId: it.transaction_id ?? null,
-    error: it.errors?.name ?? null,
-  };
+  const r = await pp.request<{ batch_header: { payout_batch_id: string; batch_status: string }; items?: Array<{ payout_item_id: string; transaction_id?: string; transaction_status?: string; payout_item?: { receiver?: string }; errors?: { name?: string; message?: string } }> }>(
+    "GET", `/v1/payments/payouts/${encodeURIComponent(batchId)}`);
+  const it = r.items?.[0];
+  return { batchId: r.batch_header.payout_batch_id, batchStatus: r.batch_header.batch_status, itemId: it?.payout_item_id ?? null, itemStatus: it?.transaction_status ?? null, transactionId: it?.transaction_id ?? null, receiver: it?.payout_item?.receiver ?? null, error: it?.errors?.name ?? null };
 }
 
 /** Cancel a payout item PayPal is holding unclaimed. PayPal returns the money to the sender and reports the item RETURNED. */

@@ -5,12 +5,8 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { fingerprint, PROMISE_VERSION, verifyChain, verifyDetached, verifyPromise, verifySpend, type Envelope } from "@/lib/envelope/core";
 import { Figure, Stamp, usd } from "@/components/stationery";
-import { receiptView } from "@/lib/gateway/receipts";
-import type { Receipt } from "@/lib/db/schema";
 
-// Either receipt version (v1 is PayPal-shaped and still verifies; v2 is provider-neutral). `receiptView` gives
-// one flat shape to render, so this page never reads a provider-specific field directly.
-type ReceiptT = Receipt;
+type ReceiptT = { v: string; spend: string; request: { amount: number; currency: string; payee: string; purpose: string; memo: string; at: string; leaf: string; nonce: string; v: string }; requestSig: string; releasedBy?: { key: string; work: string; note: string; at: string }; paidTo?: { account: string; agent: string; agentLabel: string; settledTo: string; held?: { ledgerEntry: number; balanceAfterMinor: number } }; chain: Array<{ id: string; hash: string; holder: string; holderLabel: string }>; principal: string; paypal: { mode: string; authorizationId: string; captureId: string; payoutBatchId: string | null; payoutItemId: string | null }; issuedAt: string; gateway: string; sig: string };
 type Data = { ok: boolean; checks: Array<{ name: string; ok: boolean; detail?: string }>; receipt: ReceiptT; chain: Envelope; spend: { id: string; status: string; payoutStatus: string | null; payoutTransactionId: string | null; agentNote: string | null } };
 
 /** A barcode drawn from the spend id: decoration, but the same id always draws the same bars. */
@@ -38,29 +34,25 @@ export function ReceiptView({ id }: { id: string }) {
       setD(j);
       // Independent verification in THIS browser: nothing below trusts the server's answer.
       const data = j as Data;
-      const rv = receiptView(data.receipt);
-      const at = new Date(rv.request.at);
+      const at = new Date(data.receipt.request.at);
       const { sig, ...body } = data.receipt;
       const [chain, spend, rec] = await Promise.all([
         verifyChain(data.chain, at),
-        (rv.request.v === PROMISE_VERSION ? verifyPromise : verifySpend)({ request: rv.request as never, sig: rv.requestSig, chain: data.chain }, at),
-        // The receipt's own version is the signing domain.
-        verifyDetached(data.receipt.gateway, rv.version, body, sig),
+        (data.receipt.request.v === PROMISE_VERSION ? verifyPromise : verifySpend)({ request: data.receipt.request as never, sig: data.receipt.requestSig, chain: data.chain }, at),
+        verifyDetached(data.receipt.gateway, "envelope-receipt/1", body, sig),
       ]);
       setLocal([
         { name: "Every block in the chain is signed by the holder above it, and only narrows it", ok: chain.ok },
-        { name: "The root is signed by the owner's key named on the receipt", ok: chain.principal === rv.principal },
-        { name: `The ${rv.request.v === PROMISE_VERSION ? "promise" : "spend request"} is signed by the agent the last envelope was given to, and fits its limits`, ok: spend.ok },
+        { name: "The root is signed by the owner's key named on the receipt", ok: chain.principal === data.receipt.principal },
+        { name: `The ${data.receipt.request.v === PROMISE_VERSION ? "promise" : "spend request"} is signed by the agent the last envelope was given to, and fits its limits`, ok: spend.ok },
         { name: "The receipt is signed by the gateway", ok: rec },
-        { name: "What a signature cannot show: delivery. Only the provider can confirm that, and the receipt names the operation to ask about", ok: true },
       ]);
     })();
   }, [id]);
 
   if (err) return <p className="sheet p-6 text-sm">{err}</p>;
   if (!d) return <p className="label py-10">Fetching the receipt and checking it against PayPal…</p>;
-  const r = receiptView(d.receipt);
-  const railLabel = r.provider.rail;
+  const r = d.receipt;
   const Check = ({ ok, name, detail }: { ok: boolean; name: string; detail?: string }) => (
     <li className="flex gap-2.5 border-t border-rule py-2.5 first:border-t-0"><span className={`mono w-4 shrink-0 font-semibold ${ok ? "text-green" : "text-red"}`}>{ok ? "✓" : "✕"}</span><span>{name}{detail ? <span className="mono mt-0.5 block text-[.7rem] text-ink-2">{detail}</span> : null}</span></li>
   );
@@ -89,7 +81,7 @@ export function ReceiptView({ id }: { id: string }) {
                 <p className="text-ink-2">{i === 0 ? "received the root envelope" : `was given a narrower envelope by ${d.chain[i - 1]!.body.holderLabel}`}: up to {usd(b.body.caps.limit)}, {b.body.caps.payees ? `only to ${b.body.caps.payees.join(", ")}` : "any payee"}, {b.body.caps.purposes ? `only for ${b.body.caps.purposes.join(", ")}` : "any purpose"}</p>
               </li>
             ))}
-            <li className="is-end"><p><b>{r.paidTo ? r.paidTo.agentLabel : r.request.payee}</b> received {usd(r.request.amount)}</p>{r.paidTo && <p className="text-ink-2">an agent with its own account ({r.paidTo.account}); {r.paidTo.held ? `credited to its balance (ledger entry ${r.paidTo.held.ledgerEntry}), not paid out` : `${railLabel} paid its owner at ${r.paidTo.settledTo}`}</p>}{d.spend.agentNote && <p className="text-ink-2">Agent's stated reason: “{d.spend.agentNote}”</p>}</li>
+            <li className="is-end"><p><b>{r.paidTo ? r.paidTo.agentLabel : r.request.payee}</b> received {usd(r.request.amount)}</p>{r.paidTo && <p className="text-ink-2">an agent with its own account ({r.paidTo.account}); {r.paidTo.held ? `credited to its balance (ledger entry ${r.paidTo.held.ledgerEntry}), not paid out` : `PayPal paid its owner at ${r.paidTo.settledTo}`}</p>}{d.spend.agentNote && <p className="text-ink-2">Agent's stated reason: “{d.spend.agentNote}”</p>}</li>
           </ol>
 
           {r.releasedBy && (
@@ -104,14 +96,13 @@ export function ReceiptView({ id }: { id: string }) {
             </>
           )}
 
-          <h2 className="mt-3 border-t border-dashed border-ink pt-4 text-[.68rem] tracking-[.2em]">{railLabel.toUpperCase()}</h2>
+          <h2 className="mt-3 border-t border-dashed border-ink pt-4 text-[.68rem] tracking-[.2em]">PAYPAL</h2>
           <dl className="mt-2 space-y-1">
-            <div className="leader"><dt className="text-ink-2">Hold</dt><i /><dd>{r.ops.authorization ?? "none"}</dd></div>
-            <div className="leader"><dt className="text-ink-2">Capture</dt><i /><dd>{r.ops.capture ?? "none"}</dd></div>
-            <div className="leader"><dt className="text-ink-2">Payout batch</dt><i /><dd>{r.ops.payout ? <>{r.ops.payout}{d.spend.payoutStatus ? ` · ${d.spend.payoutStatus}` : ""}</> : "none: kept in the agent\u2019s balance"}</dd></div>
+            <div className="leader"><dt className="text-ink-2">Hold</dt><i /><dd>{r.paypal.authorizationId}</dd></div>
+            <div className="leader"><dt className="text-ink-2">Capture</dt><i /><dd>{r.paypal.captureId}</dd></div>
+            <div className="leader"><dt className="text-ink-2">Payout batch</dt><i /><dd>{r.paypal.payoutBatchId ? <>{r.paypal.payoutBatchId}{d.spend.payoutStatus ? ` · ${d.spend.payoutStatus}` : ""}</> : "none: kept in the agent\u2019s balance"}</dd></div>
             {d.spend.payoutTransactionId && <div className="leader"><dt className="text-ink-2">Payout txn</dt><i /><dd>{d.spend.payoutTransactionId}</dd></div>}
-            <div className="leader"><dt className="text-ink-2">Environment</dt><i /><dd>{r.provider.mode === "sandbox" ? "sandbox (real API, test money)" : r.provider.mode}</dd></div>
-            <div className="leader"><dt className="text-ink-2">Settlement then</dt><i /><dd>{r.settlement.state}</dd></div>
+            <div className="leader"><dt className="text-ink-2">Environment</dt><i /><dd>{r.paypal.mode === "sandbox" ? "sandbox (real API, test money)" : r.paypal.mode}</dd></div>
           </dl>
           <div className="mt-6"><Bars id={r.spend} /></div>
           <p className="mt-1.5 text-center text-[.68rem] tracking-[.14em] text-ink-2">{r.spend}</p>
@@ -136,7 +127,7 @@ export function ReceiptView({ id }: { id: string }) {
           <div className="flex flex-wrap items-center justify-between gap-3 border-b-[1.5px] border-ink pb-3"><h2 className="title text-2xl">Verified in your browser</h2>{local && <Stamp tone={localOk ? "green" : "red"} land>{localOk ? "Signatures valid" : "Invalid"}</Stamp>}</div>
           <p className="mt-3 text-sm text-ink-2">Your browser re-ran the Ed25519 checks on the raw chain. This doesn't rely on the gateway being honest.</p>
           <ul className="mt-2 text-[.92rem]">{(local ?? []).map((c, i) => <Check key={i} {...c} />)}</ul>
-          <details className="mt-4 text-xs"><summary className="label cursor-pointer">Raw receipt</summary><pre className="code mt-2 max-h-80 overflow-auto p-3 text-[11px]">{JSON.stringify(d.receipt, null, 2)}</pre></details>
+          <details className="mt-4 text-xs"><summary className="label cursor-pointer">Raw receipt</summary><pre className="code mt-2 max-h-80 overflow-auto p-3 text-[11px]">{JSON.stringify(r, null, 2)}</pre></details>
         </section>
       </div>
     </div>

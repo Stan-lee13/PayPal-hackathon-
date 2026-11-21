@@ -33,7 +33,7 @@ d("a hold the payer approves at PayPal (simulated PayPal)", async () => {
   beforeEach(async () => {
     resetSimMemory();
     G.forgetGatewayKey();
-    await getDb().execute(sql`truncate table position_entries, rail_accounts, reconciliation_runs, audit_log, spends, blocks, roots, demo_keys, gateway_keys, emulator_state, rate_limits, accounts, ledger, transfers, cards, paypal_calls, paypal_events restart identity cascade`);
+    await getDb().execute(sql`truncate table audit_log, spends, blocks, roots, demo_keys, gateway_keys, emulator_state, rate_limits, accounts, ledger, transfers, cards, paypal_calls, paypal_events restart identity cascade`);
   });
 
   it("nothing is held or recorded until the payer approves; then the hold is placed on the order they approved", async () => {
@@ -65,7 +65,7 @@ d("a hold the payer approves at PayPal (simulated PayPal)", async () => {
     // the record of PayPal calls says how the hold came about, and the audit trail says who approved
     const t = (await S.paypalTrail(w.id))!;
     // (records are written without waiting, so their order is not asserted)
-    expect(t.calls.map((c) => `${c.op} ${c.providerStatus}`).filter((x) => /^(hold\.ask|order\.read|hold\.place) /.test(x)).sort()).toEqual(["hold.ask PAYER_ACTION_REQUIRED", "hold.place CREATED", "order.read APPROVED", "order.read PAYER_ACTION_REQUIRED"]);
+    expect(t.calls.map((c) => `${c.op} ${c.paypalStatus}`).filter((x) => /^(hold\.ask|order\.read|hold\.place) /.test(x)).sort()).toEqual(["hold.ask PAYER_ACTION_REQUIRED", "hold.place CREATED", "order.read APPROVED", "order.read PAYER_ACTION_REQUIRED"]);
     expect(t.summary).toMatchObject({ holds: 1 });
     const placed = (await getDb().select().from(schema.auditLog)).find((a) => a.action === "hold.placed")!;
     expect(placed.detail).toMatchObject({ funding: "approved by the payer in PayPal's checkout", payerId: "SIMPAYER7Q2" });

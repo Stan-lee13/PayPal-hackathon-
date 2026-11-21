@@ -5,7 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/client/api";
 import { Stamp, usd } from "./stationery";
 
-type Call = { at: string; op: string; text: string; moves: boolean; method: string; path: string; httpStatus: number; providerStatus: string | null; resourceId: string | null; amountMinor: number | null; providerDebugId: string | null; ms: number; error: string | null; repeat: boolean };
+type Call = { id: number; at: string; op: string; text: string; moves: boolean; method: string; path: string; httpStatus: number; paypalStatus: string | null; resourceId: string | null; amountMinor: number | null; debugId: string | null; ms: number; error: string | null; repeat: boolean };
 type Rail = {
   mode: string; calls: Call[];
   summary: { total: number; changed: number; asked: number; repeats: number; refused: number; holds: number; captures: number; payouts: number; refunds: number; cancels: number; voids: number };
@@ -46,18 +46,18 @@ export function PayPalRail({ id, tick }: { id: string; tick?: unknown }) {
         Envelope decides who may ask, for how much and for whom. PayPal does the rest: it holds the owner&rsquo;s money, takes exactly what each approved payment needs, delivers it, and gives back what was never spent. Each line below is one call the gateway made to PayPal, with PayPal&rsquo;s own id for it.
       </p>
       <ol className="mt-4 border-t-[1.5px] border-ink" data-testid="paypal-calls">
-        {shown.map((c, i) => {
+        {shown.map((c) => {
           const ok = c.httpStatus >= 200 && c.httpStatus < 300;
           return (
-            <li key={`${c.at}-${i}`} className="grid grid-cols-[minmax(0,1fr)_auto] items-baseline gap-x-3 gap-y-0.5 border-b border-rule py-2.5">
+            <li key={c.id} className="grid grid-cols-[minmax(0,1fr)_auto] items-baseline gap-x-3 gap-y-0.5 border-b border-rule py-2.5">
               <p className="min-w-0 text-[.9rem]">
                 <span className="mono mr-2 text-[.66rem] text-ink-3">{hms(c.at)}</span>
                 <span className={c.moves && !c.repeat ? "title" : "text-ink-2"}>{c.text}</span>
                 {c.amountMinor != null && c.moves && !c.repeat && <span className="money ml-2">{usd(c.amountMinor)}</span>}
                 {c.repeat && <span className="ml-2 text-xs text-ink-3">same request sent again: PayPal returned its first answer and did nothing new</span>}
               </p>
-              <p className="justify-self-end">{ok ? (c.providerStatus ? <Stamp tone={c.moves && !c.repeat ? "blue" : "grey"} flat>{c.providerStatus.replace(/_/g, " ")}</Stamp> : null) : <Stamp tone="red" flat>{c.error ?? `HTTP ${c.httpStatus}`}</Stamp>}</p>
-              <p className="mono col-span-2 text-[.64rem] leading-snug text-ink-3 [overflow-wrap:anywhere]">{c.method} {c.path} · {c.httpStatus}{c.resourceId ? ` · ${c.resourceId}` : ""}{c.providerDebugId ? ` · debug ${c.providerDebugId}` : ""} · {c.ms} ms</p>
+              <p className="justify-self-end">{ok ? (c.paypalStatus ? <Stamp tone={c.moves && !c.repeat ? "blue" : "grey"} flat>{c.paypalStatus.replace(/_/g, " ")}</Stamp> : null) : <Stamp tone="red" flat>{c.error ?? `HTTP ${c.httpStatus}`}</Stamp>}</p>
+              <p className="mono col-span-2 text-[.64rem] leading-snug text-ink-3 [overflow-wrap:anywhere]">{c.method} {c.path} · {c.httpStatus}{c.resourceId ? ` · ${c.resourceId}` : ""}{c.debugId ? ` · debug ${c.debugId}` : ""} · {c.ms} ms</p>
             </li>
           );
         })}

@@ -44,7 +44,7 @@ d("agent balances (simulated PayPal)", async () => {
   beforeEach(async () => {
     resetSimMemory();
     G.forgetGatewayKey();
-    await getDb().execute(sql`truncate table position_entries, rail_accounts, reconciliation_runs, audit_log, spends, blocks, roots, demo_keys, gateway_keys, emulator_state, rate_limits, accounts, ledger, transfers, cards restart identity cascade`);
+    await getDb().execute(sql`truncate table audit_log, spends, blocks, roots, demo_keys, gateway_keys, emulator_state, rate_limits, accounts, ledger, transfers, cards restart identity cascade`);
   });
 
   it("income to an account that holds is captured from the payer's hold and credited once, with no payout", async () => {
@@ -127,8 +127,7 @@ d("agent balances (simulated PayPal)", async () => {
     const out = await B.transfer(await E.signTransfer(w.tr, { amount: 1500, payee: "glossary-vendor@example.com", purpose: "glossary" }));
     expect(out.status).toBe("PAID");
     expect(out.transfer).toMatchObject({ payoutTo: "glossary-vendor@example.com" });
-    // A payout names its rail; it is not called a PayPal transfer unless PayPal paid it.
-    expect(out.receipt!.to).toMatchObject({ kind: "payout", rail: "paypal", address: "g•••@example.com" });
+    expect(out.receipt!.to).toMatchObject({ kind: "paypal", address: "g•••@example.com" });
     // an account that settles (does not hold) is paid out to the address its owner signed for
     const settle = await B.transfer(await E.signTransfer(w.tr, { amount: 500, payee: w.archive, purpose: "storage" }));
     expect(settle.transfer).toMatchObject({ status: "PAID", payoutTo: "dee@example.com", toAgent: w.ar.publicKey });

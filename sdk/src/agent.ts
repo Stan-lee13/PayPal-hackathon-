@@ -496,21 +496,13 @@ export async function checkReference(gateway: Gateway | string, tokenOrReference
 }
 
 /**
- * Fetch a receipt and check it twice. `provider` is the gateway's comparison with the *rail's* own records made
- * just now — whatever rail that is, so a non-PayPal receipt is never reported under a PayPal-shaped name.
- * `paypal` is the same object kept for existing callers (see docs/SDK.md): it is a deprecated alias, not a
- * second check. `verify()` re-runs every signature on this machine without trusting the gateway.
+ * Fetch a receipt and check it twice: `paypal` is the gateway's comparison with PayPal's own records
+ * made just now; `verify()` re-runs every signature on this machine without trusting the gateway.
  */
-export async function getReceipt(gateway: Gateway | string, spendId: string): Promise<ReceiptResponse & {
-  provider: { ok: boolean; checks: ReceiptResponse["checks"] };
-  /** @deprecated use `provider`; identical value, kept so existing integrations keep working. */
-  paypal: { ok: boolean; checks: ReceiptResponse["checks"] };
-  verify: () => Promise<Verification>;
-}> {
+export async function getReceipt(gateway: Gateway | string, spendId: string): Promise<ReceiptResponse & { paypal: { ok: boolean; checks: ReceiptResponse["checks"] }; verify: () => Promise<Verification> }> {
   const g = connect(gateway);
   const r = await g.receipt(text(spendId, "spend id", 60));
-  const compared = { ok: r.ok, checks: r.checks };
-  return { ...r, provider: compared, paypal: compared, verify: async () => verifyReceipt(r, (await g.key()).publicKey) };
+  return { ...r, paypal: { ok: r.ok, checks: r.checks }, verify: async () => verifyReceipt(r, (await g.key()).publicKey) };
 }
 
 /** Where a payment stands now, whatever its state: set aside, refused, in flight, unclaimed, paid, refunded. Asking makes the gateway ask PayPal. */

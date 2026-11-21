@@ -14,7 +14,6 @@ if (paypalMode() !== "sandbox") throw new Error("Set PAYPAL_CLIENT_ID and PAYPAL
 const E = await import("../lib/envelope/core");
 const G = await import("../lib/gateway/service");
 const B = await import("../lib/gateway/bank");
-const { receiptView } = await import("../lib/gateway/receipts");
 const { closeDb } = await import("../lib/db");
 const { getPayPal } = await import("../lib/paypal/client");
 const { getAuthorization } = await import("../lib/paypal/payments");
@@ -66,7 +65,7 @@ const work = await E.sha256("glossary.fr.json + glossary.yo.json");
 let payeeTried = "refused";
 try { await G.accept(await E.signAccept(tr!, pr3.spend!.id, { work })); payeeTried = "NOT REFUSED"; } catch (e) { payeeTried = `refused: ${e instanceof Error ? e.message : e}`; }
 const acc = await G.accept(await E.signAccept(ops!, pr3.spend!.id, { work, note: "Glossary checked against the brief." }));
-log("$10 set aside, payable on ops-agent's acceptance; the payee could not release it itself; ops-agent's signature did", { promised: pr3.status, payeeTriedToReleaseIt: payeeTried, status: acc.status, capture: acc.spend?.captureId, payoutBatch: acc.spend?.payoutBatchId, workFingerprintOnReceipt: receiptView(acc.receipt!).releasedBy?.work, receiptSignatureValid: acc.receipt ? await G.verifyReceipt(acc.receipt) : false });
+log("$10 set aside, payable on ops-agent's acceptance; the payee could not release it itself; ops-agent's signature did", { promised: pr3.status, payeeTriedToReleaseIt: payeeTried, status: acc.status, capture: acc.spend?.captureId, payoutBatch: acc.spend?.payoutBatchId, workFingerprintOnReceipt: acc.receipt?.releasedBy?.work, receiptSignatureValid: acc.receipt ? await G.verifyReceipt(acc.receipt) : false });
 const pay2 = await G.spend(await E.signSpend(artChain, art!, { amount: 7000, payee: designer, purpose: "design", memo: "Launch banner set" }));
 log("creative-agent paid $70", { status: pay2.status, capture: pay2.spend?.captureId, payoutBatch: pay2.spend?.payoutBatchId, reasons: pay2.reasons });
 
@@ -82,7 +81,7 @@ let selfPay = "refused";
 try { await G.keep(await E.signKeep(ops!, asked.spend!.id, "pay")); selfPay = "NOT REFUSED"; } catch (e) { selfPay = `refused: ${e instanceof Error ? e.message : e}`; }
 const waiting = (await G.treasury(ada!.publicKey))?.approvals.length;
 const signedOff = await G.accept(await E.signAccept(ada!, asked.spend!.id, { note: "Approved by the owner." }));
-log("a $72 payment is over the $70 the owner asked to sign for: refused outright, then set aside, the agent could not pay it itself, and the owner's signature paid it", { direct: tooBig.status, directReasons: tooBig.reasons.map((r) => r.code), asked: asked.status, agentTriedToPayItself: selfPay, waitingInOwnersInbox: waiting, afterOwnerSigned: signedOff.status, capture: signedOff.spend?.captureId, payoutBatch: signedOff.spend?.payoutBatchId, signedByOwnerOnReceipt: receiptView(signedOff.receipt!).releasedBy?.key === ada!.publicKey });
+log("a $72 payment is over the $70 the owner asked to sign for: refused outright, then set aside, the agent could not pay it itself, and the owner's signature paid it", { direct: tooBig.status, directReasons: tooBig.reasons.map((r) => r.code), asked: asked.status, agentTriedToPayItself: selfPay, waitingInOwnersInbox: waiting, afterOwnerSigned: signedOff.status, capture: signedOff.spend?.captureId, payoutBatch: signedOff.spend?.payoutBatchId, signedByOwnerOnReceipt: signedOff.receipt?.releasedBy?.key === ada!.publicKey });
 
 const rc = pay1.spend ? await G.reconcile(pay1.spend.id) : null;
 log("receipt reconciled against PayPal", { ok: rc?.ok, checks: rc?.checks });
@@ -236,7 +235,7 @@ log("disputes: PayPal was asked for every dispute against the account", { asked:
 // What PayPal did, call by call, for each envelope: read back from the gateway's record of its own PayPal calls.
 for (const [name, r] of [["first", root], ["second", root2], ["third", root3]] as const) {
   const t = (await S.paypalTrail(r.id))!;
-  log(`PayPal calls behind the ${name} envelope`, { ...t.summary, calls: t.calls.filter((c) => c.moves || c.error).map((c) => `${c.method} ${c.path} → ${c.httpStatus}${c.providerStatus ? ` ${c.providerStatus}` : ""}${c.error ? ` ${c.error}` : ""}${c.amountMinor != null ? ` ${usd(c.amountMinor)}` : ""} · ${c.resourceId ?? "-"} · debug ${c.providerDebugId ?? "-"} · ${c.ms}ms`) });
+  log(`PayPal calls behind the ${name} envelope`, { ...t.summary, calls: t.calls.filter((c) => c.moves || c.error).map((c) => `${c.method} ${c.path} → ${c.httpStatus}${c.paypalStatus ? ` ${c.paypalStatus}` : ""}${c.error ? ` ${c.error}` : ""}${c.amountMinor != null ? ` ${usd(c.amountMinor)}` : ""} · ${c.resourceId ?? "-"} · debug ${c.debugId ?? "-"} · ${c.ms}ms`) });
 }
 
 mkdirSync("docs/evidence", { recursive: true });

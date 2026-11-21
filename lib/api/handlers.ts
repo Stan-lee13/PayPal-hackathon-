@@ -6,8 +6,7 @@
 import { asc, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "../db";
-import { auditLog, roots, spends } from "../db/schema";
-import { visibleTo, type TenantScope } from "../db/tenant-context";
+import { auditLog, roots } from "../db/schema";
 import { act, attachDemoAgents, BANK_ACTIONS, bankAct, createDemoAgents, DEMO_ACTIONS, demoHello, ensureCounterparty, hasDemoAgents, isBankDemoAgent, isDemoAgent, runTool, TOOL_AGENTS } from "../demo/agents";
 import * as E from "../envelope/core";
 import * as B from "../gateway/bank";
@@ -16,25 +15,12 @@ import * as A from "../gateway/auditor";
 import { proof } from "../gateway/proof";
 import * as G from "../gateway/service";
 import * as S from "../gateway/settlement";
+import { flushJournal } from "../paypal/journal";
 import { verifyChain } from "../ledger/chain";
-import { rail, railMode } from "../rails";
+import { paypalMode } from "../paypal/client";
 import { REASON_TEXT } from "../reasons";
-import { demoEnabled, policyFor } from "./route-policy";
 
-/** Demo and simulation routes are development tools; production refuses them, whatever the UI links to. */
-const DEMO_OFF: Output = { status: 404, body: { error: "This demo endpoint is not available in production." } };
-
-export type Input = {
-  params: Record<string, string>; body: unknown;
-  /** Lower-cased request headers and the body as sent; only the webhook and sweep endpoints read them. */
-  headers?: Record<string, string>; raw?: string;
-  /**
-   * The organization the request is served for, resolved from a server-validated session by lib/api/next.ts.
-   * Absent on the in-browser gateway and for signed-agent callers, which have no session and keep their old
-   * reads; present, it decides what the addressed reads may return.
-   */
-  scope?: TenantScope | null;
-};
+export type Input = { params: Record<string, string>; body: unknown; /** Lower-cased request headers and the body as sent; only the webhook and sweep endpoints read them. */ headers?: Record<string, string>; raw?: string };
 export type Output = { status?: number; body: unknown };
 export type Handler = (i: Input) => Promise<Output>;
 
@@ -63,46 +49,10 @@ async function ownerAsks(body: unknown, principal: string): Promise<boolean> {
   return p.success && p.data.signed.by === principal && (await E.verifyReadSignature(p.data.signed as never, "treasury", principal));
 }
 const spendStatus = (s: string) => (s === "DENIED" ? 403 : s === "FAILED" ? 502 : s === "LAPSED" ? 409 : 200);
-/** A spend the caller's organization may see. A row in another organization is "not found". */
-async function spendVisible(id: string, scope: TenantScope | null | undefined): Promise<boolean> {
-  const s = await getDb().query.spends.findFirst({ where: eq(spends.id, id), columns: { orgId: true } });
-  return Boolean(s) && visibleTo(scope, s!.orgId);
-}
-
-/**
- * An event reported by whichever rail is configured. The rail parses its own event shape and asks its
- * provider to confirm the signature; the event is then applied once, as a reason to read a record by id.
- * Both routes below are this function: `/api/rails/webhook` is the neutral name, the PayPal path is kept
- * because PayPal's dashboard already points at it.
- */
-async function railEvent(i: Input): Promise<Output> {
-  const r = rail();
-  // The bytes that were signed are the bytes that are applied. The body never comes from a second source,
-  // so a request whose parsed body and raw text disagree cannot get an authenticated event applied with
-  // different content than the provider signed.
-  let parsed: unknown = i.body;
-  if (typeof i.raw === "string" && i.raw.length > 0) {
-    try { parsed = JSON.parse(i.raw); } catch { return { status: 400, body: { error: "The request body is not JSON." } }; }
-  }
-  const ev = r.events.parse(parsed);
-  if (!ev) return { status: 400, body: { error: `Not a ${r.label} event.` } };
-  const genuine = await S.genuineEvent(i.headers ?? {}, i.raw ?? JSON.stringify(parsed));
-  if (genuine === "unconfigured") return { status: 503, body: { error: "No webhook id is configured (ENVELOPE_WEBHOOK_ID, or PAYPAL_WEBHOOK_ID on existing deployments), so events cannot be verified and are not accepted." } };
-  if (genuine === "no") return { status: 401, body: { error: `${r.label} did not confirm this event.` } };
-  return { body: await S.applyPayPalEvent({ id: ev.id, event_type: ev.type, resource: ev.resource }, "webhook") };
-}
 
 async function sweepFor(headers: Record<string, string> | undefined): Promise<Output> {
   const secret = process.env.CRON_SECRET;
-  // A scheduler route is never anonymous in production. Without a secret there is nothing to authenticate a
-  // caller with, so the route refuses instead of running work for whoever asks.
-  if (!secret) {
-    if (process.env.NODE_ENV === "production") {
-      return { status: 503, body: { error: "CRON_SECRET is not configured, so this scheduler route cannot be authenticated and will not run." } };
-    }
-    return { body: await S.sweepUnfinished() };
-  }
-  if (headers?.authorization !== `Bearer ${secret}`) return { status: 401, body: { error: "Not authorized." } };
+  if (secret && headers?.authorization !== `Bearer ${secret}`) return { status: 401, body: { error: "Not authorized." } };
   return { body: await S.sweepUnfinished() };
 }
 
@@ -126,24 +76,21 @@ export const handlers: Record<string, Handler> = {
   },
   /** The simulated payer approves in the simulated checkout. Exists only on the simulator. */
   "POST /api/sim/paypal/approve": async ({ body }) => {
-    if (!demoEnabled()) return DEMO_OFF;
-    if (railMode() !== "simulated") return { status: 404, body: { error: "There is no simulated checkout here: this gateway talks to a real rail." } };
+    if (paypalMode() !== "simulated") return { status: 404, body: { error: "There is no simulated checkout here: this gateway talks to PayPal." } };
     const b = z.object({ orderId: z.string().regex(/^[A-Z0-9]{6,40}$/) }).parse(body);
     const { simApproveOrder } = await import("../paypal/emulator");
     return (await simApproveOrder(b.orderId)) ? { body: { approved: true } } : { status: 409, body: { error: "There is no order with that id waiting for approval." } };
   },
 
-  "POST /api/envelopes": async ({ body, scope }) => {
+  "POST /api/envelopes": async ({ body }) => {
     const b = z.object({ chain: z.array(z.any()).length(1), principalName: z.string().max(80).default("Principal"), title: z.string().max(120).default("Envelope"), draftId: z.string().regex(/^draft_[A-Za-z0-9_-]{8,40}$/).optional(), paypalOrderId: z.string().regex(/^[A-Z0-9]{6,40}$/).optional() }).parse(body);
-    // A signed-in person seals under the organization they are signed in to. The signature still proves the key;
-    // the session only says whose money the envelope is recorded as.
-    const root = await G.registerRoot({ chain: b.chain, principalName: b.principalName, title: b.title, paypalOrderId: b.paypalOrderId, orgId: scope?.orgId ?? null });
+    const root = await G.registerRoot({ chain: b.chain, principalName: b.principalName, title: b.title, paypalOrderId: b.paypalOrderId });
     return { body: { root, demoAgents: b.draftId ? await attachDemoAgents(b.draftId, b.chain) : false } };
   },
 
-  "GET /api/envelopes/:id": async ({ params, scope }) => {
+  "GET /api/envelopes/:id": async ({ params }) => {
     const id = params.id!;
-    let t = await G.tree(id, scope);
+    let t = await G.tree(id);
     if (!t) return { status: 404, body: { error: "No such envelope." } };
     // Anything unfinished is moved along when the page is looked at: a payout PayPal has not delivered yet or is
     // holding unclaimed, a capture it was still reviewing, a refund it refused earlier, a payment interrupted mid-way.
@@ -158,7 +105,7 @@ export const handlers: Record<string, Handler> = {
     const trail = await getDb().select().from(auditLog).where(eq(auditLog.subjectId, id)).orderBy(asc(auditLog.seq));
     const audit = verifyChain(t.root.principal, id, trail.map((x) => ({ ...x, createdAt: x.createdAt.toISOString() })) as never);
     return { body: {
-      mode: railMode(), root: t.root, demoAgents: await hasDemoAgents(id), payees: t.payees,
+      mode: paypalMode(), root: t.root, demoAgents: await hasDemoAgents(id), payees: t.payees,
       blocks: t.blocks.map(({ raw: _raw, ...b }) => b),
       spends: t.spends.map(({ signed: _s, receipt: _r, payoutTo: _p, ...s }) => ({ ...s, hasReceipt: Boolean(_r), releaseBy: (_s.request as E.PromiseRequest).releaseBy ?? null })),
       audit: { ok: audit.ok, length: audit.length, entries: trail.map((x) => ({ seq: x.seq, at: x.createdAt, actor: x.actor, action: x.action, ref: x.ref, outcome: x.outcome })) },
@@ -166,26 +113,24 @@ export const handlers: Record<string, Handler> = {
   },
 
   /** A receipt, its full authority chain, and a live check of it against PayPal. */
-  "GET /api/spends/:id": async ({ params, scope }) => {
-    const r = await G.reconcile(params.id!, scope);
+  "GET /api/spends/:id": async ({ params }) => {
+    const r = await G.reconcile(params.id!);
     return { body: { ok: r.ok, checks: r.checks, receipt: r.receipt, chain: r.spend.signed.chain, spend: { id: r.spend.id, status: r.spend.status, payoutStatus: r.spend.payoutStatus, payoutTransactionId: r.spend.payoutTransactionId, agentNote: r.spend.agentNote } } };
   },
 
   /** The proof graph of an envelope: every signed record behind it, with what a browser needs to check each one. */
   /** Where one payment stands now, whatever its state (a receipt exists only once PayPal has captured). Asking makes the gateway ask PayPal. */
-  "GET /api/spends/:id/status": async ({ params, scope }) => {
-    // The check comes first: asking the provider about another organization's payment would leak that it exists.
-    if (!(await spendVisible(params.id!, scope))) return { status: 404, body: { error: "No such payment." } };
+  "GET /api/spends/:id/status": async ({ params }) => {
     const s = await G.syncSpend(params.id!);
     return { body: { id: s.id, status: s.status, delivered: s.status === "PAID", amountMinor: s.amountMinor, currency: s.currency, payee: s.payee, purpose: s.purpose, payoutStatus: s.payoutStatus, captureId: s.captureId, refundId: s.refundId, hasReceipt: Boolean(s.receipt), reasons: withMeaning(s.reasons) } };
   },
 
   /** What the gateway would send PayPal if the payer disputed this payment: the signed chain of authority, in words and in full. */
-  "GET /api/spends/:id/evidence": async ({ params, scope }) => ({ body: await K.evidence(params.id!, scope) }),
+  "GET /api/spends/:id/evidence": async ({ params }) => ({ body: await K.evidence(params.id!) }),
 
   /** Every call the gateway made to PayPal for this envelope, and the events PayPal reported about it. */
-  "GET /api/envelopes/:id/paypal": async ({ params, scope }) => {
-    const t = await S.paypalTrail(params.id!, scope);
+  "GET /api/envelopes/:id/paypal": async ({ params }) => {
+    const t = await S.paypalTrail(params.id!);
     return t ? { body: t } : { status: 404, body: { error: "No such envelope." } };
   },
 
@@ -196,10 +141,15 @@ export const handlers: Record<string, Handler> = {
     return { status: s.status === "FAILED" && s.refundId ? 200 : 202, body: { status: s.status, spendId: s.id, refundId: s.refundId, payoutStatus: s.payoutStatus, reasons: withMeaning(s.reasons) } };
   },
 
-  /** The configured rail reports something. Verified with that provider, applied once, and only ever as a reason to ask it by id. */
-  "POST /api/rails/webhook": railEvent,
-  /** The same endpoint under the name PayPal's dashboard already uses. */
-  "POST /api/paypal/webhook": railEvent,
+  /** PayPal reports something. Verified with PayPal, applied once, and only ever as a reason to ask PayPal by id. */
+  "POST /api/paypal/webhook": async ({ body, headers, raw }) => {
+    const ev = z.object({ id: z.string().min(1).max(100), event_type: z.string().min(1).max(100), resource: z.record(z.string(), z.unknown()).optional() }).safeParse(body);
+    if (!ev.success) return { status: 400, body: { error: "Not a PayPal event." } };
+    const genuine = await S.genuineEvent(headers ?? {}, raw ?? JSON.stringify(body));
+    if (genuine === "unconfigured") return { status: 503, body: { error: "No webhook id is configured (PAYPAL_WEBHOOK_ID), so events cannot be verified and are not accepted." } };
+    if (genuine === "no") return { status: 401, body: { error: "PayPal did not confirm this event." } };
+    return { body: await S.applyPayPalEvent(ev.data, "webhook") };
+  },
 
   /** Move along everything unfinished. For a scheduler: with CRON_SECRET set, it must be presented as a bearer token. */
   "POST /api/sweep": async ({ headers }) => sweepFor(headers),
@@ -228,7 +178,7 @@ export const handlers: Record<string, Handler> = {
     }
     const p = await G.agentProfile(key);
     if (!p) return { status: 404, body: { error: "No agent with that key has been seen by this gateway." } };
-    return { body: { ...p, mode: railMode(), demo: await isDemoAgent(key), bankDemo: await isBankDemoAgent(key), cards: await B.cardsOf(key) } };
+    return { body: { ...p, mode: paypalMode(), demo: await isDemoAgent(key), bankDemo: await isBankDemoAgent(key), cards: await B.cardsOf(key) } };
   },
 
   /** An agent's record, signed by the gateway so the agent can show it to anyone. */
@@ -255,9 +205,9 @@ export const handlers: Record<string, Handler> = {
   },
 
   /** Open an account that can receive: signed by the agent's key and by its owner's key. */
-  "POST /api/accounts": async ({ body, scope }) => {
+  "POST /api/accounts": async ({ body }) => {
     const { signed } = z.object({ signed: z.object({ body: z.any(), agentSig: z.string(), ownerSig: z.string() }) }).parse(body);
-    const a = await G.openAccount(signed as never, scope?.orgId ?? null);
+    const a = await G.openAccount(signed as never);
     return { body: { account: a.account, payee: E.accountPayee(a.agent), agent: a.agent, label: a.label, owner: a.ownerName, settlesTo: G.maskEmail(a.settleTo), holds: a.mode === "hold", perPaymentMinor: a.perPaymentMinor, balanceMinor: a.balanceMinor } };
   },
 
@@ -302,20 +252,18 @@ export const handlers: Record<string, Handler> = {
     return { body: await B.cardById(c.id) };
   },
   /** Every card agents have issued here, and the accounts that could issue one. */
-  "GET /api/cards": async ({ scope }) => {
-    const [cards, books] = await Promise.all([B.allCards(60, scope), B.position(scope)]);
+  "GET /api/cards": async () => {
+    const [cards, books] = await Promise.all([B.allCards(), B.position()]);
     const accounts = await Promise.all(books.accounts.map(async (a) => ({ agent: a.agent, label: a.label, owner: a.owner, balanceMinor: a.balanceMinor, keepsIncome: a.mode === "hold", /** A built-in demo agent: its page has buttons that issue and charge a card. A real agent signs with its own key. */ demo: await isBankDemoAgent(a.agent) })));
-    return { body: { mode: railMode(), cards, accounts } };
+    return { body: { mode: paypalMode(), cards, accounts } };
   },
   /** A card's signed terms, what has been used, and every attempt to charge it. Nothing in it is secret. */
-  "GET /api/cards/:id": async ({ params, scope }) => {
-    const c = await B.cardById(params.id!, scope);
+  "GET /api/cards/:id": async ({ params }) => {
+    const c = await B.cardById(params.id!);
     return c ? { body: c } : { status: 404, body: { error: "No such card." } };
   },
   /** The books: every balance, and whether they add up. */
-  // `reserves` is the deployment's provider-level figure (what every balance owes, against PayPal's balance): it
-  // belongs to a provider account, which is a later phase. The balances themselves are the caller's organization's.
-  "GET /api/bank": async ({ scope }) => ({ body: { ...(await B.position(scope)), reserves: await K.reserves() } }),
+  "GET /api/bank": async () => ({ body: { ...(await B.position()), reserves: await K.reserves() } }),
   /** PayPal's own statement of the gateway's account, compared line by line with the captures and payouts recorded here. */
   "GET /api/bank/statement": async () => ({ body: await K.statement() }),
   /** An agent that kept a payment gives it back: its balance is debited and PayPal refunds the capture to the owner. */
@@ -324,8 +272,8 @@ export const handlers: Record<string, Handler> = {
     const r = await B.refund(b.signed as never);
     return { status: r.status === "REFUNDED" ? 200 : r.status === "PENDING" ? 202 : r.status === "FAILED" ? 502 : 403, body: { ...r, reasons: withMeaning(r.reasons) } };
   },
-  "GET /api/bank/transfers/:id": async ({ params, scope }) => {
-    const t = await B.transferById(params.id!, scope);
+  "GET /api/bank/transfers/:id": async ({ params }) => {
+    const t = await B.transferById(params.id!);
     return t ? { body: t } : { status: 404, body: { error: "No such transfer." } };
   },
 
@@ -380,24 +328,19 @@ export const handlers: Record<string, Handler> = {
   },
 
   /** The gateway's public key, so receipts, statements and promise notes can be checked offline. */
-  "GET /api/gateway/key": async () => ({ body: { publicKey: (await G.gatewayKey()).publicKey, signs: [...G.RECEIPT_VERSIONS, G.STANDING_VERSION, G.PROMISE_NOTE_VERSION] } }),
+  "GET /api/gateway/key": async () => ({ body: { publicKey: (await G.gatewayKey()).publicKey, signs: [G.RECEIPT_VERSION, G.STANDING_VERSION, G.PROMISE_NOTE_VERSION] } }),
 
   /** DEMO: create the console's scripted agents for a draft envelope; returns the key to seal it for. */
   "POST /api/demo/agents": async ({ body }) => {
-    if (!demoEnabled()) return DEMO_OFF;
     const { draftId } = z.object({ draftId: z.string().regex(/^draft_[A-Za-z0-9_-]{8,40}$/) }).parse(body);
     return { body: await createDemoAgents(draftId) };
   },
 
   /** DEMO: the agent on the other side of the table, with an account that can receive. */
-  "GET /api/demo/counterparty": async () => {
-    if (!demoEnabled()) return DEMO_OFF;
-    return { body: await ensureCounterparty() };
-  },
+  "GET /api/demo/counterparty": async () => ({ body: await ensureCounterparty() }),
 
   /** DEMO: one scripted agent step. It goes through the same gateway code as any external agent. */
   "POST /api/demo/act": async ({ body }) => {
-    if (!demoEnabled()) return DEMO_OFF;
     const b = z.object({ rootId: z.string().max(60), action: z.enum(DEMO_ACTIONS), owner: z.unknown().optional() }).parse(body);
     if (!(await ownerOfRootAsks(b.owner, b.rootId))) return NOT_OWNER;
     const r = await act(b.rootId, b.action);
@@ -406,7 +349,6 @@ export const handlers: Record<string, Handler> = {
 
   /** DEMO: the built-in earning agent uses its balance, or its owner freezes it. Same bank code as POST /api/bank/transfer. */
   "POST /api/demo/bank": async ({ body }) => {
-    if (!demoEnabled()) return DEMO_OFF;
     const b = z.object({ action: z.enum(BANK_ACTIONS) }).parse(body);
     const r = await bankAct(b.action);
     return { body: { ...r, reasons: withMeaning(r.reasons) } };
@@ -414,7 +356,6 @@ export const handlers: Record<string, Handler> = {
 
   /** DEMO: carry out one tool call a language model made while playing a built-in agent. The gateway decides. */
   "POST /api/demo/tool": async ({ body }) => {
-    if (!demoEnabled()) return DEMO_OFF;
     const b = z.object({ rootId: z.string().max(60), agent: z.enum(TOOL_AGENTS), tool: z.string().max(40), args: z.record(z.string(), z.unknown()).default({}), owner: z.unknown().optional() }).parse(body);
     if (!(await ownerOfRootAsks(b.owner, b.rootId))) return NOT_OWNER;
     const r = await runTool(b.rootId, b.agent, b.tool, b.args);
@@ -426,7 +367,7 @@ export const handlers: Record<string, Handler> = {
   /** What the auditor can call: PayPal's own Agent Toolkit, cut down to its read tools, and the gateway's books. */
   "GET /api/auditor": async ({ headers }) => {
     const may = A.auditorMayAsk(headers);
-    return { body: { mode: railMode(), locked: may !== "yes", keyConfigured: may !== "unconfigured", proposals: A.PROPOSAL_KINDS, tools: await A.auditorTools() } };
+    return { body: { mode: paypalMode(), locked: may !== "yes", keyConfigured: may !== "unconfigured", proposals: A.PROPOSAL_KINDS, tools: await A.auditorTools() } };
   },
   /** One read. A tool the auditor does not have is refused here, before anything is asked of PayPal. */
   "POST /api/auditor/read": async ({ body, headers }) => {
@@ -444,15 +385,13 @@ export const handlers: Record<string, Handler> = {
   },
   /** DEMO, simulator only: a payer disputes the latest payment, as they could in PayPal's Resolution Center. The gateway is not told. */
   "POST /api/demo/dispute": async () => {
-    if (!demoEnabled()) return DEMO_OFF;
-    if (railMode() !== "simulated") return { status: 409, body: { error: "A dispute can be staged only on the simulator. On PayPal a payer opens one in the Resolution Center." } };
+    if (paypalMode() !== "simulated") return { status: 409, body: { error: "A dispute can be staged only on the simulator. On PayPal a payer opens one in the Resolution Center." } };
     const r = await A.stageDispute();
     return r ? { body: r } : { status: 409, body: { error: "There is no settled payment to dispute yet. Seal an envelope and let an agent pay first." } };
   },
 
   /** DEMO: have a built-in agent introduce itself to a payee. The result is checked through the public standing endpoint. */
   "POST /api/demo/hello": async ({ body }) => {
-    if (!demoEnabled()) return DEMO_OFF;
     const b = z.object({ agent: z.string().regex(KEY), amountMinor: z.number().int().positive().max(1_000_00), payee: z.string().min(3).max(127), purpose: z.string().min(1).max(60) }).parse(body);
     return { body: { hello: await demoHello(b.agent, b) } };
   },
@@ -476,10 +415,10 @@ export function match(method: string, path: string): { handler: Handler; params:
 export async function run(handler: Handler, input: Input): Promise<{ status: number; body: unknown }> {
   try {
     const out = await handler(input);
-    await rail().flush(); // records of the rail's calls made during this request
+    await flushJournal(); // records of PayPal calls made during this request
     return { status: out.status ?? 200, body: out.body };
   } catch (e) {
-    await rail().flush().catch(() => undefined);
+    await flushJournal().catch(() => undefined);
     const { UserFacingError } = await import("../errors");
     if (e instanceof UserFacingError) return { status: e.status, body: { error: e.message } };
     if (e instanceof z.ZodError) return { status: 400, body: { error: "Invalid request", issues: e.issues.map((i) => i.path.join(".") + ": " + i.message) } };

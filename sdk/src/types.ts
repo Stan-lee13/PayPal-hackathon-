@@ -23,15 +23,8 @@ export type TransferStatus = "DENIED" | "BOOKED" | "SENDING" | "PAID" | "PAYOUT_
 
 export type Sponsor = { role: "owner" | "agent"; label: string; key: string };
 
-/**
- * A receipt, in either version. v1 is PayPal-shaped and stays verifiable; v2 names whichever rail moved the
- * money. Use the `provider`/`providerOps` fields of v2 rather than reading a provider-specific field, and
- * remember that a valid signature proves authority, not delivery.
- */
-export type Receipt = ReceiptV1 | ReceiptV2;
-
 /** Signed by the gateway when PayPal has captured a payment and a payout was asked for (or the money was credited to a balance). */
-export type ReceiptV1 = {
+export type Receipt = {
   v: "envelope-receipt/1";
   spend: string;
   decision: "PAID";
@@ -45,30 +38,6 @@ export type ReceiptV1 = {
   paypal: { mode: string; authorizationId: string; captureId: string; payoutBatchId: string | null; payoutItemId: string | null; payoutStatus?: string | null };
   issuedAt: string;
   gateway: string;
-  sig: string;
-};
-
-/** The provider-neutral receipt. `provider` and `providerOps` name the rail and its own identifiers. */
-export type ReceiptV2 = {
-  v: "envelope-receipt/2";
-  operation: { kind: "payment"; ref: string };
-  organization: { principal: string; name: string };
-  agent: { key: string; label: string; account: string };
-  authority: {
-    principal: string;
-    request: SpendRequest | PromiseRequest;
-    requestSig: string;
-    chain: Array<{ id: string; hash: string; holder: string; holderLabel: string }>;
-    releasedBy?: { key: string; work: string; note: string; at: string };
-  };
-  amount: { minor: number; currency: string };
-  provider: { rail: string; label: string; mode: string; custody: "provider" | "gateway-ledger" | "safeguarded-partner"; externalAccountId: string | null; movedExternally: boolean };
-  providerOps: Array<{ kind: "order" | "authorization" | "capture" | "refund" | "payout" | "payout_item"; id: string }>;
-  settlement: { state: "credited" | "delivered" | "unclaimed" | "payout_pending" | "pending_capture" | "refunded"; asOf: string; meaning: string; providerStatus: string | null };
-  paidTo?: ReceiptV1["paidTo"];
-  issuedAt: string;
-  gateway: string;
-  verification: { offline: string[]; external: string[]; note: string };
   sig: string;
 };
 
@@ -195,18 +164,13 @@ export type AccountOpened = { account: string; payee: string; agent: string; lab
 export type FreezeResult = { account: string; agent: string; label: string; frozen: boolean; balanceMinor: number };
 
 export type TransferReceipt = {
-  v: "envelope-transfer-receipt/1" | "envelope-transfer-receipt/2";
+  v: "envelope-transfer-receipt/1";
   transfer: string;
   request: SignedTransfer["request"] | SignedCharge["request"];
   requestSig: string;
   card?: { id: string; number: string; label: string; charge: number; of: number };
   from: { account: string; agent: string; agentLabel: string };
-  /** v2 only: the rail that paid. */
-  provider?: { rail: string; mode: string };
-  /** `paypal` appears only in v1 receipts; new receipts say `payout` and name the rail. */
-  to: { kind: "account"; account: string; agent: string; agentLabel: string }
-    | { kind: "payout"; address: string; payoutBatchId: string; rail: string }
-    | { kind: "paypal"; address: string; payoutBatchId: string; mode: string };
+  to: { kind: "account"; account: string; agent: string; agentLabel: string } | { kind: "paypal"; address: string; payoutBatchId: string; mode: string };
   balanceAfterMinor: number;
   issuedAt: string; gateway: string; sig: string;
 };

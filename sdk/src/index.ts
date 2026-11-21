@@ -14,7 +14,7 @@ export { Gateway, type FetchLike, type GatewayOptions } from "./gateway";
 export { Agent, Owner, Party, checkIntroduction, checkPromiseNote, checkReference, getReceipt, getStatus, fingerprint, type Authority, type Payment, type PartyInit, type SavedParty, type SplitTerms } from "./agent";
 export { EnvelopeError } from "./errors";
 export { toMinor, formatMinor, type Amount } from "./money";
-export { verifyReceipt, verifyStanding, verifyPromiseNote, verifyReference, verifyTransferReceipt, receiptView, encodeToken, decodeToken, type Verification } from "./verify";
+export { verifyReceipt, verifyStanding, verifyPromiseNote, verifyReference, verifyTransferReceipt, encodeToken, decodeToken, type Verification } from "./verify";
 export type * from "./types";
 export type { SealTerms } from "./agent";
 

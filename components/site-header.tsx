@@ -1,5 +1,4 @@
 import Link from "next/link";
-import { SessionBar } from "./session-bar";
 import { SiteMenu } from "./site-menu";
 import { Wordmark } from "./stationery";
 
@@ -14,7 +13,6 @@ export function SiteHeader() {
         <Link className="btn btn-quiet btn-sm hidden !text-[.84rem] md:inline-flex" href="/cards">Cards</Link>
         <Link className="btn btn-quiet btn-sm hidden !text-[.84rem] md:inline-flex" href="/auditor">Auditor</Link>
         <Link className="btn btn-quiet btn-sm hidden !text-[.84rem] lg:inline-flex" href="/developers">Developers</Link>
-        <SessionBar />
         <SiteMenu />
         <Link className="btn btn-sm !min-h-[34px] !px-3 !text-[.84rem]" href="/console">Seal<span className="hidden sm:inline">&nbsp;an envelope</span></Link>
       </nav>

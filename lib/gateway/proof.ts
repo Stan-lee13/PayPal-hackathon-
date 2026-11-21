@@ -14,8 +14,10 @@ import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import { getDb } from "../db";
 import { accounts, blocks, cards, ledger, roots, spends, transfers, type Spend } from "../db/schema";
 import * as E from "../envelope/core";
-import { rail, railMode, railRef } from "../rails";
-import { PROMISE_NOTE_VERSION, gatewayKey, maskEmail } from "./service";
+import { getPayPal, paypalMode } from "../paypal/client";
+import { getAuthorization } from "../paypal/payments";
+import { PROMISE_NOTE_VERSION, RECEIPT_VERSION, gatewayKey, maskEmail } from "./service";
+import { TRANSFER_RECEIPT_VERSION } from "./bank";
 
 export type Check =
   /** The owner's signature on the root and every narrowing step down to this block. */
@@ -26,7 +28,7 @@ export type Check =
   | { kind: "detached"; label: string; key: string; domain: string; body: unknown; sig: string }
   /** An account opening: signed by the agent's key and its owner's key. */
   | { kind: "account"; label: string; signed: E.SignedAccount }
-  /** The rail's own record, fetched by the gateway when asked. Not a signature. */
+  /** PayPal's own record, fetched by the gateway when asked. Not a signature. */
   | { kind: "paypal"; label: string; spend: string }
   /** The gateway's record. Shown for completeness; it cannot be checked independently. */
   | { kind: "record"; label: string };
@@ -74,7 +76,7 @@ export async function proof(rootId: string, onlySpend?: string) {
   const denied = focus ? [] : allSpends.filter((s) => s.status === "DENIED");
 
   // PayPal's present word on the hold. One GET; if PayPal can't be reached the node says so.
-  const hold = root.authorizationId ? await rail().holds.read(railRef(rail().id, "authorization", root.authorizationId)).catch(() => null) : null;
+  const hold = root.authorizationId ? await getAuthorization(getPayPal(), root.authorizationId).catch(() => null) : null;
 
   const nodes: ProofNode[] = [];
   const edges: ProofEdge[] = [];
@@ -107,7 +109,7 @@ export async function proof(rootId: string, onlySpend?: string) {
       ["Captured from it so far", usd(root.capturedMinor)],
       ...(root.refundedMinor > 0 ? [["Captured and refunded to the owner", `${usd(root.refundedMinor)} (PayPal does not return this to the hold)`] as [string, string]] : []),
       ...(root.releasedMinor !== null ? [["Released back when closed", usd(root.releasedMinor)] as [string, string]] : []),
-      ["Environment", railMode() === "sandbox" ? `${rail().label} sandbox (real API, test money)` : railMode() === "live" ? `${rail().label} (live)` : railMode() === "mock" ? "deterministic mock rail (no money, no network)" : "built-in simulator (no provider call is made)"],
+      ["Environment", paypalMode() === "sandbox" ? "PayPal sandbox (real API, test money)" : "built-in simulator (no PayPal call is made)"],
       ["What it is", "an authorization: a hold on the owner's funding source. It is not escrow, and the owner can release it."],
     ],
     checks: [{ kind: "record", label: "PayPal's record of the hold, read by the gateway when this page loaded. Each payment below can be checked against PayPal separately." }],
@@ -218,7 +220,7 @@ export async function proof(rootId: string, onlySpend?: string) {
         state: pending ? "PENDING AT PAYPAL" : s.refundId ? "REFUNDED" : s.status === "REFUND_DUE" ? "REFUND DUE" : "CAPTURED",
         title: "PayPal capture", subtitle: s.captureId,
         facts: [["Capture id", s.captureId], ["Taken from", `the hold ${root.authorizationId}`], ["Amount", usd(s.amountMinor)], ...(s.refundId ? [["Refund", s.refundId] as [string, string]] : []), ["What it is", "a partial capture: PayPal moves this much of the held money, and refuses to capture past the hold"]],
-        checks: [s.receipt ? { kind: "paypal", label: `Ask ${rail().label} for this capture and compare`, spend: s.id } : { kind: "record", label: `The capture id as ${rail().label} gave it` }],
+        checks: [s.receipt ? { kind: "paypal", label: "Ask PayPal for this capture and compare", spend: s.id } : { kind: "record", label: "PayPal's capture id as the gateway recorded it" }],
       });
       edges.push({ from: last, to: id, label: "captured" });
       last = id;
@@ -248,7 +250,7 @@ export async function proof(rootId: string, onlySpend?: string) {
           ["PayPal's status", st],
           ["What that means", st === "SUCCESS" ? "delivered to the payee's PayPal account" : st === "UNCLAIMED" ? "accepted by PayPal and held for the payee to claim: no PayPal account at that address yet. Not delivered." : st === "PENDING" ? "accepted by PayPal, not yet processed. Not delivered yet." : "PayPal did not deliver it"],
         ],
-        checks: [s.receipt ? { kind: "paypal", label: `Ask ${rail().label} where this payout is`, spend: s.id } : { kind: "record", label: `The payout id as ${rail().label} gave it` }],
+        checks: [s.receipt ? { kind: "paypal", label: "Ask PayPal where this payout is", spend: s.id } : { kind: "record", label: "PayPal's batch id as the gateway recorded it" }],
       });
       edges.push({ from: last, to: id, label: "paid out" });
       last = id;
@@ -261,8 +263,7 @@ export async function proof(rootId: string, onlySpend?: string) {
         id, row: base + 4, kind: "receipt", column: col, amountMinor: s.amountMinor, tone: "ink", state: "SIGNED", at: s.receipt.issuedAt, title: "Receipt", subtitle: "signed by the gateway",
         signer: { label: "the gateway", key: s.receipt.gateway },
         facts: [["Binds together", "the signed request, every envelope above it, the owner's key, and PayPal's capture and payout ids"], ["Issued", s.receipt.issuedAt], ["Anyone can check it", "with the gateway's public key, without asking this site"]],
-        // The version string is the signing domain, so a v1 receipt stored years ago still verifies here.
-        checks: [{ kind: "detached", label: "The gateway's signature over the whole receipt", key: s.receipt.gateway, domain: s.receipt.v, body, sig }],
+        checks: [{ kind: "detached", label: "The gateway's signature over the whole receipt", key: s.receipt.gateway, domain: RECEIPT_VERSION, body, sig }],
         href: `/r/${s.id}`,
       });
       edges.push({ from: last, to: id, label: "receipt" });
@@ -320,7 +321,7 @@ export async function proof(rootId: string, onlySpend?: string) {
           ...(t.payoutBatchId ? [["PayPal's status", t.payoutStatus ?? "PENDING"] as [string, string]] : []),
           ...(t.memo ? [["For", t.memo] as [string, string]] : []),
         ],
-        checks: t.receipt ? [{ kind: "detached", label: "The gateway's signed receipt for this movement", key: t.receipt.gateway, domain: t.receipt.v, body: (({ sig: _s, ...b }) => b)(t.receipt), sig: t.receipt.sig }] : [{ kind: "record", label: "The gateway's record" }],
+        checks: t.receipt ? [{ kind: "detached", label: "The gateway's signed receipt for this movement", key: t.receipt.gateway, domain: TRANSFER_RECEIPT_VERSION, body: (({ sig: _s, ...b }) => b)(t.receipt), sig: t.receipt.sig }] : [{ kind: "record", label: "The gateway's record" }],
       });
       edges.push({ from: t.cardId && cardNode.has(t.cardId) ? cardNode.get(t.cardId)! : aid, to: id, label: t.kind === "charge" ? "charged" : t.kind === "withdraw" ? "withdrew" : "paid" });
     }
@@ -342,7 +343,7 @@ export async function proof(rootId: string, onlySpend?: string) {
   return {
     root: { id: root.id, title: root.title, owner: root.principalName, ownerKey: root.principal, status: root.status, limitMinor: root.limitMinor, capturedMinor: root.capturedMinor, releasedMinor: root.releasedMinor, authorizationId: root.authorizationId },
     focus: focus ? { spend: focus.id, amountMinor: focus.amountMinor, payee: focus.payeeAgent ? focus.payee : maskEmail(focus.payee) } : null,
-    mode: railMode(), gateway: gw.publicKey, at: new Date().toISOString(),
+    mode: paypalMode(), gateway: gw.publicKey, at: new Date().toISOString(),
     rows: rowLabels, nodes, edges,
   };
 }

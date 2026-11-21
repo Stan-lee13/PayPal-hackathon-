@@ -36,7 +36,7 @@
  * GATEWAY=http://localhost:3000 by default.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { Agent, EnvelopeError, Gateway, Owner, checkIntroduction, checkPromiseNote, getReceipt, receiptView, protocol as E, type GatewayReason, type Payment, type PromiseNote, type SpendOutcome, type TransferOutcome, type ChargeOutcome } from "../sdk/src";
+import { Agent, EnvelopeError, Gateway, Owner, checkIntroduction, checkPromiseNote, getReceipt, protocol as E, type GatewayReason, type Payment, type PromiseNote, type SpendOutcome, type TransferOutcome, type ChargeOutcome } from "../sdk/src";
 
 const GATEWAY = (process.env.GATEWAY ?? "http://localhost:3000").replace(/\/$/, "");
 const DIR = process.env.ENVELOPE_DIR ?? ".envelope";
@@ -374,10 +374,9 @@ switch (cmd) {
     // A payment, looked up again: PayPal's word through the gateway, and every signature re-checked on this machine.
     const r = await getReceipt(gateway, positional[0] ?? need("spend")).catch((e) => { console.error(e instanceof EnvelopeError ? said(e) : String(e)); process.exit(1); });
     const local = await r.verify();
-    const rv = receiptView(r.receipt);
-    const q = rv.request;
+    const q = r.receipt.request;
     console.log(`${r.spend.status}: ${usd(q.amount)} to ${q.payee} for ${q.purpose}${r.spend.status === "PAID" ? "" : " (not delivered to the payee yet)"}`);
-    console.log(`  ${rv.provider.rail} hold ${rv.ops.authorization}, capture ${rv.ops.capture}${rv.ops.payout ? `, payout ${rv.ops.payout} (${r.spend.payoutStatus ?? "pending"})` : ", no payout: credited to the payee agent's balance"} (${rv.provider.mode}, ${rv.version})`);
+    console.log(`  PayPal hold ${r.receipt.paypal.authorizationId}, capture ${r.receipt.paypal.captureId}${r.receipt.paypal.payoutBatchId ? `, payout ${r.receipt.paypal.payoutBatchId} (${r.spend.payoutStatus ?? "pending"})` : ", no payout: credited to the payee agent's balance"} (${r.receipt.paypal.mode})`);
     console.log("  Checked against PayPal just now:");
     for (const c of r.paypal.checks) console.log(`    ${c.ok ? "ok  " : "FAIL"} ${c.name}`);
     console.log("  Checked on this machine:");

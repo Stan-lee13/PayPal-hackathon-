@@ -72,7 +72,7 @@ if (status !== "APPROVED") {
   const { root: closed } = await G.revoke(await E.signRevoke(ada!, rootId));
   log("the owner closed the envelope: PayPal released the rest to the payer", { captured: usd(closed.capturedMinor), released: usd(closed.releasedMinor ?? 0), authorizationStatus: (await getAuthorization(pp, root.authorizationId!)).status });
   const t = (await paypalTrail(rootId))!;
-  log("PayPal calls behind this envelope", { ...t.summary, how: t.calls.filter((c) => ["hold.ask", "order.read", "hold.place"].includes(c.op)).map((c) => `${c.text} (${c.providerStatus ?? c.error})`) });
+  log("PayPal calls behind this envelope", { ...t.summary, how: t.calls.filter((c) => ["hold.ask", "order.read", "hold.place"].includes(c.op)).map((c) => `${c.text} (${c.paypalStatus ?? c.error})`) });
 }
 
 await flushJournal();

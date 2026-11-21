@@ -52,5 +52,4 @@ export const REASON_TEXT: Record<Reason, string> = {
   NOT_REFUNDABLE: "Only a payment an agent kept in its balance, and still has, can be refunded by that agent.",
   PAYPAL_REFUND_FAILED: "PayPal would not make the refund; the money stayed where it was.",
   RECALLED_BY_OWNER: "The owner took this payout back before anyone claimed it; PayPal cancelled it and refunded the capture.",
-  INSUFFICIENT_PROVIDER_LIQUIDITY: "This financial provider holds no settled funds for the payout: a balance credited through another provider is not liquidity here. Nothing was sent.",
 };

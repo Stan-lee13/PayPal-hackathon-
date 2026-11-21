@@ -6,7 +6,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { useTestEnv } from "./helpers";
 import { handlerFetch, type Seen } from "./helpers/gateway-http";
-import { Agent, EnvelopeError, Gateway, Owner, protocol, checkIntroduction, checkPromiseNote, checkReference, fingerprint, getReceipt, getStatus, receiptView, toMinor, verifyReceipt, verifyTransferReceipt } from "../sdk/src";
+import { Agent, EnvelopeError, Gateway, Owner, protocol, checkIntroduction, checkPromiseNote, checkReference, fingerprint, getReceipt, getStatus, toMinor, verifyReceipt, verifyTransferReceipt } from "../sdk/src";
 import type * as Sdk from "../sdk/src";
 import type { PromiseNote as GwNote, Receipt as GwReceipt, TransferReceipt as GwTransferReceipt } from "../lib/db/schema";
 import type { Reference as GwReference, Standing as GwStanding } from "../lib/gateway/service";
@@ -41,7 +41,7 @@ d("@envelope/sdk against the gateway (simulated PayPal)", () => {
     const { getDb } = await import("../lib/db");
     const { sql } = await import("drizzle-orm");
     const { resetSimMemory } = await import("../lib/sim/store");
-    await getDb().execute(sql`truncate table position_entries, rail_accounts, reconciliation_runs, audit_log, spends, blocks, roots, demo_keys, gateway_keys, emulator_state, rate_limits, accounts, ledger, transfers, cards restart identity cascade`);
+    await getDb().execute(sql`truncate table audit_log, spends, blocks, roots, demo_keys, gateway_keys, emulator_state, rate_limits, accounts, ledger, transfers, cards restart identity cascade`);
     resetSimMemory();
     gateway = new Gateway("http://gateway.test", { fetch: await handlerFetch(seen), retries: 1 });
     [ada, bea, lo] = await Promise.all(["Ada", "Bea", "Lexica Ltd"].map((label) => Owner.generate({ gateway, label }))) as [Owner, Owner, Owner];
@@ -100,11 +100,7 @@ d("@envelope/sdk against the gateway (simulated PayPal)", () => {
     expect(v.checks.filter((c) => !c.ok)).toEqual([]);
     expect(v.ok).toBe(true);
     // a receipt altered after the fact does not verify
-    const rc = r.receipt;
-    const altered = "providerOps" in rc
-      ? { ...rc, providerOps: rc.providerOps.map((o) => (o.kind === "capture" ? { ...o, id: "SOMETHING-ELSE" } : o)) }
-      : { ...rc, paypal: { ...rc.paypal, captureId: "SOMETHING-ELSE" } };
-    const forged = await verifyReceipt({ chain: r.chain, receipt: altered }, (await gateway.key()).publicKey);
+    const forged = await verifyReceipt({ chain: r.chain, receipt: { ...r.receipt, paypal: { ...r.receipt.paypal, captureId: "SOMETHING-ELSE" } } }, (await gateway.key()).publicKey);
     expect(forged.ok).toBe(false);
     // nor does a real receipt presented as coming from another gateway
     expect((await verifyReceipt(r, stranger.publicKey)).ok).toBe(false);
@@ -170,7 +166,7 @@ d("@envelope/sdk against the gateway (simulated PayPal)", () => {
     const work = await fingerprint("Chapter 2, final text");
     const paid = await writer.accept(third.promiseId, { work, note: "Delivered and checked" });
     expect(paid).toMatchObject({ status: "PAID", heldInBalance: true });
-    expect(paid.receipt ? receiptView(paid.receipt).releasedBy : null).toMatchObject({ key: writer.publicKey, work });
+    expect(paid.receipt?.releasedBy).toMatchObject({ key: writer.publicKey, work });
 
     const fourth = await researcher.setAside({ amount: "5.00", payee: writer.payee, purpose: "writing", releaseBy: writer });
     expect(await writer.decline(fourth.promiseId, { note: "Not doing this one" })).toMatchObject({ declined: true });

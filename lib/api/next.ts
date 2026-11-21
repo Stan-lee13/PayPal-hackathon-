@@ -1,8 +1,5 @@
 /** Wraps a handler from lib/api/handlers.ts as a Next.js route: rate limit, same-origin check, JSON in and out. */
-import { requestScope } from "../auth/context";
 import { getDb } from "../db";
-import type { TenantScope } from "../db/tenant-context";
-import { UserFacingError } from "../errors";
 import { clientIp, json, sameOrigin } from "../http";
 import { rateLimit } from "../security/rate-limit";
 import { handlers, run } from "./handlers";
@@ -23,16 +20,6 @@ export function route(key: keyof typeof handlers & string, opts: Opts = {}) {
       console.error("[envelope] database unavailable", e);
       return json({ error: "The gateway's database is not reachable." }, 503);
     }
-    // Who is asking, if anyone. This is a server-validated session row, never a header or a body field. No cookie
-    // means no organization: the signed-agent paths keep working exactly as before.
-    let scope: TenantScope | null = null;
-    try {
-      scope = await requestScope(req);
-    } catch (e) {
-      if (e instanceof UserFacingError) return json({ error: e.message }, e.status);
-      console.error("[envelope] session lookup failed", e);
-      return json({ error: "The gateway's database is not reachable." }, 503);
-    }
     let body: unknown = undefined;
     let raw: string | undefined;
     if (hasBody) {
@@ -40,11 +27,9 @@ export function route(key: keyof typeof handlers & string, opts: Opts = {}) {
       if (Number(req.headers.get("content-length") ?? 0) > MAX_BODY_BYTES) return json({ error: "Request too large." }, 413);
       try { const text = await req.text(); if (text.length > MAX_BODY_BYTES) return json({ error: "Request too large." }, 413); raw = text; body = text ? JSON.parse(text) : {}; } catch { return json({ error: "Send JSON." }, 400); }
     }
-    // Signature headers from whichever rail is configured, plus the bearer token for schedulers. The rail
-    // decides which of these it needs; the HTTP layer does not guess.
     const headers: Record<string, string> = {};
-    req.headers.forEach((v, k) => { if (k.startsWith("paypal-") || k.startsWith("mock-") || k.startsWith("x-rail-") || k === "authorization") headers[k] = v; });
-    const out = await run(handler, { params: (await ctx.params) ?? {}, body, headers, raw, scope });
+    req.headers.forEach((v, k) => { if (k.startsWith("paypal-") || k === "authorization") headers[k] = v; });
+    const out = await run(handler, { params: (await ctx.params) ?? {}, body, headers, raw });
     return json(out.body, out.status);
   };
 }

@@ -17,7 +17,8 @@ import { desc, eq, inArray, isNotNull, or } from "drizzle-orm";
 import { getDb } from "../db";
 import { accounts, roots, spends, transfers } from "../db/schema";
 import { formatMoney, toMinor } from "../money";
-import { rail, railMode, railRef } from "../rails";
+import { getPayPal, paypalMode } from "../paypal/client";
+import { disputesFor } from "../paypal/payments";
 import { TOOLKIT_READS, toolkitRead, toolkitTools } from "../paypal/toolkit";
 import * as B from "./bank";
 import * as K from "./books";
@@ -193,10 +194,10 @@ export async function checkProposal(kind: string, target: string): Promise<Propo
     if (!s) return no("The gateway has no payment under that id.");
     if (kind === "answer_dispute") {
       // PayPal's word at this moment, not the gateway's last note of it: the gateway may not have heard of the dispute yet.
-      const d = s.captureId ? (await rail().disputes.forCapture(railRef(rail().id, "capture", s.captureId)).catch(() => null))?.[0] : null;
+      const d = s.captureId ? (await disputesFor(getPayPal(), s.captureId).catch(() => null))?.[0] : null;
       if (!d) return no(`PayPal lists no dispute against the capture of payment ${s.id}.`);
-      if (d.status !== "WAITING_FOR_SELLER_RESPONSE") return no(`The rail's status for dispute ${d.ref.id} is ${d.status}; it is not waiting for the gateway's answer.`);
-      return { kind, target: s.id, stands: true, why: `The rail is waiting for an answer to dispute ${d.ref.id} on payment ${s.id}. The answer is the payment's signed chain of authority, which the gateway already holds and sends when it sweeps.`, signer: "the gateway's sweep", link: `/r/${s.id}` };
+      if (d.status !== "WAITING_FOR_SELLER_RESPONSE") return no(`PayPal's status for dispute ${d.id} is ${d.status}; it is not waiting for the gateway's answer.`);
+      return { kind, target: s.id, stands: true, why: `PayPal is waiting for an answer to dispute ${d.id} on payment ${s.id}. The answer is the payment's signed chain of authority, which the gateway already holds and sends when it sweeps.`, signer: "the gateway's sweep", link: `/r/${s.id}` };
     }
     if (s.status !== "UNCLAIMED") return no(`Payment ${s.id} is ${s.status}. Only a payout nobody has claimed can be recalled.`);
     return { kind, target: s.id, stands: true, why: `The payout of payment ${s.id} has not been claimed. Recalling it returns the money to the owner instead of waiting thirty days.`, signer: "the envelope's owner", link: `/e/${s.rootId}` };
@@ -215,12 +216,12 @@ export async function checkProposal(kind: string, target: string): Promise<Propo
 
 /** DEMO, simulator only: the payer of the latest settled payment opens a dispute at PayPal. The gateway's records are not touched. */
 export async function stageDispute(): Promise<{ payment: string; capture: string; dispute: string } | null> {
-  if (railMode() !== "simulated" && railMode() !== "mock") return null;
+  if (paypalMode() !== "simulated") return null;
   const { simOpenDispute } = await import("../paypal/emulator");
   const recent = await getDb().select().from(spends).where(isNotNull(spends.captureId)).orderBy(desc(spends.createdAt)).limit(20);
   const s = recent.find((x) => !x.disputeId && !x.refundId && ["PAID", "CAPTURED", "PAYOUT_PENDING", "UNCLAIMED"].includes(x.status));
   if (!s) return null;
-  if ((await rail().disputes.forCapture(railRef(rail().id, "capture", s.captureId!)).catch(() => []))?.length) return null;
+  if ((await disputesFor(getPayPal(), s.captureId!).catch(() => []))?.length) return null;
   const dispute = await simOpenDispute(s.captureId!, "UNAUTHORISED");
   return dispute ? { payment: s.id, capture: s.captureId!, dispute } : null;
 }
@@ -231,7 +232,7 @@ export async function stageDispute(): Promise<{ payment: string; capture: string
  * with no key configured they are refused.
  */
 export function auditorMayAsk(headers: Record<string, string> | undefined): "yes" | "no" | "unconfigured" {
-  if (railMode() === "simulated" || railMode() === "mock") return "yes";
+  if (paypalMode() === "simulated") return "yes";
   const secret = process.env.AUDITOR_SECRET;
   if (!secret) return "unconfigured";
   return headers?.authorization === `Bearer ${secret}` ? "yes" : "no";
