@@ -62,8 +62,11 @@ export const sessionTokenFromRequest = (req: Request): string | null => sessionT
 /**
  * Validate the session on the server. The cookie is a lookup key, not a claim: the row's expiry and the user's
  * status decide whether it is still valid, so a revoked or expired session stops working immediately.
+ *
+ * `activeOrgId` is the organization this session selected (Milestone 4.5). It is read from the session row, and it
+ * is still only a request to be served that organization: `requestScope` checks it against the memberships.
  */
-export async function requireAuthenticatedUser(sessionToken: string | null | undefined): Promise<AuthenticatedUser & { sessionId: string }> {
+export async function requireAuthenticatedUser(sessionToken: string | null | undefined): Promise<AuthenticatedUser & { sessionId: string; activeOrgId: string | null }> {
   if (!sessionToken) throw new UserFacingError("Sign in to continue.", 401);
   const db = getDb();
   const s = await db.query.sessions.findFirst({ where: eq(sessions.sessionToken, sessionToken) });
@@ -77,6 +80,7 @@ export async function requireAuthenticatedUser(sessionToken: string | null | und
   return {
     userId: u.id, issuer: u.oidcIssuer, subject: u.oidcSubject, email: u.email,
     emailVerified: u.emailVerified, displayName: u.displayName, status: u.status, sessionId: s.sessionToken,
+    activeOrgId: s.activeOrgId ?? null,
   };
 }
 
@@ -88,8 +92,10 @@ export async function requireAuthenticatedUser(sessionToken: string | null | und
  * request, so a revoked session is visible to the person holding it. A signed-in user with no active membership
  * is a 403: there is no organization to serve them for.
  *
- * A user may belong to more than one organization. Until the console can select one, the oldest active
- * membership is used deterministically; the selection is a membership check either way, never a request field.
+ * A user may belong to more than one organization. The session row's `active_org_id` chooses which (Milestone
+ * 4.5, `selectSessionOrganization`); when it is unset, or names a membership that has since been revoked, the
+ * oldest active membership is used deterministically. Either way the answer comes from an active membership row,
+ * so selecting cannot reach an organization the person is not in — it can only pick among the ones they are.
  */
 export type RequestScope = TenantScope & { permissions: ReadonlySet<Permission>; orgStatus: OrganizationStatus; orgName: string };
 
@@ -97,14 +103,49 @@ export async function requestScope(req: Request): Promise<RequestScope | null> {
   const token = sessionTokenFromRequest(req);
   if (!token) return null;
   const user = await requireAuthenticatedUser(token);
-  const [m] = await getDb().select({ orgId: memberships.orgId, role: memberships.role, orgStatus: organizations.status, orgName: organizations.name })
+  const rows = await activeMembershipRows(user.userId);
+  if (rows.length === 0) throw new UserFacingError("You are signed in, but not an active member of an organization, so there is nothing to authorize.", 403);
+  // The selection is a preference among memberships the person already has. A revoked one drops out of `rows`,
+  // so a stale choice silently falls back to the oldest still-active membership instead of failing the request.
+  const m = (user.activeOrgId ? rows.find((row) => row.orgId === user.activeOrgId) : undefined) ?? rows[0]!;
+  return { orgId: m.orgId, userId: user.userId, role: m.role, orgStatus: m.orgStatus, orgName: m.orgName, permissions: permissionsFor(m.role) };
+}
+
+/** Every active membership of one user, oldest first. The order is what makes the fallback deterministic. */
+async function activeMembershipRows(userId: string) {
+  return getDb().select({ orgId: memberships.orgId, role: memberships.role, orgStatus: organizations.status, orgName: organizations.name })
     .from(memberships)
     .innerJoin(organizations, eq(memberships.orgId, organizations.id))
-    .where(and(eq(memberships.userId, user.userId), eq(memberships.status, "ACTIVE")))
-    .orderBy(asc(memberships.createdAt), asc(memberships.id))
-    .limit(1);
-  if (!m) throw new UserFacingError("You are signed in, but not an active member of an organization, so there is nothing to authorize.", 403);
-  return { orgId: m.orgId, userId: user.userId, role: m.role, orgStatus: m.orgStatus, orgName: m.orgName, permissions: permissionsFor(m.role) };
+    .where(and(eq(memberships.userId, userId), eq(memberships.status, "ACTIVE")))
+    .orderBy(asc(memberships.createdAt), asc(memberships.id));
+}
+
+/** The organizations a signed-in person may choose between, with the one this session is being served for. */
+export async function organizationsForSession(sessionToken: string | null | undefined): Promise<{
+  current: { orgId: string; orgName: string; role: MembershipRole } | null;
+  memberships: { orgId: string; orgName: string; role: MembershipRole; orgStatus: OrganizationStatus }[];
+}> {
+  const user = await requireAuthenticatedUser(sessionToken);
+  const rows = await activeMembershipRows(user.userId);
+  const chosen = (user.activeOrgId ? rows.find((row) => row.orgId === user.activeOrgId) : undefined) ?? rows[0];
+  return {
+    current: chosen ? { orgId: chosen.orgId, orgName: chosen.orgName, role: chosen.role } : null,
+    memberships: rows.map((row) => ({ orgId: row.orgId, orgName: row.orgName, role: row.role, orgStatus: row.orgStatus })),
+  };
+}
+
+/**
+ * Serve the rest of this session for another of the person's organizations.
+ *
+ * The membership check comes first and is the whole authorization: an organization the person is not an active
+ * member of is the same 403 as one that does not exist, so this cannot be used to probe for organizations, and
+ * it cannot grant anything the membership did not already grant. The write is to the session row only.
+ */
+export async function selectSessionOrganization(sessionToken: string | null | undefined, orgId: string): Promise<{ orgId: string; orgName: string; role: MembershipRole }> {
+  const user = await requireAuthenticatedUser(sessionToken);
+  const m = await requireOrganizationMembership(user.userId, orgId);
+  await getDb().update(sessions).set({ activeOrgId: m.orgId }).where(eq(sessions.sessionToken, user.sessionId));
+  return { orgId: m.orgId, orgName: m.orgName, role: m.role };
 }
 
 /**

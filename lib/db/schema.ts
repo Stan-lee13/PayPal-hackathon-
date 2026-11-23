@@ -676,6 +676,12 @@ export const authAccounts = pgTable("auth_accounts", {
 export const sessions = pgTable("sessions", {
   sessionToken: text("session_token").primaryKey(),
   userId: text("user_id").notNull().references(() => users.id),
+  /**
+   * The organization this session chose, when the person belongs to more than one (Milestone 4.5). It lives on the
+   * session row, not in a cookie the browser can write, so it cannot be invented; every read still re-checks it
+   * against an active membership and falls back to the oldest membership when it is null or no longer one.
+   */
+  activeOrgId: text("active_org_id").references(() => organizations.id),
   expires: ts("expires").notNull(),
   createdAt: ts("created_at").notNull().defaultNow(),
 }, (t) => [index("sessions_user").on(t.userId)]);

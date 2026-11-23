@@ -91,8 +91,10 @@ the switch, not guess at it.
   constrained by these policies, and that is stated rather than implied.
 * **Provider accounts are shared.** `GET /api/bank`'s reserve figures and `GET /api/bank/statement` remain the
   deployment's PayPal account until provider accounts are partitioned.
-* **Membership selection.** A person in two organizations is served the oldest active membership; there is no
-  chooser yet.
+* ~~**Membership selection.** A person in two organizations is served the oldest active membership; there is no
+  chooser yet.~~ Milestone 4.5 gives the session an explicit organization (`0017_session_active_organization.sql`,
+  `POST /api/session/organization`), still checked against an active membership; see
+  [MILESTONE_4_ORG_SELECTION.md](MILESTONE_4_ORG_SELECTION.md).
 
 ## Evidence
 

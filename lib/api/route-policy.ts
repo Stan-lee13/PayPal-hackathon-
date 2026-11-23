@@ -125,6 +125,8 @@ export const SPECIAL_ROUTE_FILES: Readonly<Record<string, RoutePolicy>> = {
   "app/api/ai/turn/route.ts": { category: "demo", permission: null, enforcement: "enforced", note: "A model's proposal for a demo agent; the browser turns it into signed requests and the gateway decides." },
   "app/api/ai/audit/route.ts": { category: "demo", permission: null, enforcement: "enforced", note: "A model playing the auditor: read tools and proposals only; it cannot move money." },
   "app/api/dev/session/route.ts": { category: "demo", permission: null, enforcement: "enforced", note: "Development sign-in for the console: refused (404) in production and when the gateway runs in the browser. It creates a real user, organization, membership and server-side session, which every later check validates." },
+
+  "app/api/session/organization/route.ts": { category: "session", permission: null, enforcement: "enforced", note: "Sign-in required, enforced by the route itself because it reads the session cookie rather than a signed body. Lists the organizations this person may choose between and switches the session row's active one, after an active-membership check." },
 };
 
 export function policyFor(key: string): RoutePolicy | null {

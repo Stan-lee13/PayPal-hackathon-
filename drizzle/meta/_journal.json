@@ -120,6 +120,13 @@
       "when": 1795280069022,
       "tag": "0016_row_level_security",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1795455012565,
+      "tag": "0017_session_active_organization",
+      "breakpoints": true
     }
   ]
 }
