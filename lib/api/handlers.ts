@@ -16,6 +16,7 @@ import * as A from "../gateway/auditor";
 import { proof } from "../gateway/proof";
 import * as G from "../gateway/service";
 import * as S from "../gateway/settlement";
+import * as M from "../identity/members";
 import { verifyChain } from "../ledger/chain";
 import { rail, railMode } from "../rails";
 import { REASON_TEXT } from "../reasons";
@@ -328,6 +329,22 @@ export const handlers: Record<string, Handler> = {
     const t = await B.transferById(params.id!, scope);
     return t ? { body: t } : { status: 404, body: { error: "No such transfer." } };
   },
+
+  /**
+   * The members of the session's organization, and the invitations still outstanding. The organization comes from
+   * the session, never from the request, so there is no id here to point at somebody else's roster.
+   */
+  "GET /api/organizations/members": async ({ scope }) => ({ body: await M.organizationMembers(scope) }),
+  /**
+   * Invite an address at a role. The role may not carry a permission the caller lacks, and the response is the only
+   * copy of the one-time link: the row keeps a hash of it.
+   */
+  "POST /api/organizations/invitations": async ({ body, scope }) => {
+    const b = z.object({ email: z.string().max(320), role: z.string(), ttlHours: z.number().optional() }).parse(body);
+    return { status: 201, body: await M.createOrganizationInvitation({ scope, email: b.email, role: b.role, ttlHours: b.ttlHours }) };
+  },
+  /** Withdraw a pending invitation by id. One this organization does not hold is a 404, like any other record. */
+  "POST /api/organizations/invitations/:id/revoke": async ({ params, scope }) => ({ body: await M.revokeOrganizationInvitation(scope, params.id) }),
 
   /** The money boundary. Anyone may call it; the only thing that matters is what the signatures say. */
   "POST /api/gateway/spend": async ({ body }) => {

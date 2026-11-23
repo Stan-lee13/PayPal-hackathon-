@@ -56,6 +56,9 @@ organization's books and its provider statement are not public.
 | `GET /api/bank` | session | `statement.read` | enforced | Sign-in required; statement.read. Balances and ledger are the caller's organization's. The PayPal reserve figures stay provider-level until provider accounts are partitioned, and the response says so. |
 | `GET /api/bank/statement` | session | `statement.read` | enforced | Sign-in required; statement.read. The comparison itself is the deployment's provider account, which is why it needs a permission rather than being public. |
 | `GET /api/bank/transfers/:id` | session | `payment.read` | enforced | Sign-in required. A balance movement by id, scoped to the caller's organization; another organization's movement is 404 before the rail is asked. |
+| `GET /api/organizations/members` | session | `member.read` | enforced | Sign-in required; member.read. The roster and the outstanding invitations of the caller's own organization, which comes from the session and never from the request. |
+| `POST /api/organizations/invitations` | session | `member.manage` | enforced | Sign-in required; member.manage. The role invited may not carry a permission the caller lacks, so an admin cannot mint an owner. The one-time link is returned once; the row keeps a hash. |
+| `POST /api/organizations/invitations/:id/revoke` | session | `member.manage` | enforced | Sign-in required; member.manage. Withdraws a pending invitation of the caller's organization; one that does not exist there is a 404. |
 | `POST /api/accounts` | signed-principal | — | enforced | Signed by the agent's key and its owner's key. |
 | `POST /api/bank/transfer` | signed-agent | — | enforced | Signed by the account's agent; internal debit plus optional payout. |
 | `POST /api/bank/freeze` | signed-owner | `budget.manage` | enforced | Signed by the account's owner. |
@@ -98,6 +101,7 @@ organization's books and its provider statement are not public.
 | `app/api/ai/audit/route.ts` | demo | — | enforced | A model playing the auditor: read tools and proposals only; it cannot move money. |
 | `app/api/dev/session/route.ts` | demo | — | enforced | Development sign-in for the console: refused (404) in production and when the gateway runs in the browser. It creates a real user, organization, membership and server-side session, which every later check validates. |
 | `app/api/session/organization/route.ts` | session | — | enforced | Sign-in required, enforced by the route itself because it reads the session cookie rather than a signed body. Lists the organizations this person may choose between and switches the session row's active one, after an active-membership check. |
+| `app/api/invitations/accept/route.ts` | session | — | enforced | Sign-in required, enforced by the route itself: the caller is signed in and has no membership in the inviting organization yet, which is the one case requestScope refuses. The token is single use, the address must match a verified email, and a GET of the link consumes nothing. |
 
 ## Compatibility of the SDK, CLI and MCP server
 

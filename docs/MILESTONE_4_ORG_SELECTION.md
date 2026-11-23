@@ -49,8 +49,10 @@ re-read under the new organization rather than showing one organization's figure
 
 ## What this still does not claim
 
-* **No invitation flow.** An `INVITED` row is required for a person to appear in an organization and cannot be
-  selected; there is still no screen that accepts an invitation, and no email is sent.
+* ~~**No invitation flow.** An `INVITED` row is required for a person to appear in an organization and cannot be
+  selected; there is still no screen that accepts an invitation, and no email is sent.~~ Milestone 4.6 added the
+  flow: an owner or admin issues a single-use, address-bound link and the invitee accepts it at `/invitations/[token]`
+  (`docs/MILESTONE_4_INVITATIONS.md`). No email is sent even now — the creator passes the link on.
 * **No per-page memory.** The choice is per session, not per route: every read in that session uses it. A second
   tab shares the session and therefore the organization, which is the intended behaviour of a session-level
   selection.

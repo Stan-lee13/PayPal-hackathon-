@@ -76,6 +76,11 @@ export const ROUTE_POLICY: Readonly<Record<string, RoutePolicy>> = {
   "GET /api/bank/statement": { category: "session", permission: "statement.read", enforcement: "enforced", session: "required", note: "Sign-in required; statement.read. The comparison itself is the deployment's provider account, which is why it needs a permission rather than being public." },
   "GET /api/bank/transfers/:id": { category: "session", permission: "payment.read", enforcement: "enforced", session: "required", note: "Sign-in required. A balance movement by id, scoped to the caller's organization; another organization's movement is 404 before the rail is asked." },
 
+  // ---- People in the organization (Milestone 4.6) ----
+  "GET /api/organizations/members": { category: "session", permission: "member.read", enforcement: "enforced", session: "required", note: "Sign-in required; member.read. The roster and the outstanding invitations of the caller's own organization, which comes from the session and never from the request." },
+  "POST /api/organizations/invitations": { category: "session", permission: "member.manage", enforcement: "enforced", session: "required", note: "Sign-in required; member.manage. The role invited may not carry a permission the caller lacks, so an admin cannot mint an owner. The one-time link is returned once; the row keeps a hash." },
+  "POST /api/organizations/invitations/:id/revoke": { category: "session", permission: "member.manage", enforcement: "enforced", session: "required", note: "Sign-in required; member.manage. Withdraws a pending invitation of the caller's organization; one that does not exist there is a 404." },
+
   // ---- Accounts, balances, cards ----
   "POST /api/accounts": { category: "signed-principal", permission: null, enforcement: "enforced", note: "Signed by the agent's key and its owner's key." },
   "POST /api/bank/transfer": { category: "signed-agent", permission: null, enforcement: "enforced", note: "Signed by the account's agent; internal debit plus optional payout." },
@@ -127,6 +132,8 @@ export const SPECIAL_ROUTE_FILES: Readonly<Record<string, RoutePolicy>> = {
   "app/api/dev/session/route.ts": { category: "demo", permission: null, enforcement: "enforced", note: "Development sign-in for the console: refused (404) in production and when the gateway runs in the browser. It creates a real user, organization, membership and server-side session, which every later check validates." },
 
   "app/api/session/organization/route.ts": { category: "session", permission: null, enforcement: "enforced", note: "Sign-in required, enforced by the route itself because it reads the session cookie rather than a signed body. Lists the organizations this person may choose between and switches the session row's active one, after an active-membership check." },
+
+  "app/api/invitations/accept/route.ts": { category: "session", permission: null, enforcement: "enforced", note: "Sign-in required, enforced by the route itself: the caller is signed in and has no membership in the inviting organization yet, which is the one case requestScope refuses. The token is single use, the address must match a verified email, and a GET of the link consumes nothing." },
 };
 
 export function policyFor(key: string): RoutePolicy | null {
