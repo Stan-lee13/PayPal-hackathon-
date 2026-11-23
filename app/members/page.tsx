@@ -17,7 +17,8 @@ export default function MembersPage() {
         <p className="mt-4 max-w-2xl text-ink-2">
           Everyone who can act for this organization, with the role that decides what they may do. An invitation
           is a single-use link bound to one address: the person who opens it joins at the role it names, and only
-          if they are signed in as that address.
+          if they are signed in as that address. A role can be changed and a membership removed here, and neither
+          can hand out or take away an authority the person doing it does not already hold.
         </p>
         <MembersView />
       </main>

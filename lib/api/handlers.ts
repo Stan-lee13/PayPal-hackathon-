@@ -345,6 +345,18 @@ export const handlers: Record<string, Handler> = {
   },
   /** Withdraw a pending invitation by id. One this organization does not hold is a 404, like any other record. */
   "POST /api/organizations/invitations/:id/revoke": async ({ params, scope }) => ({ body: await M.revokeOrganizationInvitation(scope, params.id) }),
+  /**
+   * Change an existing member's role. No authority may be handed out that the caller does not hold, and none may
+   * be taken away that they do not hold either, so an admin can neither make nor demote an owner.
+   */
+  "POST /api/organizations/members/:userId/role": async ({ params, body, scope }) => {
+    const b = z.object({ role: z.string() }).parse(body);
+    return { body: await M.changeOrganizationMemberRole({ scope, userId: params.userId, role: b.role }) };
+  },
+  /** Revoke a member's membership. The row is kept as `REVOKED` with who did it and when. */
+  "POST /api/organizations/members/:userId/remove": async ({ params, scope }) => ({
+    body: await M.removeOrganizationMember(scope, params.userId),
+  }),
 
   /** The money boundary. Anyone may call it; the only thing that matters is what the signatures say. */
   "POST /api/gateway/spend": async ({ body }) => {

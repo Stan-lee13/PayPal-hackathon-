@@ -1,5 +1,6 @@
 /**
- * Membership administration: who is in an organization, and the one way in from outside it.
+ * Membership administration: who is in an organization, the one way in from outside it, and what may be changed
+ * about someone who is already there.
  *
  * `memberships` has always had an `INVITED` status and `organization_invitations` has always had a token hash,
  * an expiry and an acceptance. Neither had a path that wrote them, so an `INVITED` row could only be produced by
@@ -19,6 +20,10 @@
  *   • **Nothing is rewritten.** An existing `ACTIVE` membership is left exactly as it is (accepting an invitation
  *     never changes a role). A `REVOKED` membership is only restored by an invitation issued *after* the
  *     revocation: an invitation that predates it cannot quietly undo someone's decision.
+ *   • **Administering an existing member is bounded on both sides.** A role may be granted only if the actor holds
+ *     all of it, and changed or revoked only if they hold all of the role being taken away — so an admin can
+ *     neither make nor demote an owner. Nobody changes their own row, the only owner is never demoted or removed,
+ *     and a removal is a revocation that keeps the row (who, when) rather than a deletion.
  *
  * No email is sent. The creator is given the one-time link and passes it on however they already talk to the
  * invitee, which is honest about what this milestone does and does not do (docs/MILESTONE_4_INVITATIONS.md).
@@ -73,6 +78,42 @@ function normalizeRole(role: unknown): MembershipRole {
   return role as MembershipRole;
 }
 
+function normalizeMemberId(id: unknown): string {
+  if (typeof id !== "string" || id.trim() === "") throw new UserFacingError("Name the member.", 400);
+  const v = id.trim();
+  if (v.length > 80) throw new UserFacingError("That is not a member id.", 400);
+  return v;
+}
+
+/** A role is a named permission set, so "may I grant it" is a set comparison, never a rank. */
+function assertMayGrant(actorRole: MembershipRole, role: MembershipRole): void {
+  const missing = [...permissionsFor(role)].filter((p) => !permissionsFor(actorRole).has(p));
+  if (missing.length > 0) {
+    throw new UserFacingError(`The ${actorRole} role cannot grant the ${role} role: it does not include ${missing.join(", ")}.`, 403);
+  }
+}
+
+/**
+ * Acting on someone who is already here carries the mirror rule: you may not take away an authority you do not
+ * hold yourself. An admin can therefore not demote an owner, because the demotion would dispose of
+ * `payout.recover.approve`, which makes recovery a second signature.
+ */
+function assertMayActOn(actorRole: MembershipRole, targetRole: MembershipRole): void {
+  const missing = [...permissionsFor(targetRole)].filter((p) => !permissionsFor(actorRole).has(p));
+  if (missing.length > 0) {
+    throw new UserFacingError(`The ${actorRole} role cannot change a ${targetRole}, because it does not include ${missing.join(", ")}.`, 403);
+  }
+}
+
+/** An organization nobody can administer is a dead end, so the write that would cause one is refused. */
+async function assertNotOnlyOwner(db: ReturnType<typeof getDb>, orgId: string, what: string): Promise<void> {
+  const owners = await db.select({ id: memberships.id }).from(memberships)
+    .where(and(eq(memberships.orgId, orgId), eq(memberships.role, "owner"), eq(memberships.status, "ACTIVE")));
+  if (owners.length <= 1) {
+    throw new UserFacingError(`This is the organization's only owner, so it cannot be ${what}: nobody would be left who can administer it. Add another owner first.`, 409);
+  }
+}
+
 /** The permission check, in the same shape as `requirePermission`, from a scope that carries only a role. */
 function requireMemberPermission(scope: TenantScope | null | undefined, permission: Extract<Permission, "member.read" | "member.manage">): TenantScope {
   if (!scope) throw new UserFacingError("Sign in to continue.", 401);
@@ -105,6 +146,8 @@ export async function organizationMembers(scope: TenantScope | null | undefined)
   members: { userId: string; email: string | null; displayName: string; role: MembershipRole; acceptedAt: string | null; since: string }[];
   invitations: InvitationView[];
   canManage: boolean;
+  /** The caller's own user id, so the screen can leave their own row alone. */
+  you: string;
 }> {
   const s = requireMemberPermission(scope, "member.read");
   const db = getDb();
@@ -133,6 +176,7 @@ export async function organizationMembers(scope: TenantScope | null | undefined)
     })),
     invitations: pending.map(invitationView),
     canManage: permissionsFor(s.role).has("member.manage"),
+    you: s.userId,
   };
 }
 
@@ -150,13 +194,9 @@ export async function createOrganizationInvitation(a: {
   const email = normalizeInvitationEmail(a.email);
   const role = normalizeRole(a.role);
 
-  // A role is a named set of permissions, so "may I grant it" is a set comparison, not a rank. An admin holds
-  // everything an owner does except `payout.recover.approve`, which is what keeps that second signature a second
-  // person; this check is what enforces it here.
-  const missing = [...permissionsFor(role)].filter((p) => !permissionsFor(scope.role).has(p));
-  if (missing.length > 0) {
-    throw new UserFacingError(`The ${scope.role} role cannot grant the ${role} role: it does not include ${missing.join(", ")}.`, 403);
-  }
+  // An admin holds everything an owner does except `payout.recover.approve`, which is what keeps that second
+  // signature a second person; this check is what enforces it here.
+  assertMayGrant(scope.role, role);
 
   let ttlHours = INVITATION_TTL_MS / 3_600_000;
   if (a.ttlHours !== undefined && a.ttlHours !== null) {
@@ -293,4 +333,85 @@ export async function acceptOrganizationInvitation(a: { sessionToken: string | n
   await db.update(sessions).set({ activeOrgId: invitation.orgId }).where(eq(sessions.sessionToken, user.sessionId));
   const org = await db.query.organizations.findFirst({ where: eq(organizations.id, invitation.orgId) });
   return { orgId: invitation.orgId, orgName: org?.name ?? "", role: outcome.role, alreadyMember: outcome.alreadyMember };
+}
+
+/**
+ * Change an existing member's role, in the session's organization.
+ *
+ * An invitation cannot do this — accepting one never changes a role — so this is the only write that can, and it
+ * is bounded on both sides by the same set comparison the invitation uses:
+ *
+ *   • the role granted may not carry a permission the caller lacks, so an admin cannot make an owner;
+ *   • the role being taken away may not carry one either, so an admin cannot demote an owner;
+ *   • nobody changes their own role, so a demotion cannot be mistaken for a mistake and an escalation cannot be
+ *     a single click;
+ *   • the last owner cannot be demoted, because an organization with no owner cannot be administered at all.
+ *
+ * Nothing else about the row moves: `revoked_at`/`revoked_by` (if the membership was ever restored) stay as the
+ * history, and the acceptance date stays the date they joined.
+ */
+export async function changeOrganizationMemberRole(a: {
+  scope: TenantScope | null | undefined;
+  userId: unknown;
+  role: unknown;
+}): Promise<{ member: { userId: string; email: string | null; role: MembershipRole }; changed: boolean }> {
+  const scope = requireMemberPermission(a.scope, "member.manage");
+  const userId = normalizeMemberId(a.userId);
+  const role = normalizeRole(a.role);
+  const db = getDb();
+  const target = await db.query.memberships.findFirst({
+    where: and(eq(memberships.orgId, scope.orgId), eq(memberships.userId, userId)),
+  });
+  if (!target || target.status !== "ACTIVE") throw new UserFacingError("There is no active member with that id.", 404);
+
+  const person = await db.query.users.findFirst({ where: eq(users.id, userId) });
+  if (target.role === role) return { member: { userId, email: person?.email ?? null, role }, changed: false };
+
+  assertMayGrant(scope.role, role);
+  assertMayActOn(scope.role, target.role);
+  if (target.role === "owner") await assertNotOnlyOwner(db, scope.orgId, "demoted");
+  if (target.userId === scope.userId) {
+    throw new UserFacingError("You cannot change your own role. Ask another owner.", 409);
+  }
+
+  await db.update(memberships).set({ role })
+    .where(and(eq(memberships.id, target.id), eq(memberships.status, "ACTIVE")));
+  return { member: { userId, email: person?.email ?? null, role }, changed: true };
+}
+
+/**
+ * Remove a member: the row is revoked, never deleted, so what they were and when they left stay readable.
+ *
+ * The same two bounds apply as for a role change. A removal also stops any session currently pointed at this
+ * organization from being served for it — `requestScope` re-checks the membership on every request anyway, so
+ * this only turns the next page from a 403 into the fallback to another organization, if they have one.
+ *
+ * A pending invitation issued *before* the removal cannot undo it: acceptance requires an invitation created
+ * after the revocation, exactly as it does for a membership revoked any other way.
+ */
+export async function removeOrganizationMember(scope: TenantScope | null | undefined, memberUserId: unknown): Promise<{
+  member: { userId: string; email: string | null; role: MembershipRole; status: "REVOKED" };
+  removed: true;
+}> {
+  const s = requireMemberPermission(scope, "member.manage");
+  const userId = normalizeMemberId(memberUserId);
+  const db = getDb();
+  const target = await db.query.memberships.findFirst({
+    where: and(eq(memberships.orgId, s.orgId), eq(memberships.userId, userId)),
+  });
+  if (!target || target.status !== "ACTIVE") throw new UserFacingError("There is no active member with that id.", 404);
+
+  assertMayActOn(s.role, target.role);
+  if (target.role === "owner") await assertNotOnlyOwner(db, s.orgId, "removed");
+  if (target.userId === s.userId) throw new UserFacingError("You cannot remove yourself. Ask another owner.", 409);
+
+  const now = new Date();
+  await db.transaction(async (tx) => {
+    await tx.update(memberships).set({ status: "REVOKED", revokedAt: now, revokedBy: s.userId })
+      .where(and(eq(memberships.id, target.id), eq(memberships.status, "ACTIVE")));
+    await tx.update(sessions).set({ activeOrgId: null })
+      .where(and(eq(sessions.userId, userId), eq(sessions.activeOrgId, s.orgId)));
+  });
+  const person = await db.query.users.findFirst({ where: eq(users.id, userId) });
+  return { member: { userId, email: person?.email ?? null, role: target.role, status: "REVOKED" }, removed: true };
 }

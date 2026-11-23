@@ -17,6 +17,7 @@ type Roster = {
   members: { userId: string; email: string | null; displayName: string; role: Role; acceptedAt: string | null; since: string }[];
   invitations: { id: string; email: string; role: Role; invitedBy: string; expiresAt: string; createdAt: string }[];
   canManage: boolean;
+  you: string;
 };
 type Issued = { token: string; acceptPath: string; invitation: { email: string; role: Role } };
 
@@ -63,6 +64,23 @@ export function MembersView() {
     await load();
   };
 
+  const setMemberRole = async (userId: string, next: Role) => {
+    setBusy(true); setError(null);
+    const r = await api<{ error?: string }>(`/api/organizations/members/${userId}/role`, { method: "POST", body: { role: next } });
+    setBusy(false);
+    if (!r.ok) { setError(r.json?.error ?? "The role could not be changed."); await load(); return; }
+    await load();
+  };
+
+  const removeMember = async (userId: string, address: string | null) => {
+    if (!window.confirm(`Remove ${address ?? "this member"} from this organization?`)) return;
+    setBusy(true); setError(null);
+    const r = await api<{ error?: string }>(`/api/organizations/members/${userId}/remove`, { method: "POST", body: {} });
+    setBusy(false);
+    if (!r.ok) { setError(r.json?.error ?? "The member could not be removed."); await load(); return; }
+    await load();
+  };
+
   const copy = async () => {
     if (!link) return;
     try { await navigator.clipboard.writeText(link); setCopied(true); } catch { setCopied(false); }
@@ -83,8 +101,30 @@ export function MembersView() {
                 <p className="text-[.98rem]">{m.displayName || "Member"}</p>
                 <p className="mono mt-0.5 text-[.7rem] text-ink-3">{m.email ?? "no address on file"}</p>
               </div>
-              <div className="flex items-center gap-4">
-                <span className="micro !text-[.62rem] text-ink-2">{m.role}</span>
+              <div className="flex items-center gap-3">
+                {d.canManage && m.userId !== d.you ? (
+                  <>
+                    <select
+                      className="field !py-1 !text-[.78rem]"
+                      value={m.role}
+                      disabled={busy}
+                      onChange={(e) => void setMemberRole(m.userId, e.target.value as Role)}
+                      data-testid={`member-role-${m.userId}`}
+                      aria-label={`Role for ${m.displayName || m.email || "this member"}`}
+                    >
+                      {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
+                    </select>
+                    <button
+                      type="button"
+                      className="btn btn-quiet btn-sm !text-[.8rem]"
+                      onClick={() => void removeMember(m.userId, m.email)}
+                      disabled={busy}
+                      data-testid={`member-remove-${m.userId}`}
+                    >Remove</button>
+                  </>
+                ) : (
+                  <span className="micro !text-[.62rem] text-ink-2">{m.role}{m.userId === d.you ? " · you" : ""}</span>
+                )}
                 <span className="micro !text-[.6rem] text-ink-3">since {day(m.acceptedAt ?? m.since)}</span>
               </div>
             </li>

@@ -63,9 +63,11 @@ the membership exists, not a grant: `requestScope` still re-checks the membershi
 
 * **No email is sent.** The creator gets the link and passes it on. Sending it would mean choosing a transactional
   email provider and holding one more credential; the flow is honest about not doing that yet.
-* **No membership editing beyond invitations.** There is no screen to *change* an existing member's role, and no
+* ~~**No membership editing beyond invitations.** There is no screen to *change* an existing member's role, and no
   self-service removal. A role change is still a deliberate database operation; accepting an invitation is
-  explicitly not a path to one.
+  explicitly not a path to one.~~ **Closed by Milestone 4.6b** (`docs/MILESTONE_4_MEMBER_ADMIN.md`): a role can be
+  changed and a membership removed from `/members`, bounded on both sides by the same permission-set comparison an
+  invitation uses. There is still no self-service leave.
 * **No invitation list for the invitee.** A person discovers an invitation through the link they were given, not
   through a page that lists what is waiting for them. That needs the address to be trusted as a lookup key, which
   is a different decision from this milestone's.
