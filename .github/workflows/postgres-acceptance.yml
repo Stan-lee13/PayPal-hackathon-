@@ -131,6 +131,17 @@ jobs:
           # `pipefail` is what makes this step fail when vitest fails; the JSON report is what the next step reads.
           npx vitest run --reporter=default --reporter=json --outputFile=/tmp/suite.json 2>&1 | tee /tmp/suite.log
 
+      # Runs after a failure as well as after a pass, and before the assertion step, because the assertion step is
+      # skipped once the suite fails. Without this, a failing matrix job says only "Process completed with exit
+      # code 1" and the test that failed is sealed inside an artifact that needs an authenticated download.
+      - name: Name the failing tests, where anyone can read them
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          # No `-e`: a reporter that could fail would be able to replace the failure it is describing.
+          node scripts/ci-failure-report.mjs
+
       - name: Assert the whole suite ran, nothing failed, nothing was skipped
         shell: bash
         run: |
