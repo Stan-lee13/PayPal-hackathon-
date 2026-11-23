@@ -491,7 +491,8 @@ export const auditLog = pgTable("audit_log", {
   subjectId: text("subject_id"),
   /** The organization the entry is about, when one can be established. It never affects seq, prev_hash or hash. */
   orgId: text("org_id").references(() => organizations.id),
-  actor: text("actor", { enum: ["principal", "agent", "gateway", "paypal", "ai"] }).notNull(),
+  /** `user` is a signed-in person acting through the console: identity administration, not money movement. */
+  actor: text("actor", { enum: ["principal", "agent", "gateway", "paypal", "ai", "user"] }).notNull(),
   action: text("action").notNull(),
   ref: text("ref"),
   outcome: text("outcome", { enum: ["OK", "REJECTED", "FAILED", "PENDING", "INFO"] }).notNull(),

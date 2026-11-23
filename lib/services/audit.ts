@@ -4,7 +4,8 @@ import { auditLog } from "../db/schema";
 import { orgForPrincipal, orgForRoot } from "../identity/tenant";
 import { entryHash, genesisHash } from "../ledger/chain";
 
-type Actor = "principal" | "agent" | "gateway" | "paypal" | "ai";
+/** `user` is a signed-in person acting through the console: identity administration, not money movement. */
+type Actor = "principal" | "agent" | "gateway" | "paypal" | "ai" | "user";
 type Outcome = "OK" | "REJECTED" | "FAILED" | "PENDING" | "INFO";
 /** The DB or an open transaction. Inside a transaction this becomes a savepoint, so the chain lock lasts until the outer commit. */
 type Runner = { transaction: (fn: (tx: DB) => Promise<void>) => Promise<void> };
@@ -15,7 +16,13 @@ type Runner = { transaction: (fn: (tx: DB) => Promise<void>) => Promise<void> };
  */
 export async function audit(
   db: Runner | Pick<DB, "transaction">,
-  e: { scopeId: string; subjectId?: string | null; actor: Actor; action: string; ref?: string | null; outcome: Outcome; detail?: Record<string, unknown> },
+  e: {
+    scopeId: string; subjectId?: string | null; actor: Actor; action: string; ref?: string | null; outcome: Outcome;
+    detail?: Record<string, unknown>;
+    /** The organization the entry is about, when the caller knows it better than the heuristics below (e.g. an
+     *  organization's own administration chain, whose scope is the organization rather than a root envelope). */
+    orgId?: string | null;
+  },
 ) {
   const subjectId = e.subjectId ?? null;
   await (db as Runner).transaction(async (tx) => {
@@ -30,7 +37,7 @@ export async function audit(
     const hash = entryHash({ seq, scopeId: e.scopeId, subjectId, actor: e.actor, action: e.action, ref: e.ref ?? null, outcome: e.outcome, detail, createdAt: createdAt.toISOString(), prevHash });
     // Which organization this entry is about: the envelope's, else the principal's. Null when neither is mapped.
     // It is recorded beside the chain and never enters the hash, so adding it cannot change a past entry.
-    const orgId = (subjectId ? await orgForRoot(subjectId, tx) : null) ?? (await orgForPrincipal(e.scopeId, tx));
+    const orgId = e.orgId ?? (subjectId ? await orgForRoot(subjectId, tx) : null) ?? (await orgForPrincipal(e.scopeId, tx));
     await tx.insert(auditLog).values({ scopeId: e.scopeId, subjectId, orgId, actor: e.actor, action: e.action, ref: e.ref ?? null, outcome: e.outcome, detail, createdAt, seq, prevHash, hash });
   });
 }

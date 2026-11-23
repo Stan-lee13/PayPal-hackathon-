@@ -45,6 +45,11 @@ POST /api/invitations/accept                          a session, no membership y
   *after* the revocation: the invitation records a later decision by an owner, whereas one that was in flight when
   the revocation happened must not quietly undo it. `revoked_at` and `revoked_by` are left in place as the history.
 
+**Every one of these decisions is in the organization's audit chain.** Issuing, withdrawing and accepting an
+invitation each append a hash-chained `audit_log` entry (scope: the organization, actor: `user`) in the same
+transaction as the write it describes, so the trail cannot disagree with the roster. The entry names who invited
+or withdrew, the address and the role; it never names the token. See `docs/MILESTONE_4_MEMBER_ADMIN.md`.
+
 Accepting also writes the organization to the session's `active_org_id` (Milestone 4.5), so the person lands in the
 organization they just joined rather than whichever membership happens to be oldest. It is a session-row write after
 the membership exists, not a grant: `requestScope` still re-checks the membership on every request.

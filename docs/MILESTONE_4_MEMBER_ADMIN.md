@@ -45,6 +45,20 @@ so an invitation that was in flight when someone was removed is refused (409) ra
 decision. Once removed, the address is invitable again — the "already an active member" 409 no longer applies —
 and accepting that new invitation restores the membership with `revoked_at` and `revoked_by` still on the row.
 
+## It cannot be done quietly
+
+Every decision in `lib/identity/members.ts` — invite, withdraw, accept, change a role, remove — appends one entry
+to the hash-chained `audit_log`, **inside the same transaction as the write it describes**, so the trail cannot
+commit without the change or disagree with it afterwards. The chain's scope is the organization itself
+(`scope_id = org_id`, no subject), the actor is the new `user` value, and the entry names who did what to whom. It
+never contains the invitation token: that exists only in the creation response.
+
+This is what closes the gap this milestone opened with. The chain already existed for money (`principal`, `agent`,
+`gateway`, `paypal`, `ai`); identity administration now uses it too, rather than being invisible history. The
+detail carries the transition (`from`, `to`), the address, and the actor's user id, and `audit_log.org_id` makes
+the organization's administrative history one indexed read — the same read `GET /api/auditor` already offers for an
+envelope's chain.
+
 ## The screen
 
 `/members` now has, on each row other than the caller's own, a role selector and a `Remove` button, both drawn only
@@ -56,10 +70,8 @@ their role and `· you` instead of controls, matching the 409 the server would a
 
 * **No self-service leave.** A member cannot take themselves out of an organization; that needs a decision about
   what happens to the records they sealed and is not the same thing as an administrator removing them.
-* **No audit-chain entry.** `audit_log` is hash-chained per subject and its `actor` vocabulary is
-  `principal | agent | gateway | paypal | ai` — it has no human actor, and adding one is a schema change with its
-  own ordering questions. A role change is therefore recorded only in the membership row and the request log, not
-  in the chain an auditor replays. That is a real gap, stated rather than papered over.
+* **No chain entry for a session change.** Choosing which organization a session is served for (4.5) writes only
+  the session row; it grants nothing, so it is not an administrative decision and is not in the chain.
 * **No email.** Still true from 4.6: the link is passed on by hand.
 * **No re-invitation from the roster.** A removed member is invited through the same invite form as anyone else;
   the screen does not offer a shortcut for them.
@@ -79,7 +91,10 @@ their role and `· you` instead of controls, matching the 409 the server would a
 * removal sets `REVOKED` with `revoked_by`/`revoked_at`, keeps the role, drops the person from the roster, clears
   their session's `active_org_id`, and their next read is a 403; removing twice is a 404;
 * a removed person's address is invitable again; accepting that invitation restores `ACTIVE` at the invited role
-  with the revocation still recorded, and the link is spent afterwards.
+  with the revocation still recorded, and the link is spent afterwards;
+* a role change, a removal and an invitation leave three entries in one chain for the organization — `seq` 1, 2, 3,
+  the first starting at the organization's genesis hash and each naming its predecessor — with `actor: "user"`, the
+  `from`/`to` transition, the actor's id, and no copy of the invitation token anywhere in the rows.
 
 `tests/route-authorization.test.ts` passes: both endpoints are classified as `session: "required"` with
 `member.manage`, and `docs/MILESTONE_4_ROUTE_AUTHORIZATION_MATRIX.md` is regenerated from that table.

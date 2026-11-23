@@ -21,7 +21,7 @@ const d = enabled ? describe : describe.skip;
 d("member administration (Milestone 4.6b)", async () => {
   const { getDb } = await import("../lib/db");
   const schema = await import("../lib/db/schema");
-  const { and, eq, sql } = await import("drizzle-orm");
+  const { and, asc, eq, sql } = await import("drizzle-orm");
   const { route } = await import("../lib/api/next");
   const { openDevelopmentSession } = await import("../lib/auth/dev-session");
   const { createTestIdentity } = await import("../lib/auth/testing");
@@ -209,5 +209,35 @@ d("member administration (Milestone 4.6b)", async () => {
 
     // The link they used is spent, as any invitation is.
     expect((await acceptInvitation(ivan.sessionToken, again.body.token)).status).toBe(404);
+  });
+
+  it("records administration in the organization's hash chain, without recording any secret", async () => {
+    await reset();
+    const { genesisHash } = await import("../lib/ledger/chain");
+    const dev = await openDevelopmentSession();
+    const jane = await createTestIdentity({ orgId: dev.orgId, role: "developer", email: "jane@example.test" });
+
+    expect((await setRole(dev.sessionToken, jane.userId, "auditor")).status).toBe(200);
+    expect((await remove(dev.sessionToken, jane.userId)).status).toBe(200);
+    const issued = await invite(dev.sessionToken, "kate@example.test", "finance");
+    expect(issued.status).toBe(201);
+
+    // One chain per organization, in the order the decisions were made.
+    const trail = await getDb().select().from(schema.auditLog)
+      .where(eq(schema.auditLog.orgId, dev.orgId))
+      .orderBy(asc(schema.auditLog.seq));
+    expect(trail.map((r) => r.action)).toEqual(["member.role_changed", "member.removed", "member.invited"]);
+    expect(trail.map((r) => r.seq)).toEqual([1, 2, 3]);
+    expect(trail.every((r) => r.actor === "user" && r.outcome === "OK")).toBe(true);
+
+    // It is a chain: the first entry starts at the organization's genesis, and each one names its predecessor.
+    expect(trail[0]!.prevHash).toBe(genesisHash(dev.orgId, null));
+    for (let i = 1; i < trail.length; i += 1) expect(trail[i]!.prevHash).toBe(trail[i - 1]!.hash);
+
+    // What an auditor needs, and nothing they must not have: the change, who made it, never the invitation token.
+    expect(trail[0]!.detail).toMatchObject({ from: "developer", to: "auditor", by: dev.userId });
+    expect(trail[1]!.detail).toMatchObject({ role: "auditor", by: dev.userId });
+    expect(trail[2]!.detail).toMatchObject({ email: "kate@example.test", role: "finance", invitedBy: dev.userId });
+    expect(JSON.stringify(trail)).not.toContain(issued.body.token);
   });
 });

@@ -24,6 +24,12 @@
  *     all of it, and changed or revoked only if they hold all of the role being taken away — so an admin can
  *     neither make nor demote an owner. Nobody changes their own row, the only owner is never demoted or removed,
  *     and a removal is a revocation that keeps the row (who, when) rather than a deletion.
+ *   • **Nobody can do any of it quietly.** Every invitation, withdrawal, acceptance, role change and removal is a
+ *     hash-chained audit entry for that organization, written in the same transaction as the change itself.
+ *
+ * Every one of those decisions appends an entry to the organization's audit chain (scope: the organization; actor:
+ * `user`), inside the same transaction as the write it describes, so the trail cannot disagree with the roster. The
+ * entry names who did what to whom; it never names the invitation token.
  *
  * No email is sent. The creator is given the one-time link and passes it on however they already talk to the
  * invitee, which is honest about what this milestone does and does not do (docs/MILESTONE_4_INVITATIONS.md).
@@ -38,6 +44,7 @@ import {
 import type { TenantScope } from "../db/tenant-context";
 import { UserFacingError } from "../errors";
 import { newId } from "../ids";
+import { audit } from "../services/audit";
 import { sha256Hex } from "../sha256";
 import { permissionsFor, type Permission } from "./permissions";
 
@@ -230,6 +237,12 @@ export async function createOrganizationInvitation(a: {
       id: newId("inv"), orgId: scope.orgId, email, role,
       tokenHash: hashInvitationToken(token), invitedBy: scope.userId, expiresAt, createdAt: now,
     }).returning();
+    // The trail names who invited whom, at which role, and when it lapses. It never names the token: that exists
+    // only in the response.
+    await audit(tx, {
+      scopeId: scope.orgId, orgId: scope.orgId, actor: "user", action: "member.invited", ref: row!.id, outcome: "OK",
+      detail: { email, role, invitedBy: scope.userId, expiresAt: expiresAt.toISOString() },
+    });
     return row!;
   });
   const org = await db.query.organizations.findFirst({ where: eq(organizations.id, scope.orgId) });
@@ -250,8 +263,14 @@ export async function revokeOrganizationInvitation(scope: TenantScope | null | u
     where: and(eq(organizationInvitations.id, invitationId), eq(organizationInvitations.orgId, s.orgId)),
   });
   if (!row || row.acceptedAt || row.revokedAt) throw new UserFacingError("There is no pending invitation with that id.", 404);
-  await db.update(organizationInvitations).set({ revokedAt: new Date() })
-    .where(and(eq(organizationInvitations.id, row.id), isNull(organizationInvitations.acceptedAt), isNull(organizationInvitations.revokedAt)));
+  await db.transaction(async (tx) => {
+    await tx.update(organizationInvitations).set({ revokedAt: new Date() })
+      .where(and(eq(organizationInvitations.id, row.id), isNull(organizationInvitations.acceptedAt), isNull(organizationInvitations.revokedAt)));
+    await audit(tx, {
+      scopeId: s.orgId, orgId: s.orgId, actor: "user", action: "member.invitation_withdrawn", ref: row.id, outcome: "OK",
+      detail: { email: row.email, role: row.role, invitedBy: row.invitedBy, withdrawnBy: s.userId },
+    });
+  });
   return { id: row.id, revoked: true };
 }
 
@@ -305,27 +324,36 @@ export async function acceptOrganizationInvitation(a: { sessionToken: string | n
     const existing = await tx.query.memberships.findFirst({
       where: and(eq(memberships.orgId, invitation.orgId), eq(memberships.userId, user.userId)),
     });
+    let result: { role: MembershipRole; alreadyMember: boolean };
     if (!existing) {
       await tx.insert(memberships).values({
         id: newId("mem"), orgId: invitation.orgId, userId: user.userId, role: invitation.role, status: "ACTIVE",
         invitedBy: invitation.invitedBy, invitedAt: invitation.createdAt, acceptedAt: now,
       });
-      return { role: invitation.role, alreadyMember: false };
-    }
-    // Already in: the invitation confirms what is already true and grants nothing further. Its role is not applied,
-    // because accepting an invitation must never be a way to change a role.
-    if (existing.status === "ACTIVE") return { role: existing.role, alreadyMember: true };
-    if (existing.status === "REVOKED") {
-      // A revocation was somebody's decision, dated. Only an invitation issued after it is a later decision that
-      // can reverse it; one that predates it must not quietly undo it.
-      if (!existing.revokedAt || invitation.createdAt.getTime() <= existing.revokedAt.getTime()) {
-        throw new UserFacingError("Your membership of this organization was revoked after this invitation was sent. Ask an owner to invite you again.", 409);
+      result = { role: invitation.role, alreadyMember: false };
+    } else if (existing.status === "ACTIVE") {
+      // Already in: the invitation confirms what is already true and grants nothing further. Its role is not applied,
+      // because accepting an invitation must never be a way to change a role.
+      result = { role: existing.role, alreadyMember: true };
+    } else {
+      if (existing.status === "REVOKED") {
+        // A revocation was somebody's decision, dated. Only an invitation issued after it is a later decision that
+        // can reverse it; one that predates it must not quietly undo it.
+        if (!existing.revokedAt || invitation.createdAt.getTime() <= existing.revokedAt.getTime()) {
+          throw new UserFacingError("Your membership of this organization was revoked after this invitation was sent. Ask an owner to invite you again.", 409);
+        }
       }
+      await tx.update(memberships)
+        .set({ status: "ACTIVE", role: invitation.role, acceptedAt: now, invitedBy: invitation.invitedBy, invitedAt: invitation.createdAt })
+        .where(eq(memberships.id, existing.id));
+      result = { role: invitation.role, alreadyMember: false };
     }
-    await tx.update(memberships)
-      .set({ status: "ACTIVE", role: invitation.role, acceptedAt: now, invitedBy: invitation.invitedBy, invitedAt: invitation.createdAt })
-      .where(eq(memberships.id, existing.id));
-    return { role: invitation.role, alreadyMember: false };
+    await audit(tx, {
+      scopeId: invitation.orgId, orgId: invitation.orgId, actor: "user", action: "member.invitation_accepted",
+      ref: invitation.id, outcome: "OK",
+      detail: { userId: user.userId, email, role: result.role, alreadyMember: result.alreadyMember, acceptedBy: user.userId },
+    });
+    return result;
   });
 
   // The person just joined this organization, so serve the rest of this session for it. It is a session-row write
@@ -374,8 +402,14 @@ export async function changeOrganizationMemberRole(a: {
     throw new UserFacingError("You cannot change your own role. Ask another owner.", 409);
   }
 
-  await db.update(memberships).set({ role })
-    .where(and(eq(memberships.id, target.id), eq(memberships.status, "ACTIVE")));
+  await db.transaction(async (tx) => {
+    await tx.update(memberships).set({ role })
+      .where(and(eq(memberships.id, target.id), eq(memberships.status, "ACTIVE")));
+    await audit(tx, {
+      scopeId: scope.orgId, orgId: scope.orgId, actor: "user", action: "member.role_changed", ref: userId, outcome: "OK",
+      detail: { email: person?.email ?? null, from: target.role, to: role, by: scope.userId },
+    });
+  });
   return { member: { userId, email: person?.email ?? null, role }, changed: true };
 }
 
@@ -405,13 +439,17 @@ export async function removeOrganizationMember(scope: TenantScope | null | undef
   if (target.role === "owner") await assertNotOnlyOwner(db, s.orgId, "removed");
   if (target.userId === s.userId) throw new UserFacingError("You cannot remove yourself. Ask another owner.", 409);
 
+  const person = await db.query.users.findFirst({ where: eq(users.id, userId) });
   const now = new Date();
   await db.transaction(async (tx) => {
     await tx.update(memberships).set({ status: "REVOKED", revokedAt: now, revokedBy: s.userId })
       .where(and(eq(memberships.id, target.id), eq(memberships.status, "ACTIVE")));
     await tx.update(sessions).set({ activeOrgId: null })
       .where(and(eq(sessions.userId, userId), eq(sessions.activeOrgId, s.orgId)));
+    await audit(tx, {
+      scopeId: s.orgId, orgId: s.orgId, actor: "user", action: "member.removed", ref: userId, outcome: "OK",
+      detail: { email: person?.email ?? null, role: target.role, by: s.userId },
+    });
   });
-  const person = await db.query.users.findFirst({ where: eq(users.id, userId) });
   return { member: { userId, email: person?.email ?? null, role: target.role, status: "REVOKED" }, removed: true };
 }
