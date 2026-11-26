@@ -26,6 +26,12 @@
  *     and a removal is a revocation that keeps the row (who, when) rather than a deletion.
  *   • **Nobody can do any of it quietly.** Every invitation, withdrawal, acceptance, role change and removal is a
  *     hash-chained audit entry for that organization, written in the same transaction as the change itself.
+ *   • **Every decision is made again inside the transaction that executes it.** Membership writes take one
+ *     organization-scoped PostgreSQL lock, and the caller and the addressed member are re-read under it. Two
+ *     owners demoting each other cannot both count two owners; an admin whose own membership was revoked while
+ *     their request waited cannot act on the role they held when it arrived; and a member promoted to owner
+ *     mid-request cannot be demoted on the strength of the role they had then. A write that matches no row is a
+ *     conflict, and a conflict writes no audit entry.
  *
  * Every one of those decisions appends an entry to the organization's audit chain (scope: the organization; actor:
  * `user`), inside the same transaction as the write it describes, so the trail cannot disagree with the roster. The
@@ -34,9 +40,9 @@
  * No email is sent. The creator is given the one-time link and passes it on however they already talk to the
  * invitee, which is honest about what this milestone does and does not do (docs/MILESTONE_4_INVITATIONS.md).
  */
-import { and, asc, desc, eq, gt, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, gt, isNull, sql } from "drizzle-orm";
 import { requireAuthenticatedUser } from "../auth/context";
-import { getDb } from "../db";
+import { getDb, type DB } from "../db";
 import {
   MEMBERSHIP_ROLES, memberships, organizationInvitations, organizations, sessions, users,
   type MembershipRole,
@@ -92,6 +98,54 @@ function normalizeMemberId(id: unknown): string {
   return v;
 }
 
+/** Either the pool or an open transaction: the membership decisions below only ever run inside one. */
+type Tx = Parameters<Parameters<DB["transaction"]>[0]>[0];
+
+/**
+ * Domain separation for the organization membership lock, so its key cannot collide with another advisory lock
+ * in this codebase (the audit chain uses `envelope-audit|…`).
+ */
+export const MEMBERSHIP_LOCK_DOMAIN = "organization-membership|";
+export const membershipLockKey = (orgId: string): string => `${MEMBERSHIP_LOCK_DOMAIN}${orgId}`;
+
+/**
+ * Run a membership decision in a transaction that holds its organization's membership lock.
+ *
+ * Every operation that can change who is in an organization — or what they may do in it — takes this lock
+ * first, so two requests for one organization are decided in turn, each against the state the previous one
+ * committed. The lock is PostgreSQL's, transaction-scoped and keyed by the organization alone: another server
+ * process, a serverless instance or a worker takes the same lock, which a process-local mutex would not, and
+ * two organizations never wait for each other.
+ *
+ * It is held until the outer transaction commits or rolls back, and the audit entry is written inside it (its
+ * own savepoint), so a trail can neither outlive a rolled-back change nor be appended for one.
+ */
+export async function inMembershipTransaction<T>(orgId: string, run: (tx: Tx) => Promise<T>): Promise<T> {
+  return getDb().transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${membershipLockKey(orgId)}, 0))`);
+    return run(tx);
+  });
+}
+
+/**
+ * The caller, re-read inside the transaction. The request scope says who they were when the request arrived;
+ * this says who they are at the moment the change would commit, and only this authorizes a write. A member who
+ * was demoted, suspended or removed while their request waited is refused here rather than acting on an
+ * authority they no longer hold.
+ */
+async function requireMemberManager(tx: Tx, scope: TenantScope): Promise<TenantScope> {
+  const actor = await tx.query.memberships.findFirst({
+    where: and(eq(memberships.orgId, scope.orgId), eq(memberships.userId, scope.userId)),
+  });
+  if (!actor || actor.status !== "ACTIVE") {
+    throw new UserFacingError("Your membership of this organization is no longer active, so nothing was changed.", 403);
+  }
+  if (!permissionsFor(actor.role).has("member.manage")) {
+    throw new UserFacingError(`The ${actor.role} role does not include member.manage, so nothing was changed.`, 403);
+  }
+  return { orgId: actor.orgId, userId: actor.userId, role: actor.role };
+}
+
 /** A role is a named permission set, so "may I grant it" is a set comparison, never a rank. */
 function assertMayGrant(actorRole: MembershipRole, role: MembershipRole): void {
   const missing = [...permissionsFor(role)].filter((p) => !permissionsFor(actorRole).has(p));
@@ -112,9 +166,14 @@ function assertMayActOn(actorRole: MembershipRole, targetRole: MembershipRole): 
   }
 }
 
-/** An organization nobody can administer is a dead end, so the write that would cause one is refused. */
-async function assertNotOnlyOwner(db: ReturnType<typeof getDb>, orgId: string, what: string): Promise<void> {
-  const owners = await db.select({ id: memberships.id }).from(memberships)
+/**
+ * An organization nobody can administer is a dead end, so the write that would cause one is refused.
+ *
+ * This must run inside the organization lock, in the same transaction as the write it guards: the count and the
+ * update have to see the same state, or two requests can each count two owners and each remove one.
+ */
+async function assertNotOnlyOwner(tx: Tx, orgId: string, what: string): Promise<void> {
+  const owners = await tx.select({ id: memberships.id }).from(memberships)
     .where(and(eq(memberships.orgId, orgId), eq(memberships.role, "owner"), eq(memberships.status, "ACTIVE")));
   if (owners.length <= 1) {
     throw new UserFacingError(`This is the organization's only owner, so it cannot be ${what}: nobody would be left who can administer it. Add another owner first.`, 409);
@@ -202,7 +261,8 @@ export async function createOrganizationInvitation(a: {
   const role = normalizeRole(a.role);
 
   // An admin holds everything an owner does except `payout.recover.approve`, which is what keeps that second
-  // signature a second person; this check is what enforces it here.
+  // signature a second person; this check is what enforces it here, and it is repeated against the fresh role
+  // inside the transaction, because the scope's role is only what the caller held when the request arrived.
   assertMayGrant(scope.role, role);
 
   let ttlHours = INVITATION_TTL_MS / 3_600_000;
@@ -213,35 +273,50 @@ export async function createOrganizationInvitation(a: {
   }
 
   const db = getDb();
-  const already = await db.select({ userId: memberships.userId })
-    .from(memberships)
-    .innerJoin(users, eq(memberships.userId, users.id))
-    .where(and(eq(memberships.orgId, scope.orgId), eq(users.email, email), eq(memberships.status, "ACTIVE")))
-    .limit(1);
-  if (already.length > 0) throw new UserFacingError("That address is already an active member of this organization.", 409);
-
   const token = mintInvitationToken();
   const now = new Date();
   const expiresAt = new Date(now.getTime() + ttlHours * 3_600_000);
-  const invitation = await db.transaction(async (tx) => {
+  const invitation = await inMembershipTransaction(scope.orgId, async (tx) => {
+    const actor = await requireMemberManager(tx, scope);
+    assertMayGrant(actor.role, role);
+
+    const already = await tx.select({ userId: memberships.userId })
+      .from(memberships)
+      .innerJoin(users, eq(memberships.userId, users.id))
+      .where(and(eq(memberships.orgId, scope.orgId), eq(users.email, email), eq(memberships.status, "ACTIVE")))
+      .limit(1);
+    if (already.length > 0) throw new UserFacingError("That address is already an active member of this organization.", 409);
+
     // One live invitation per address: a new one withdraws the old, so a forwarded link cannot outlive the
-    // decision that replaced it.
-    await tx.update(organizationInvitations).set({ revokedAt: now })
+    // decision that replaced it. Under the organization lock that is true for two requests that arrive at the
+    // same instant as well as for two that arrive a minute apart: they are applied in turn, so the later one
+    // supersedes the earlier one instead of leaving both live.
+    const superseded = await tx.update(organizationInvitations).set({ revokedAt: now })
       .where(and(
         eq(organizationInvitations.orgId, scope.orgId),
         eq(organizationInvitations.email, email),
         isNull(organizationInvitations.acceptedAt),
         isNull(organizationInvitations.revokedAt),
-      ));
+      ))
+      .returning();
     const [row] = await tx.insert(organizationInvitations).values({
       id: newId("inv"), orgId: scope.orgId, email, role,
-      tokenHash: hashInvitationToken(token), invitedBy: scope.userId, expiresAt, createdAt: now,
+      tokenHash: hashInvitationToken(token), invitedBy: actor.userId, expiresAt, createdAt: now,
     }).returning();
+    // Superseding an invitation is a decision too, so each one it withdrew is in the chain: otherwise the trail
+    // would describe a live invitation the roster no longer shows.
+    for (const old of superseded) {
+      await audit(tx, {
+        scopeId: scope.orgId, orgId: scope.orgId, actor: "user", action: "member.invitation_withdrawn",
+        ref: old.id, outcome: "OK",
+        detail: { email: old.email, role: old.role, invitedBy: old.invitedBy, withdrawnBy: actor.userId, supersededBy: row!.id },
+      });
+    }
     // The trail names who invited whom, at which role, and when it lapses. It never names the token: that exists
     // only in the response.
     await audit(tx, {
       scopeId: scope.orgId, orgId: scope.orgId, actor: "user", action: "member.invited", ref: row!.id, outcome: "OK",
-      detail: { email, role, invitedBy: scope.userId, expiresAt: expiresAt.toISOString() },
+      detail: { email, role, invitedBy: actor.userId, expiresAt: expiresAt.toISOString() },
     });
     return row!;
   });
@@ -258,20 +333,26 @@ export async function createOrganizationInvitation(a: {
 export async function revokeOrganizationInvitation(scope: TenantScope | null | undefined, invitationId: string | null | undefined): Promise<{ id: string; revoked: true }> {
   const s = requireMemberPermission(scope, "member.manage");
   if (!invitationId) throw new UserFacingError("Name the invitation to withdraw.", 400);
-  const db = getDb();
-  const row = await db.query.organizationInvitations.findFirst({
-    where: and(eq(organizationInvitations.id, invitationId), eq(organizationInvitations.orgId, s.orgId)),
-  });
-  if (!row || row.acceptedAt || row.revokedAt) throw new UserFacingError("There is no pending invitation with that id.", 404);
-  await db.transaction(async (tx) => {
-    await tx.update(organizationInvitations).set({ revokedAt: new Date() })
-      .where(and(eq(organizationInvitations.id, row.id), isNull(organizationInvitations.acceptedAt), isNull(organizationInvitations.revokedAt)));
+  return inMembershipTransaction(s.orgId, async (tx) => {
+    const actor = await requireMemberManager(tx, s);
+    // The conditional write is the decision: it matches only while the invitation is still pending, and it
+    // returns the row it withdrew. A second withdrawal — a minute later or at the same instant — matches
+    // nothing, writes nothing, and therefore adds nothing to the chain.
+    const [revoked] = await tx.update(organizationInvitations).set({ revokedAt: new Date() })
+      .where(and(
+        eq(organizationInvitations.id, invitationId),
+        eq(organizationInvitations.orgId, s.orgId),
+        isNull(organizationInvitations.acceptedAt),
+        isNull(organizationInvitations.revokedAt),
+      ))
+      .returning();
+    if (!revoked) throw new UserFacingError("There is no pending invitation with that id.", 404);
     await audit(tx, {
-      scopeId: s.orgId, orgId: s.orgId, actor: "user", action: "member.invitation_withdrawn", ref: row.id, outcome: "OK",
-      detail: { email: row.email, role: row.role, invitedBy: row.invitedBy, withdrawnBy: s.userId },
+      scopeId: s.orgId, orgId: s.orgId, actor: "user", action: "member.invitation_withdrawn", ref: revoked.id, outcome: "OK",
+      detail: { email: revoked.email, role: revoked.role, invitedBy: revoked.invitedBy, withdrawnBy: actor.userId },
     });
+    return { id: revoked.id, revoked: true as const };
   });
-  return { id: row.id, revoked: true };
 }
 
 /**
@@ -305,7 +386,9 @@ export async function acceptOrganizationInvitation(a: { sessionToken: string | n
   }
 
   const now = new Date();
-  const outcome = await db.transaction(async (tx) => {
+  // The organization lock is taken before the claim, so an administrator's removal cannot commit between the
+  // acceptance and the membership write it restores.
+  const outcome = await inMembershipTransaction(invitation.orgId, async (tx) => {
     // The claim is the single-use rule. It matches only while the invitation is pending and unexpired, and it is
     // one statement, so two concurrent acceptances cannot both see "pending" and both proceed.
     const claimed = await tx.update(organizationInvitations)
@@ -386,31 +469,45 @@ export async function changeOrganizationMemberRole(a: {
   const scope = requireMemberPermission(a.scope, "member.manage");
   const userId = normalizeMemberId(a.userId);
   const role = normalizeRole(a.role);
-  const db = getDb();
-  const target = await db.query.memberships.findFirst({
-    where: and(eq(memberships.orgId, scope.orgId), eq(memberships.userId, userId)),
-  });
-  if (!target || target.status !== "ACTIVE") throw new UserFacingError("There is no active member with that id.", 404);
 
-  const person = await db.query.users.findFirst({ where: eq(users.id, userId) });
-  if (target.role === role) return { member: { userId, email: person?.email ?? null, role }, changed: false };
+  return inMembershipTransaction(scope.orgId, async (tx) => {
+    const actor = await requireMemberManager(tx, scope);
+    const target = await tx.query.memberships.findFirst({
+      where: and(eq(memberships.orgId, scope.orgId), eq(memberships.userId, userId)),
+    });
+    if (!target || target.status !== "ACTIVE") throw new UserFacingError("There is no active member with that id.", 404);
 
-  assertMayGrant(scope.role, role);
-  assertMayActOn(scope.role, target.role);
-  if (target.role === "owner") await assertNotOnlyOwner(db, scope.orgId, "demoted");
-  if (target.userId === scope.userId) {
-    throw new UserFacingError("You cannot change your own role. Ask another owner.", 409);
-  }
+    const person = await tx.query.users.findFirst({ where: eq(users.id, userId) });
+    if (target.role === role) return { member: { userId, email: person?.email ?? null, role }, changed: false };
 
-  await db.transaction(async (tx) => {
-    await tx.update(memberships).set({ role })
-      .where(and(eq(memberships.id, target.id), eq(memberships.status, "ACTIVE")));
+    // Both sides of the comparison are the roles as they are now, under the lock: the caller's and the row's.
+    // The role the request saw is not used, so a member promoted while it waited cannot be demoted on it.
+    assertMayGrant(actor.role, role);
+    assertMayActOn(actor.role, target.role);
+    if (target.role === "owner") await assertNotOnlyOwner(tx, scope.orgId, "demoted");
+    if (target.userId === actor.userId) {
+      throw new UserFacingError("You cannot change your own role. Ask another owner.", 409);
+    }
+
+    // The update is conditional on the role that was authorized, and it returns the row it changed. If it
+    // changed nothing there is nothing to report, so there is no success response and no audit entry.
+    const [changed] = await tx.update(memberships).set({ role })
+      .where(and(
+        eq(memberships.id, target.id),
+        eq(memberships.orgId, scope.orgId),
+        eq(memberships.status, "ACTIVE"),
+        eq(memberships.role, target.role),
+      ))
+      .returning();
+    if (!changed) {
+      throw new UserFacingError("This member changed while the request was in flight, so nothing was changed. Reload and try again.", 409);
+    }
     await audit(tx, {
       scopeId: scope.orgId, orgId: scope.orgId, actor: "user", action: "member.role_changed", ref: userId, outcome: "OK",
-      detail: { email: person?.email ?? null, from: target.role, to: role, by: scope.userId },
+      detail: { email: person?.email ?? null, from: target.role, to: changed.role, by: actor.userId },
     });
+    return { member: { userId, email: person?.email ?? null, role: changed.role }, changed: true };
   });
-  return { member: { userId, email: person?.email ?? null, role }, changed: true };
 }
 
 /**
@@ -429,27 +526,38 @@ export async function removeOrganizationMember(scope: TenantScope | null | undef
 }> {
   const s = requireMemberPermission(scope, "member.manage");
   const userId = normalizeMemberId(memberUserId);
-  const db = getDb();
-  const target = await db.query.memberships.findFirst({
-    where: and(eq(memberships.orgId, s.orgId), eq(memberships.userId, userId)),
-  });
-  if (!target || target.status !== "ACTIVE") throw new UserFacingError("There is no active member with that id.", 404);
 
-  assertMayActOn(s.role, target.role);
-  if (target.role === "owner") await assertNotOnlyOwner(db, s.orgId, "removed");
-  if (target.userId === s.userId) throw new UserFacingError("You cannot remove yourself. Ask another owner.", 409);
+  return inMembershipTransaction(s.orgId, async (tx) => {
+    const actor = await requireMemberManager(tx, s);
+    const target = await tx.query.memberships.findFirst({
+      where: and(eq(memberships.orgId, s.orgId), eq(memberships.userId, userId)),
+    });
+    if (!target || target.status !== "ACTIVE") throw new UserFacingError("There is no active member with that id.", 404);
 
-  const person = await db.query.users.findFirst({ where: eq(users.id, userId) });
-  const now = new Date();
-  await db.transaction(async (tx) => {
-    await tx.update(memberships).set({ status: "REVOKED", revokedAt: now, revokedBy: s.userId })
-      .where(and(eq(memberships.id, target.id), eq(memberships.status, "ACTIVE")));
+    assertMayActOn(actor.role, target.role);
+    if (target.role === "owner") await assertNotOnlyOwner(tx, s.orgId, "removed");
+    if (target.userId === actor.userId) throw new UserFacingError("You cannot remove yourself. Ask another owner.", 409);
+
+    const person = await tx.query.users.findFirst({ where: eq(users.id, userId) });
+    const now = new Date();
+    // ACTIVE → REVOKED, once. The returned row is what was actually revoked: the chain entry, the response and
+    // the session cleanup all follow from it, so a request that revoked nothing reports nothing.
+    const [revoked] = await tx.update(memberships).set({ status: "REVOKED", revokedAt: now, revokedBy: actor.userId })
+      .where(and(
+        eq(memberships.id, target.id),
+        eq(memberships.orgId, s.orgId),
+        eq(memberships.status, "ACTIVE"),
+      ))
+      .returning();
+    if (!revoked) {
+      throw new UserFacingError("This member changed while the request was in flight, so nothing was changed. Reload and try again.", 409);
+    }
     await tx.update(sessions).set({ activeOrgId: null })
       .where(and(eq(sessions.userId, userId), eq(sessions.activeOrgId, s.orgId)));
     await audit(tx, {
       scopeId: s.orgId, orgId: s.orgId, actor: "user", action: "member.removed", ref: userId, outcome: "OK",
-      detail: { email: person?.email ?? null, role: target.role, by: s.userId },
+      detail: { email: person?.email ?? null, role: revoked.role, by: actor.userId },
     });
+    return { member: { userId, email: person?.email ?? null, role: revoked.role, status: "REVOKED" as const }, removed: true as const };
   });
-  return { member: { userId, email: person?.email ?? null, role: target.role, status: "REVOKED" }, removed: true };
 }
