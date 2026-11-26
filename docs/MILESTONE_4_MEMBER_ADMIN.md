@@ -79,7 +79,7 @@ their role and `· you` instead of controls, matching the 409 the server would a
 
 ## Evidence
 
-`tests/member-administration.test.ts` (5 tests, PostgreSQL):
+`tests/member-administration.test.ts` (6 tests, PostgreSQL):
 
 * an owner moves a developer to auditor; the row, the roster and the permissions all follow; setting the role they
   already have returns `changed: false`; a member of another organization and an unknown id are both 404;
@@ -98,3 +98,150 @@ their role and `· you` instead of controls, matching the 409 the server would a
 
 `tests/route-authorization.test.ts` passes: both endpoints are classified as `session: "required"` with
 `member.manage`, and `docs/MILESTONE_4_ROUTE_AUTHORIZATION_MATRIX.md` is regenerated from that table.
+
+---
+
+# Milestone 4.6c — the decision and the write are the same moment
+
+4.6b decided correctly and wrote separately. Every rule above was checked against rows read *before* the
+mutation's transaction opened, and the write then matched on `id` and `ACTIVE` alone. Sequential tests cannot see
+the difference; two independent PostgreSQL connections can. Three things could go wrong, and this milestone closes
+each of them:
+
+1. **Two owners could demote each other.** With Alice and Bob both owners, both requests count two owners, both
+   pass the last-owner check, both update a different row, and the organization ends with none.
+2. **A role could be acted on after it changed.** An admin reads a `finance` member, an owner promotes that member
+   to owner, and the admin's waiting request — still authorized for `finance` — demotes an owner without holding
+   `payout.recover.approve`.
+3. **A caller could act on authority they no longer had.** The scope's role is what the caller held when the
+   request arrived. Demoted or removed while the request waits, they would still be authorized.
+
+## The organization's membership lock
+
+```
+organization-membership|<orgId>   →  pg_advisory_xact_lock(hashtextextended(…, 0))
+```
+
+One transaction-scoped PostgreSQL lock per organization, taken as the first statement of every membership
+mutation: role change, removal, invitation creation, invitation withdrawal, invitation acceptance. It is
+PostgreSQL's lock, so another Node process, a serverless instance or a worker takes the same one — a process-local
+mutex would serialize nothing across them. It is keyed by the organization, so two organizations never wait for
+each other, and it is domain-separated from the audit chain's `envelope-audit|…` key so the two cannot collide.
+It is held until the outer transaction commits or rolls back, and the audit entry is written inside it (in its own
+savepoint), so a trail can neither outlive a rolled-back change nor record one that never committed.
+
+`inMembershipTransaction(orgId, run)` in `lib/identity/members.ts` is the only way in.
+
+## The order inside the lock
+
+Every mutation now runs: begin → lock → re-read the caller → confirm the caller is `ACTIVE` and its current role
+still has `member.manage` → re-read the target → recheck `assertMayActOn`/`assertMayGrant` against those fresh
+roles → count active owners **inside the transaction** → conditional update → confirm exactly one row → append the
+success audit entry → commit.
+
+**The last-owner invariant** is `ActiveOwners(org) ≥ 1` after every committed mutation. `assertNotOnlyOwner` now
+takes the transaction, so the count and the update see the same state; it runs for demotions and removals of an
+owner, after the target's role has been re-read. Two owners demoting each other serialize: the first commits, the
+second re-reads, counts one owner and is refused with a 409.
+
+**The caller is re-authorized from the database.** `scope.role` is the initial context, not the authority for a
+write. `requireMemberManager(tx, scope)` re-reads the membership by `(org_id, user_id)` and refuses a 403 if it is
+missing, not `ACTIVE`, or its current role no longer includes `member.manage`. The audit entry names the id from
+that fresh row.
+
+**The target is re-authorized from the database.** The target is read by `(org_id, user_id)` inside the lock, and
+both permission-set comparisons use the roles as they are now. A member promoted to owner while the request
+waited is no longer actionable by an admin, because the comparison is against `owner`, not the `finance` the
+request saw.
+
+## Conditional writes, and nothing recorded for a write that changed nothing
+
+Both writes are `UPDATE … RETURNING` conditional on the state that was authorized, and the returned row is the
+only thing that produces a result:
+
+* Role change — `where id = … and org_id = … and status = 'ACTIVE' and role = <the role authorized>`.
+* Removal — `where id = … and org_id = … and status = 'ACTIVE'`, the `ACTIVE → REVOKED` transition itself.
+* Invitation withdrawal — `where id = … and org_id = … and accepted_at is null and revoked_at is null`.
+
+Zero rows is a 409 (`"This member changed while the request was in flight…"`) or a 404 for a withdrawal: no
+`changed: true`, no session cleanup, no audit entry. The audit `detail` uses the *returned* row — `from` is the
+role that was actually replaced, `role` the one actually revoked — so the chain records the transition that
+committed, never an attempted one.
+
+## Invitations under the same lock
+
+Creation, withdrawal and acceptance all take the organization lock, which is what makes the documented promises
+true across connections rather than only in sequence:
+
+* **One live invitation per address.** Concurrent invitations are applied in turn, so the later one withdraws the
+  earlier one instead of both staying live. Superseding now writes `member.invitation_withdrawn` for each
+  invitation it displaced (with `supersededBy` in the detail), so the chain matches the roster rather than
+  silently dropping a live invitation.
+* **Withdrawal is once.** The conditional returning update means a second withdrawal — simultaneous or later —
+  matches nothing, writes nothing and adds nothing to the chain.
+* **Acceptance is once, and cannot undo a newer removal.** The single-use claim keeps its conditional form, and it
+  now happens after the lock, so an administrator's removal cannot commit between the claim and the membership
+  write it restores.
+
+## Evidence: real PostgreSQL, independent connections, coordinated windows
+
+`tests/member-administration.concurrent.postgres.test.ts` (14 tests) skips unless `REAL_DATABASE_URL` is set, and
+fails preflight on PGlite, a single backend or `DB_POOL_MAX < 2`. Each race uses a **gate**: a separate
+`postgres` connection takes the organization's lock, the requests under test are parked on it, the competing
+change is committed inside the gate, and the gate then releases. That makes the window deterministic instead of
+hopeful, and the assertions are on persisted state and the audit rows, not only on HTTP codes.
+
+| Scenario | Test | Expectation |
+| --- | --- | --- |
+| Two owners demote each other | `two owners demoting each other…` | one 200, one 409, an owner remains, one audit entry |
+| Two owners remove each other | `two owners removing each other…` | one revocation, an owner remains, one entry |
+| Demotion races removal | `a demotion racing a removal…` | an owner remains |
+| Target promoted mid-request | `an admin cannot demote/remove a member who was promoted to owner…` | 403 naming `payout.recover.approve`, role unchanged, no entry |
+| Caller demoted mid-request | `a caller demoted while the request waited…` | 403, target unchanged |
+| Caller removed mid-request | `a caller removed while the request waited…` | 403, target unchanged |
+| Double removal | `two simultaneous removals of one member…` | `[200, 404]`, one revocation, one entry |
+| Role change vs removal | `a role change and a removal racing…` | state and chain agree with what committed |
+| Cross-organization | `an organization's lock does not serialize another…` | no serialization between organizations |
+| Concurrent invitations | `two simultaneous invitations to one address…` | exactly one live invitation |
+| Double withdrawal | `two simultaneous withdrawals…` | `[200, 404]`, one entry |
+| Concurrent acceptance | `two simultaneous acceptances…` | one membership, one entry |
+| Chain under concurrent writes | `concurrent administrative writes produce one unbroken chain` | `seq` 1..5, no gap or fork, `verifyChain` accepts |
+
+**Before the fix** the same suite was run against `HEAD`'s `lib/identity/members.ts` (with only the lock-key
+exports appended so the gate could address the lock): **12 of 14 failed** — both demotions succeeded, the queue
+never formed ("2 request(s) never queued on the organization's membership lock"), the removed member was revoked
+twice, the recorded `from` role was `developer` where the committed one was `auditor`, two invitations stayed
+live, and both withdrawals returned 200. **After the fix** all 14 pass. The two that pass either way are the
+cross-organization non-serialization test and the concurrent-acceptance test, whose single-use claim was already
+conditional.
+
+Local run (PostgreSQL 16.16): `14 passed`. Full suite: `40 files / 664 tests passed`. `tsc --noEmit` and
+`next build` green. PostgreSQL 18 results come from the CI matrix; see the run linked in the delivery report.
+
+## The screen, reviewed in a browser
+
+`/members` was loaded in a real browser against a live dev server and a real PostgreSQL database, signed in through
+`POST /api/dev/session`, with a seeded owner, admin, auditor, developer and finance member. What was observed:
+
+* the roster loads with name, address, role, `since`, and `· you` on the caller's own row;
+* the caller's row has **no** selector and **no** `Remove` — the owner sees three control pairs for three other
+  members and none for itself, and an admin sees the same for everyone except itself;
+* a role change (`developer → auditor`) succeeds and the reloaded roster shows the server's value, and the chain
+  gains `member.role_changed` with `from: developer, to: auditor`;
+* `Remove` asks `window.confirm` first: dismissing it leaves the member in place, accepting it revokes them, drops
+  them from the roster, and adds `member.removed` to the chain — one revocation, one entry, matching the database;
+* a refusal is shown, not swallowed: an admin demoting or removing the owner gets *"The admin role cannot change a
+owner, because it does not include payout.recover.approve."*, and the owner's row is unchanged afterwards;
+* at 390 px the page has no horizontal overflow (`scrollWidth == clientWidth`) and the controls wrap under the
+  name instead of being clipped.
+
+One defect was found and fixed here: both handlers called the roster reload before setting the refusal message, so
+the reload's `setError(null)` erased the reason and a refused change simply snapped back with no explanation. The
+order is now reload-then-message.
+
+**Limitations of this review.** The local dev server could not compile `instrumentation.ts` (its startup hook
+imports the `postgres` driver, which Next's edge variant of the hook cannot resolve), so the review ran with that
+hook temporarily stubbed and restored immediately afterwards; the membership code under review was untouched.
+Loading states and duplicate-submission guards were read in the code (`disabled={busy}` on every control) but not
+observed under a deliberately slow response. The only-owner refusal was not exercised in the browser, since the
+demo organization has more than one owner and the sole owner cannot be reached without deleting members.
