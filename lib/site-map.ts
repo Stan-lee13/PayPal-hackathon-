@@ -16,6 +16,7 @@ export const SITE: Array<{ group: string; places: Place[] }> = [
   ] },
   { group: "The organization", places: [
     { href: "/members", name: "Members", does: "Who is in this organization, and who is invited." },
+    { href: "/audit", name: "Audit trail", does: "Every administrative decision, and the chain that links them." },
   ] },
   { group: "The checks", places: [
     { href: "/auditor", name: "Auditor", does: "An agent that checks the agents, through PayPal's own toolkit." },

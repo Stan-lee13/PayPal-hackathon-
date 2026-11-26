@@ -245,3 +245,61 @@ hook temporarily stubbed and restored immediately afterwards; the membership cod
 Loading states and duplicate-submission guards were read in the code (`disabled={busy}` on every control) but not
 observed under a deliberately slow response. The only-owner refusal was not exercised in the browser, since the
 demo organization has more than one owner and the sole owner cannot be reached without deleting members.
+
+# Milestone 4.6d — the trail, read back
+
+Section 4.6c wrote every membership decision into a hash chain scoped to the organization. Until now the only way
+to read that chain was a database client, which is not something to ask an auditor to do. `/audit` is the read
+side of it, and it is deliberately the smallest thing that is useful: it shows the decisions, it says whether the
+chain verifies, and it cannot change anything.
+
+## The read
+
+| | |
+|---|---|
+| Route | `GET /api/organizations/audit` (`lib/api/handlers.ts`, policy `session` + `audit.read`) |
+| Module | `lib/identity/organization-audit.ts` |
+| Screen | `app/audit/page.tsx`, `app/audit/view.tsx`, linked from the site menu as **Audit trail** |
+| Scope | `scope_id = <session's organization>` **and** `subject_id IS NULL` — the administration chain, not an envelope's |
+| Order | newest first, one page of 100, with `total` so the page can say how much of it is shown |
+| Permission | `audit.read`: owner, admin, finance, approver and auditor may read it; a developer is refused (403) |
+| Session | required; the organization is resolved from the session row and its membership, never from the request |
+| Writes | none. No function in the module writes, and there is no route that appends an entry |
+
+Three properties are the point, and each is a test:
+
+1. **It cannot be pointed elsewhere.** There is no organization id in the request — not a query parameter, not a
+   body field — so the rows are selected by the scope `lib/api/next.ts` resolved from the session. Another
+   organization's decisions are not filtered out of the answer; they are never candidates for it.
+2. **It needs `audit.read`, not merely a membership.** A developer holds no audit permission and is refused,
+   rather than shown an empty page that would read as "nothing happened here". A signed-out visitor is a 401.
+3. **It is read-only.** Entries exist only as the by-product of a membership change committed in the same
+   transaction; the trail cannot be appended to, edited or back-filled through HTTP.
+
+## The chain, checked rather than asserted
+
+The response loads the whole chain (up to 1000 entries) and runs `verifyChain` over it, so the page can say one of
+three honest things rather than display an unearned green tick:
+
+* **verified** — every entry's hash matches its content, each `prev_hash` matches its predecessor, and entry 1
+  starts at the organization's genesis; the page shows the head hash, which is the value to compare later to
+  detect truncation;
+* **broken** — with the reason from `verifyChain` (an edited entry, a missing link), and the entries still shown:
+  a trail that fails to verify is evidence, not something to hide;
+* **not checked** — the chain is longer than the load limit, and the page says so instead of guessing.
+
+## What it does not do
+
+It reads the administration chain only. The per-envelope chains keep their own scope and are read with the
+envelope they belong to; this page is not a general audit browser. There is no export (`audit.export` is a
+separate permission and nothing exports yet), no filtering or search, and no pagination link — the page returns
+the newest 100 and names the total. Nothing is cached: `dynamic = "force-dynamic"` and `cache: "no-store"` on the
+request, so a reader never sees a stale trail.
+
+## Evidence
+
+`tests/organization-audit.test.ts` (5 tests, real PostgreSQL): a signed-out read is 401 and a developer is 403
+while an auditor reads; the chain is returned newest first with the head equal to the newest stored hash and a
+refused change leaving no entry; another organization's decision is absent from an empty trail; an edited entry
+turns `verified` to `false` with the reason and still returns the entries; and the route table holds exactly one
+`/api/organizations/audit` key, a `GET` requiring `audit.read`.
