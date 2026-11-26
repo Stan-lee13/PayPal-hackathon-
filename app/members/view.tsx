@@ -68,7 +68,9 @@ export function MembersView() {
     setBusy(true); setError(null);
     const r = await api<{ error?: string }>(`/api/organizations/members/${userId}/role`, { method: "POST", body: { role: next } });
     setBusy(false);
-    if (!r.ok) { setError(r.json?.error ?? "The role could not be changed."); await load(); return; }
+    // Reload first: the roster is the authority on what the row says now, and reading it clears any earlier
+    // message, so the refusal has to be set after it or the reason would never be shown.
+    if (!r.ok) { const message = r.json?.error ?? "The role could not be changed."; await load(); setError(message); return; }
     await load();
   };
 
@@ -77,7 +79,7 @@ export function MembersView() {
     setBusy(true); setError(null);
     const r = await api<{ error?: string }>(`/api/organizations/members/${userId}/remove`, { method: "POST", body: {} });
     setBusy(false);
-    if (!r.ok) { setError(r.json?.error ?? "The member could not be removed."); await load(); return; }
+    if (!r.ok) { const message = r.json?.error ?? "The member could not be removed."; await load(); setError(message); return; }
     await load();
   };
 
